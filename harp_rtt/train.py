@@ -293,7 +293,7 @@ def production_config(
         exact_k=exact_k,
         candidate_width=64,
         max_tree_nodes=32,
-        max_tree_depth=32,
+        max_tree_depth=4,
         max_tree_branches=64,
         router_rank=geometry.maximum_rank,
         target_control_width=geometry.maximum_rank,

@@ -480,6 +480,23 @@ def capture_adaptive_sequence(
         )
     )
     sequence_id = f"tfadaptive-seq{ordinal:06d}-{prompt_sha[:8]}"
+    requested_offsets = prompt.get("source_position_offsets")
+    if requested_offsets is None:
+        source_position_offsets = list(range(source_positions))
+    else:
+        source_position_offsets = [int(value) for value in requested_offsets]
+        if len(source_position_offsets) != source_positions:
+            raise ValueError(
+                "prompt source_position_offsets must match --source-positions"
+            )
+        if (
+            source_position_offsets != sorted(set(source_position_offsets))
+            or any(value < 0 for value in source_position_offsets)
+        ):
+            raise ValueError(
+                "source_position_offsets must be sorted unique non-negative integers"
+            )
+    capture_offsets = frozenset(source_position_offsets)
     request_id = f"tfadaptive-req{ordinal:06d}-{prompt_sha[:8]}"
     prompt_token_ids = (
         [int(value) for value in prompt["prompt_token_ids"]]
@@ -509,6 +526,11 @@ def capture_adaptive_sequence(
         domain_label=prompt.get("domain"),
         language_label=prompt.get("language"),
         original_split=prompt.get("original_split"),
+        source_request_id=prompt.get("source_request_id"),
+        source_sequence_id=prompt.get("source_sequence_id"),
+        assigned_split=prompt.get("split"),
+        split_manifest_sha256=prompt.get("split_manifest_sha256"),
+        inner_partition=prompt.get("partition"),
         external_evaluation=False,
         prompt_token_ids=prompt_token_ids,
         prompt_hash=prefix_hash(prompt_token_ids),
@@ -560,7 +582,7 @@ def capture_adaptive_sequence(
     computed_length = len(prompt_token_ids)
     eos_id = tokenizer.eos_token_id
     termination = "source_positions_plus_label_lookahead"
-    total_generation_steps = source_positions + label_lookahead
+    total_generation_steps = max(source_position_offsets) + 1 + label_lookahead
     post_warmup_steps = 0
 
     # Prompt rows persist route history only in the established rich schema.
@@ -581,7 +603,7 @@ def capture_adaptive_sequence(
         root_prefix = list(committed_tokens[:computed_length])
         exact_h1_token = int(current_output.logits[0, -1].argmax().item())
 
-        if cycle_id < source_positions:
+        if post_warmup_steps in capture_offsets:
             if len(final_hidden_history) != computed_length:
                 raise RuntimeError("target hidden history crossed the causal source boundary")
             tree_id = (
@@ -787,6 +809,7 @@ def capture_adaptive_sequence(
         legacy_anchor_spine_source_position_count=len(captured_trees),
         requested_source_positions=source_positions,
         requested_label_lookahead=label_lookahead,
+        requested_source_position_offsets=source_position_offsets,
         termination_reason=termination,
         eos_position=(
             len(prompt_token_ids) + generated_tokens.index(eos_id)
@@ -903,6 +926,7 @@ def build_adaptive_manifest(
                 "legacy_anchor_labels_present": False,
                 "source_positions_per_sequence": args.source_positions,
                 "label_lookahead": args.label_lookahead,
+                "source_position_selection": "per_prompt_uniform_offsets_or_consecutive",
             },
             "counts": {
                 **manifest["counts"],

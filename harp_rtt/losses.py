@@ -729,6 +729,68 @@ class HARPRTTObjective(nn.Module):
         )
         if not isinstance(labels, Tensor) or not isinstance(label_valid, Tensor):
             raise TypeError("branch acceptance labels and validity must be tensors")
+        captured_nodes = int(labels.shape[-1])
+        if expected[2] == captured_nodes + 1:
+            captured_shape = (expected[0], expected[1], captured_nodes)
+            if labels.shape == (expected[0], captured_nodes):
+                labels = labels[:, None].expand(captured_shape)
+            elif labels.shape != captured_shape:
+                raise ValueError("branch acceptance labels disagree with captured nodes")
+            if label_valid.shape == (expected[0], captured_nodes):
+                label_valid = label_valid[:, None].expand(captured_shape)
+            elif label_valid.shape != captured_shape:
+                raise ValueError("branch acceptance validity disagrees with captured nodes")
+
+            posterior_mask = self._branch_mask(
+                outputs, targets, complete_batch, expected
+            )
+            captured_mask = (
+                torch.ones(captured_shape, dtype=torch.bool, device=logits.device)
+                if posterior_mask is None else posterior_mask[..., :-1]
+            )
+            branch_valid = label_valid.bool().clone() & captured_mask
+            target = labels.detach().float()
+            if not torch.isfinite(target).all() or ((target < 0) | (target > 1)).any():
+                raise ValueError("branch acceptance targets must lie in [0,1]")
+
+            acceptance_logits = _optional(outputs, "branch_acceptance_logits")
+            if acceptance_logits is None:
+                acceptance_logits = logits[..., :-1]
+            acceptance_logits = _finite_tensor(
+                acceptance_logits, "branch_acceptance_logits"
+            ).float()
+            if acceptance_logits.shape == (expected[0], captured_nodes):
+                acceptance_logits = acceptance_logits[:, None].expand(captured_shape)
+            elif acceptance_logits.shape != captured_shape:
+                raise ValueError("branch acceptance logits disagree with captured nodes")
+            acceptance_per_node = F.binary_cross_entropy_with_logits(
+                acceptance_logits, target, reduction="none"
+            )
+            acceptance_loss, acceptance_horizons = horizon_balanced_reduce(
+                acceptance_per_node,
+                branch_valid,
+                worst_weight=self.config.horizon_worst_weight,
+            )
+
+            matched = (target > 0.5) & branch_valid
+            other = torch.full(
+                expected[:2], captured_nodes, dtype=torch.long, device=logits.device
+            )
+            matching_index = matched.float().argmax(dim=-1)
+            category = torch.where(matched.any(-1), matching_index, other)
+            posterior_valid = label_valid.bool().any(-1)
+            posterior_per_endpoint = F.cross_entropy(
+                logits.flatten(0, 1), category.flatten(), reduction="none"
+            ).reshape(expected[:2])
+            posterior_loss, posterior_horizons = horizon_balanced_reduce(
+                posterior_per_endpoint,
+                posterior_valid,
+                worst_weight=self.config.horizon_worst_weight,
+            )
+            return (
+                acceptance_loss + posterior_loss,
+                acceptance_horizons + posterior_horizons,
+            )
         if labels.shape == (expected[0], expected[2]):
             labels = labels[:, None].expand(expected)
         elif labels.shape != expected:

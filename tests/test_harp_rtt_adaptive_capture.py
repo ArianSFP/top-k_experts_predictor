@@ -18,9 +18,11 @@ from adaptive_mtp_tree import (  # noqa: E402
     AnchorSpineNode,
     AdaptiveExpansionPolicy,
     AdaptiveMTPTreeBuilder,
+    FixedBeamPolicy,
     NodeObservation,
     build_anchor_spine,
     build_acceptance_labels,
+    build_fixed_beam_tree,
 )
 from adaptive_capture_contract import (  # noqa: E402
     assert_causal_mtp_node_record,
@@ -92,6 +94,63 @@ def test_uncertain_policy_is_deterministic_budgeted_and_parent_ordered() -> None
         assert node.path_log_probability == pytest.approx(
             parent.path_log_probability + node.local_token_log_probability
         )
+
+
+def test_adaptive_16_is_canonical_prefix_of_adaptive_32() -> None:
+    build = AdaptiveMTPTreeBuilder
+    full = build(AdaptiveExpansionPolicy(max_nodes=32)).build(
+        tree_id="seq:prefix",
+        exact_h1_token_id=77,
+        evaluate=lambda path: observation(path, uncertain=True),
+    )
+    independent = build(AdaptiveExpansionPolicy(max_nodes=16)).build(
+        tree_id="seq:prefix",
+        exact_h1_token_id=77,
+        evaluate=lambda path: observation(path, uncertain=True),
+    )
+    assert structural_rows(full[:16]) == structural_rows(independent)
+
+
+@pytest.mark.parametrize(
+    ("widths", "budget"),
+    [((5, 5, 5), 16), ((11, 10, 10), 32)],
+)
+def test_fixed_beam_controls_are_exact_budgeted_and_deterministic(
+    widths: tuple[int, int, int], budget: int
+) -> None:
+    def wide_observation(path: tuple[int, ...]) -> NodeObservation:
+        offset = (sum(path) * 29 + len(path) * 13) % 10_000
+        ids = tuple((offset + 101 * rank) % 32_000 for rank in range(16))
+        return NodeObservation(
+            ids,
+            tuple(-1.55 - 0.2 * rank for rank in range(16)),
+            32_000,
+            9.4,
+        )
+
+    policy = FixedBeamPolicy(widths)
+    first = build_fixed_beam_tree(
+        tree_id=f"seq:fixed{budget}",
+        exact_h1_token_id=77,
+        evaluate=wide_observation,
+        policy=policy,
+    )
+    second = build_fixed_beam_tree(
+        tree_id=f"seq:fixed{budget}",
+        exact_h1_token_id=77,
+        evaluate=wide_observation,
+        policy=policy,
+    )
+    assert structural_rows(first) == structural_rows(second)
+    assert len(first) == budget
+    assert [sum(node.depth == depth for node in first) for depth in range(1, 5)] == [
+        1,
+        *widths,
+    ]
+    assert all(
+        node.parent_local_index is None or node.parent_local_index < node.local_index
+        for node in first
+    )
 
 
 def test_confident_policy_is_deep_and_narrow() -> None:

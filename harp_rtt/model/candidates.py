@@ -17,6 +17,7 @@ class CandidateUnionOutput:
     dense_mask: Tensor
     aggregate_scores: Tensor
     normalized_sources: Tensor
+    anchor_quota: int
 
 
 class CandidateUnion(nn.Module):
@@ -41,7 +42,24 @@ class CandidateUnion(nn.Module):
             raise ValueError("candidate temperatures must be finite and positive")
         self.register_buffer("temperatures", value.clone())
 
-    def forward(self, sources: Sequence[Tensor]) -> CandidateUnionOutput:
+    @staticmethod
+    def scheduled_anchor_quota(width: int, progress: float) -> int:
+        """Anchor top-width through 10%, annealing to top-48 by 50%."""
+        if not 0.0 <= float(progress) <= 1.0:
+            raise ValueError("candidate curriculum progress must lie in [0,1]")
+        target = min(width, 48)
+        if progress <= 0.10:
+            return width
+        if progress >= 0.50:
+            return target
+        fraction = (float(progress) - 0.10) / 0.40
+        return max(target, int(round(width + fraction * (target - width))))
+
+    def forward(
+        self, sources: Sequence[Tensor], *, training_progress: float = 0.0,
+        active_sources: Sequence[bool] | Tensor | None = None,
+        anchor_quota_override: int | None = None,
+    ) -> CandidateUnionOutput:
         if len(sources) != self.SOURCE_COUNT:
             raise ValueError(f"candidate union requires {self.SOURCE_COUNT} dense sources")
         first = sources[0]
@@ -49,12 +67,23 @@ class CandidateUnion(nn.Module):
             raise ValueError("candidate sources must be [B,H,L,E]")
         if any(source.shape != first.shape for source in sources):
             raise ValueError("candidate sources must share one dense shape")
+        if active_sources is None:
+            active = torch.tensor(
+                [True] + [False] * (self.SOURCE_COUNT - 1),
+                dtype=torch.bool, device=first.device,
+            )
+        else:
+            active = torch.as_tensor(
+                active_sources, dtype=torch.bool, device=first.device
+            )
+        if active.shape != (self.SOURCE_COUNT,) or not bool(active[0]):
+            raise ValueError("candidate source zero (anchor) must remain active")
         stacked = torch.stack([source.float() for source in sources], dim=-2)
         normalized = stacked / self.temperatures[None, None, None, :, None]
-        # Center each source so aggregate fill is insensitive to arbitrary
-        # affine offsets in an individual score family.
         normalized = normalized - normalized.mean(dim=-1, keepdim=True)
-        aggregate = normalized.mean(dim=-2)
+        aggregate = normalized.masked_fill(
+            ~active[None, None, None, :, None], -torch.inf
+        ).amax(dim=-2)
         leading = first.shape[:-1]
         rows = int(torch.tensor(leading).prod().item())
         experts = self.config.experts
@@ -88,10 +117,15 @@ class CandidateUnion(nn.Module):
                 selected[active_rows, active_ids] = True
                 counts[keep] += 1
 
-        quota = (width + self.SOURCE_COUNT - 1) // self.SOURCE_COUNT
+        quota = self.scheduled_anchor_quota(width, training_progress)
+        if anchor_quota_override is not None:
+            if not self.training:
+                raise ValueError("anchor quota override is a training-only ablation")
+            if not self.config.exact_k <= anchor_quota_override <= width:
+                raise ValueError("anchor quota override lies outside [exact_k,width]")
+            quota = int(anchor_quota_override)
         for rank in range(min(quota, experts)):
-            for source in range(self.SOURCE_COUNT):
-                add(source_order[:, source, rank])
+            add(source_order[:, 0, rank])
         for rank in range(experts):
             if bool((counts >= width).all()):
                 break
@@ -104,6 +138,7 @@ class CandidateUnion(nn.Module):
             dense_mask=dense_mask,
             aggregate_scores=aggregate.to(first.dtype),
             normalized_sources=normalized.to(first.dtype),
+            anchor_quota=quota,
         )
 
 

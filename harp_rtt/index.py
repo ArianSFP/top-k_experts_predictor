@@ -128,6 +128,7 @@ MTP_META_COLUMNS = (
     "vocabulary_prediction_position",
     "path_identity_hash_i63",
     "tree_identity_hash_i63",
+    "token_rank_under_parent",
 )
 
 MTP_SCALAR_COLUMNS = (
@@ -535,6 +536,7 @@ def build_segment(
                         int(row.get("vocabulary_prediction_position", target_position + 1)),
                         _stable_i63(path_value),
                         _stable_i63(tree_id if tree_id is not None else cycle),
+                        int(row.get("token_rank_under_parent", -1)),
                     ]
                 )
                 if adaptive and depth == 1:

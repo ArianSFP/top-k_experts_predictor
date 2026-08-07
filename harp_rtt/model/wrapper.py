@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import torch
@@ -25,7 +25,7 @@ from .reranker import AxialCandidateReranker
 from .route import RouteGridEncoder
 from .target import TargetStateEncoder
 from .trajectory import TwoRoundTrajectoryRefiner
-from .tree import AdaptiveTreeEncoder
+from .tree import ANYTIME_TREE_BUDGETS, AdaptiveTreeEncoder, ancestor_closed_visibility
 
 
 def _mapping_value(mapping: Mapping[str, Any], *names: str) -> Any:
@@ -384,6 +384,13 @@ class HARPRTTTeacher(nn.Module):
                 "target_positions": tree["target_positions"],
                 "branch_ids": branch,
             }
+            for name in (
+                "child_ranks", "first_divergence_depths",
+                "cumulative_path_ranks", "sibling_counts",
+            ):
+                if name in tree:
+                    metadata_tree[name] = tree[name]
+
             conditioning = _optional_mapping_value(
                 tree, "conditioning_classes", "conditioning_class"
             )
@@ -405,6 +412,15 @@ class HARPRTTTeacher(nn.Module):
                 "tree meta must expose conditioning token IDs in column 7"
             )
         tree_token_embeddings = self._lookup_token(meta_value[..., 7].long())
+        vocab_ids = _optional_mapping_value(tree, "vocab_top64_ids")
+        vocab_log_probabilities = _optional_mapping_value(
+            tree, "vocab_top64_log_probabilities"
+        )
+        if (vocab_ids is None) != (vocab_log_probabilities is None):
+            raise ValueError("tree vocabulary IDs/log probabilities must be paired")
+        tree_vocab_token_embeddings = (
+            None if vocab_ids is None else self._lookup_token(vocab_ids.long())
+        )
 
         return {
             "route_history": history_logits,
@@ -436,6 +452,11 @@ class HARPRTTTeacher(nn.Module):
             "tree_fused": states[:, :, 0],
             "tree_router_input": states[:, :, 2],
             "tree_token_embeddings": tree_token_embeddings,
+            "tree_vocab_token_embeddings": tree_vocab_token_embeddings,
+            "tree_vocab_log_probabilities": vocab_log_probabilities,
+            "tree_vocab_statistics": _optional_mapping_value(
+                tree, "vocab_statistics"
+            ),
             "tree_router_logits": _mapping_value(
                 tree, "router_logits", "mtp_router_logits"
             ),
@@ -467,23 +488,25 @@ class HARPRTTTeacher(nn.Module):
         """Build the formal eta-node scalar vector from ``TreeBatch`` inputs."""
 
         depth = _mapping_value(tree, "depths", "depth")
-        valid = _mapping_value(tree, "valid", "mask")
-        target = _mapping_value(tree, "target_positions", "horizon_ids")
-        branch = _mapping_value(tree, "branch_ids", "branch")
+        path_logp = _mapping_value(tree, "path_log_probabilities").float()
+
+        def semantic(name: str, denominator: float = 1.0) -> Tensor:
+            value = _optional_mapping_value(tree, name)
+            if value is None:
+                return torch.zeros_like(path_logp)
+            return value.float() / denominator
+
         components = [
-            _mapping_value(tree, "path_log_probabilities").float(),
+            path_logp,
+            # Local edge probability is the reusable parent-confidence signal.
             _mapping_value(tree, "local_probabilities").float(),
             _mapping_value(tree, "source_ready").float(),
             depth.float() / max(1, self.config.max_tree_depth),
-            valid.float(),
-            target.float() / max(1, self.config.active_horizons),
-            branch.float() / max(1, self.config.max_tree_branches),
+            semantic("child_ranks", 64.0),
+            semantic("first_divergence_depths", self.config.max_tree_depth),
+            semantic("cumulative_path_ranks", self.config.max_tree_nodes),
+            semantic("sibling_counts", self.config.max_tree_nodes),
         ]
-        conditioning = _optional_mapping_value(tree, "conditioning_classes")
-        if conditioning is None:
-            components.append(torch.zeros_like(components[0]))
-        else:
-            components.append(conditioning.float() / 4.0)
         metadata = torch.stack(components, dim=-1)
         width = self.config.tree_metadata_width
         if metadata.shape[-1] < width:
@@ -549,6 +572,14 @@ class HARPRTTTeacher(nn.Module):
             "tree_router_input": _mapping_value(tree, "router_inputs"),
             "tree_router_logits": _mapping_value(tree, "router_logits"),
             "tree_token_embeddings": _mapping_value(tree, "token_embeddings"),
+            "tree_vocab_token_embeddings": (
+                self._lookup_token(tree["vocab_top64_ids"].long())
+                if "vocab_top64_ids" in tree else None
+            ),
+            "tree_vocab_log_probabilities": _optional_mapping_value(
+                tree, "vocab_top64_log_probabilities"
+            ),
+            "tree_vocab_statistics": _optional_mapping_value(tree, "vocab_statistics"),
             "tree_metadata": self._schema_tree_metadata(tree),
             "tree_depth_ids": _mapping_value(tree, "depths"),
             "tree_parent_ids": parent_ids,
@@ -593,6 +624,9 @@ class HARPRTTTeacher(nn.Module):
         tree_router_input: Tensor | None = None,
         tree_router_logits: Tensor | None = None,
         tree_token_embeddings: Tensor | None = None,
+        tree_vocab_token_embeddings: Tensor | None = None,
+        tree_vocab_log_probabilities: Tensor | None = None,
+        tree_vocab_statistics: Tensor | None = None,
         tree_metadata: Tensor | None = None,
         tree_depth_ids: Tensor | None = None,
         tree_parent_ids: Tensor | None = None,
@@ -603,6 +637,11 @@ class HARPRTTTeacher(nn.Module):
         persistence_scores: Tensor | None = None,
         transition_scores: Tensor | None = None,
         extra_candidate_features: Tensor | None = None,
+        candidate_training_progress: float = 0.0,
+        candidate_active_sources: Sequence[bool] | Tensor | None = None,
+        candidate_anchor_quota_override: int | None = None,
+        tree_visibility_budget: int | None = None,
+        random_anytime_truncation: bool = False,
     ) -> dict[str, Any]:
         if batch is not None:
             adapted = self._adapt_rich_batch(batch)
@@ -634,6 +673,9 @@ class HARPRTTTeacher(nn.Module):
                 "tree_router_logits": tree_router_logits,
                 "tree_token_embeddings": tree_token_embeddings,
                 "tree_metadata": tree_metadata,
+                "tree_vocab_token_embeddings": tree_vocab_token_embeddings,
+                "tree_vocab_log_probabilities": tree_vocab_log_probabilities,
+                "tree_vocab_statistics": tree_vocab_statistics,
                 "tree_depth_ids": tree_depth_ids,
                 "tree_parent_ids": tree_parent_ids,
                 "tree_branch_ids": tree_branch_ids,
@@ -643,6 +685,11 @@ class HARPRTTTeacher(nn.Module):
                 "persistence_scores": persistence_scores,
                 "transition_scores": transition_scores,
                 "extra_candidate_features": extra_candidate_features,
+                "candidate_training_progress": candidate_training_progress,
+                "tree_visibility_budget": tree_visibility_budget,
+                "random_anytime_truncation": random_anytime_truncation,
+                "candidate_active_sources": candidate_active_sources,
+                "candidate_anchor_quota_override": candidate_anchor_quota_override,
             }
             for name, value in explicit.items():
                 if value is not None:
@@ -720,6 +767,24 @@ class HARPRTTTeacher(nn.Module):
             shared=target_shared,
             available=target_available,
         )
+        if random_anytime_truncation:
+            if not self.training:
+                raise ValueError("random anytime truncation is training-only")
+            budget_index = int(
+                torch.randint(
+                    len(ANYTIME_TREE_BUDGETS), (), device=tree_parent_ids.device
+                ).item()
+            )
+            tree_visibility_budget = ANYTIME_TREE_BUDGETS[budget_index]
+        applied_tree_budget = (
+            max(ANYTIME_TREE_BUDGETS)
+            if tree_visibility_budget is None else int(tree_visibility_budget)
+        )
+        tree_available = ancestor_closed_visibility(
+            tree_parent_ids, tree_available, applied_tree_budget
+        )
+        if tree_horizon_mask is not None:
+            tree_horizon_mask = tree_horizon_mask.bool() & tree_available[..., None]
         tree = self.tree_encoder(
             hidden=tree_hidden,
             fused=tree_fused,
@@ -728,6 +793,9 @@ class HARPRTTTeacher(nn.Module):
             token_embeddings=tree_token_embeddings,
             metadata=tree_metadata,
             depth_ids=tree_depth_ids,
+            vocab_token_embeddings=tree_vocab_token_embeddings,
+            vocab_log_probabilities=tree_vocab_log_probabilities,
+            vocab_statistics=tree_vocab_statistics,
             parent_ids=tree_parent_ids,
             branch_ids=tree_branch_ids,
             available=tree_available,
@@ -807,7 +875,10 @@ class HARPRTTTeacher(nn.Module):
                 trajectory.scores,
                 persistence,
                 transition,
-            ]
+            ],
+            training_progress=candidate_training_progress,
+            active_sources=candidate_active_sources,
+            anchor_quota_override=candidate_anchor_quota_override,
         )
         reranked = self.reranker(
             trajectory.scores,
@@ -913,7 +984,12 @@ class HARPRTTTeacher(nn.Module):
                 "branch_weights": mixture.branch_weights,
                 "branch_posteriors": mixture.branch_weights,
                 "branch_posterior_logits": hybrid.branch_logits,
+                "branch_geometry_scores": hybrid.geometry_scores,
                 "branch_mask": tree.horizon_mask,
+                "branch_acceptance_logits": tree.acceptance_logits,
+                "other_branch_index": config.max_tree_nodes,
+                "candidate_anchor_quota": candidate_union.anchor_quota,
+                "candidate_active_sources": candidate_active_sources,
                 "branch_mixture_marginals": mixture.mixture_marginals,
                 "branch_log_z": mixture.branch_log_z,
                 "branch_cardinality_error": mixture.cardinality_error,
@@ -926,6 +1002,7 @@ class HARPRTTTeacher(nn.Module):
                 "trajectory_corrections": torch.stack(
                     trajectory.corrections, dim=1
                 ),
+                "tree_visibility_budget": applied_tree_budget,
                 "candidate_ids": candidate_union.expert_ids,
                 "candidate_mask": candidate_active_mask,
                 "candidate_dense_mask": candidate_union.dense_mask,

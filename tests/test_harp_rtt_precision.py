@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 import torch
-from torch import nn
 
 from harp_rtt.geometry import build_centered_router_geometry
 from harp_rtt.model import HARPRTTConfig
@@ -68,11 +67,6 @@ def test_hybrid_head_scores_frozen_keys_in_fp32_under_bfloat16_autocast(
     bias = torch.randn(2, 17, generator=generator)
     rank_mask = torch.ones(2, 5, dtype=torch.bool)
     head = HybridRouterScoreHead(config, keys, rank_mask, bias).to(device).eval()
-    # Isolate q -> Kq from the learned q projections, which are intentionally
-    # autocastable in production.
-    head.query = nn.Identity()
-    head.branch_query = nn.Identity()
-
     endpoint = torch.randn(2, 4, 2, 5, generator=generator).to(device)
     states = torch.randn(2, 3, 5, generator=generator).to(device)
     tree = TreeEncoding(
@@ -82,12 +76,12 @@ def test_hybrid_head_scores_frozen_keys_in_fp32_under_bfloat16_autocast(
         available=torch.ones(2, 3, dtype=torch.bool, device=device),
     )
     anchor = torch.zeros(2, 4, 2, 17, device=device)
-    query = endpoint[:, :, :, None, :] + states[:, None, None]
-    expected = torch.einsum("bhlnr,ler->bhlne", query, head.expert_keys)
-    expected = expected + head.centered_bias[None, None, :, None]
-
     with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
         output = head(endpoint, tree, anchor)
 
     assert output.geometry_scores.dtype == torch.float32
+    expected = torch.einsum(
+        "bhlnr,ler->bhlne", output.predicted_queries.float(), head.expert_keys
+    )
+    expected = expected + head.centered_bias[None, None, :, None]
     assert torch.equal(output.geometry_scores, expected)

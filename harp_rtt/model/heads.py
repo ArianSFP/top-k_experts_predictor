@@ -100,8 +100,22 @@ class HybridRouterScoreHead(nn.Module):
         self.register_buffer("expert_keys", expert_keys.detach().float().clone())
         self.register_buffer("rank_mask", rank_mask.detach().bool().clone())
         self.register_buffer("centered_bias", centered_bias.detach().float().clone())
-        self.query = nn.Linear(config.model_width, config.router_rank)
-        self.branch_query = nn.Linear(config.tree_width, config.router_rank)
+        width = config.branch_translator_width
+        adapter = config.layer_adapter_rank
+        self.endpoint_query_state = nn.Linear(config.model_width, width)
+        self.branch_query_state = nn.Linear(config.tree_width, width)
+        self.query_horizon_embedding = nn.Embedding(config.active_horizons, width)
+        self.query_layer_embedding = nn.Embedding(config.layers, width)
+        self.query_interaction = nn.Linear(width, width)
+        self.query_norm = nn.RMSNorm(width)
+        self.query_output = nn.Linear(width, config.router_rank)
+        self.layer_adapter_a = nn.Parameter(
+            torch.empty(config.layers, adapter, width)
+        )
+        self.layer_adapter_b = nn.Parameter(
+            torch.zeros(config.layers, config.router_rank, adapter)
+        )
+        nn.init.xavier_uniform_(self.layer_adapter_a)
         self.free_hidden = nn.Linear(config.model_width, config.decoder_ffn_width * 2)
         self.free_branch = nn.Linear(config.tree_width, config.decoder_ffn_width)
         self.free_output = nn.Linear(config.decoder_ffn_width, config.experts)
@@ -131,9 +145,38 @@ class HybridRouterScoreHead(nn.Module):
         expected = (batch, config.active_horizons, config.layers, config.experts)
         if anchor_scores.shape != expected:
             raise ValueError("anchor active scores have the wrong shape")
-        base_query = self.query(endpoint)
-        branch_delta = self.branch_query(tree.states)
-        predicted_query = base_query[:, :, :, None, :] + branch_delta[:, None, None]
+        width = config.branch_translator_width
+        u = (
+            self.endpoint_query_state(endpoint)
+            + self.query_horizon_embedding.weight[None, :, None]
+            + self.query_layer_embedding.weight[None, None]
+        )
+        b = self.branch_query_state(tree.states)
+        u_nodes = u[:, :, :, None, :]
+        b_nodes = b[:, None, None, :, :]
+        joint = self.query_norm(
+            u_nodes + b_nodes + self.query_interaction(u_nodes * b_nodes)
+        )
+        if joint.shape[-1] != width:
+            raise RuntimeError("branch translator width changed unexpectedly")
+        adapter_hidden = torch.einsum(
+            "bhlnw,law->bhlna", joint, self.layer_adapter_a
+        )
+        captured_query = self.query_output(joint) + torch.einsum(
+            "bhlna,lra->bhlnr", adapter_hidden, self.layer_adapter_b
+        )
+        # OTHER is branch-free: it sees endpoint/layer/horizon state but no
+        # captured branch state.  Its score remains the untouched anchor.
+        other_joint = self.query_norm(u)
+        other_hidden = torch.einsum(
+            "bhlw,law->bhla", other_joint, self.layer_adapter_a
+        )
+        other_query = self.query_output(other_joint) + torch.einsum(
+            "bhla,lra->bhlr", other_hidden, self.layer_adapter_b
+        )
+        predicted_query = torch.cat(
+            [captured_query, other_query[:, :, :, None]], dim=3
+        )
         predicted_query = predicted_query * self.rank_mask[None, None, :, None].to(
             predicted_query.dtype
         )
@@ -154,19 +197,25 @@ class HybridRouterScoreHead(nn.Module):
         free_hidden = free_base[:, :, :, None] + self.free_branch(tree.states)[
             :, None, None
         ]
-        free = self.free_output(F.silu(free_hidden))
+        captured_free = self.free_output(F.silu(free_hidden))
+        free = torch.cat(
+            [captured_free, torch.zeros_like(captured_free[..., :1, :])], dim=3
+        )
         if transition_scores is None:
             transition = anchor_scores.new_zeros(expected)
         else:
             if transition_scores.shape != expected:
                 raise ValueError("transition_scores have the wrong shape")
             transition = transition_scores
-        branch_scores = (
+        captured_scores = (
             anchor_scores[:, :, :, None]
-            + self.geometry_gate[None, :, :, None] * geometry
-            + self.free_gate[None, :, :, None] * free
+            + self.geometry_gate[None, :, :, None] * geometry[..., :nodes, :]
+            + self.free_gate[None, :, :, None] * captured_free
             + self.transition_gate[None, :, :, None]
             * transition[:, :, :, None]
+        )
+        branch_scores = torch.cat(
+            [captured_scores, anchor_scores[:, :, :, None]], dim=3
         )
         return HybridScoreOutput(
             branch_scores=branch_scores,

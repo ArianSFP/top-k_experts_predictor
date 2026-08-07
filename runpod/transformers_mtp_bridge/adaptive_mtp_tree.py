@@ -316,6 +316,136 @@ def build_anchor_spine(
     return nodes
 
 
+@dataclass(frozen=True)
+class FixedBeamPolicy:
+    """Matched level-budget control for the adaptive H1--H4 policy."""
+
+    widths_h2_h4: tuple[int, int, int]
+
+    def __post_init__(self) -> None:
+        if any(width < 1 for width in self.widths_h2_h4):
+            raise ValueError("fixed beam widths must be positive")
+        if self.widths_h2_h4 not in {(5, 5, 5), (11, 10, 10)}:
+            raise ValueError("formal fixed controls are beam-16 or beam-32")
+
+    @property
+    def max_nodes(self) -> int:
+        return 1 + sum(self.widths_h2_h4)
+
+    def manifest(self) -> dict[str, Any]:
+        return {
+            "schema": "harp_rtt_fixed_probability_beam_control_v1",
+            "maximum_nodes_including_root": self.max_nodes,
+            "depth_widths": {
+                "1": 1,
+                "2": self.widths_h2_h4[0],
+                "3": self.widths_h2_h4[1],
+                "4": self.widths_h2_h4[2],
+            },
+            "ranking": [
+                "descending_cumulative_mtp_log_probability",
+                "lexicographic_token_path",
+                "parent_local_index",
+                "candidate_rank",
+                "token_id",
+            ],
+            "uses_target_labels": False,
+            "uses_acceptance": False,
+            "uses_factual_continuation": False,
+        }
+
+
+def build_fixed_beam_tree(
+    *,
+    tree_id: str,
+    exact_h1_token_id: int,
+    evaluate: Callable[[tuple[int, ...]], NodeObservation],
+    policy: FixedBeamPolicy,
+    on_node: Callable[[AdaptiveTreeNode], None] | None = None,
+) -> list[AdaptiveTreeNode]:
+    """Build a stable levelwise probability beam with an exact H1 root."""
+
+    nodes: list[AdaptiveTreeNode] = []
+
+    def add(
+        parent: AdaptiveTreeNode | None,
+        token_id: int,
+        rank: int,
+        local_logp: float,
+    ) -> AdaptiveTreeNode:
+        depth = 1 if parent is None else parent.depth + 1
+        path = (token_id,) if parent is None else parent.token_path_ids + (token_id,)
+        edge = (0.0,) if parent is None else (
+            parent.token_path_log_probabilities + (local_logp,)
+        )
+        cumulative = 0.0 if parent is None else parent.path_log_probability + local_logp
+        observation = evaluate(path)
+        observation.validate()
+        local = len(nodes)
+        digest = _canonical_path_digest(tree_id, path)
+        node = AdaptiveTreeNode(
+            local_index=local,
+            tree_id=tree_id,
+            tree_node_id=f"{tree_id}:n{local:02d}",
+            parent_local_index=None if parent is None else parent.local_index,
+            parent_tree_node_id=None if parent is None else parent.tree_node_id,
+            depth=depth,
+            token_id=int(token_id),
+            token_rank_under_parent=int(rank),
+            token_path_ids=path,
+            token_path_log_probabilities=edge,
+            local_token_log_probability=0.0 if parent is None else float(local_logp),
+            path_log_probability=float(cumulative),
+            path_id=f"path:{digest}",
+            branch_id=f"branch:{digest[:32]}",
+            observation=observation,
+        )
+        nodes.append(node)
+        if on_node is not None:
+            on_node(node)
+        observation.payload = None
+        return node
+
+    root = add(None, exact_h1_token_id, 0, 0.0)
+    parents = [root]
+    for target_depth, width in enumerate(policy.widths_h2_h4, start=2):
+        proposals: list[tuple[float, tuple[int, ...], int, int, int]] = []
+        for parent in parents:
+            for rank, (token, logp) in enumerate(
+                zip(
+                    parent.observation.top_token_ids,
+                    parent.observation.top_log_probabilities,
+                    strict=True,
+                )
+            ):
+                path = parent.token_path_ids + (int(token),)
+                proposals.append(
+                    (
+                        -(parent.path_log_probability + float(logp)),
+                        path,
+                        parent.local_index,
+                        rank,
+                        int(token),
+                    )
+                )
+        proposals.sort()
+        chosen = proposals[:width]
+        if len(chosen) != width:
+            raise ValueError(f"fixed beam cannot fill H{target_depth} width {width}")
+        parents = [
+            add(nodes[parent], token, rank, nodes[parent].observation.top_log_probabilities[rank])
+            for _negative, _path, parent, rank, token in chosen
+        ]
+    if len(nodes) != policy.max_nodes:
+        raise RuntimeError("fixed beam did not consume its exact node budget")
+    validate_tree_structure(
+        nodes,
+        policy=AdaptiveExpansionPolicy(max_nodes=policy.max_nodes),
+        exact_h1_token_id=exact_h1_token_id,
+    )
+    return nodes
+
+
 class AdaptiveMTPTreeBuilder:
     """Build one tree using only evaluator-produced native MTP distributions."""
 

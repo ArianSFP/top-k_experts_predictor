@@ -1,5 +1,15 @@
 # HARP-RTT-90 v1.0
 
+> **Superseded execution instruction (2026-08-07):** the later pause evidence
+> and the v2 causal-information pilot supersede Phase 1's instruction to resume
+> the existing C64 run. That run is a frozen measurement baseline. Its same-input
+> reranker plateaued while the C64 oracle remained high, and prefix-mismatch rows
+> exposed an additional candidate-generation failure. The active execution plan
+> is [HARP_RTT_V2_CAUSAL_BRANCH_PILOT_20260807.md](HARP_RTT_V2_CAUSAL_BRANCH_PILOT_20260807.md),
+> which treats candidate identification and within-pool ranking as separate
+> bottlenecks and gates branch-rich counterfactual capture before further ranker
+> training.
+
 ## Branch-Aware Router-Query Trajectory Teacher with Exact-\(k\) Axial Reranking
 
 **Status:** proposed next accuracy-first architecture after the HARP-8T approximately 0.79 H1--H4 endpoint
@@ -786,9 +796,11 @@ Before expensive training, measure:
 
 If a model with true future router input does not reconstruct top-8 essentially exactly, the capture or indexing is wrong.
 
-### Phase 1: complete the existing C64 baseline
+### Phase 1: preserve the completed C64 baseline (superseded)
 
-Resume the already exported C64 reranker unchanged to convergence. This is a measurement baseline, not the proposed final architecture.
+Do not resume the already exported C64 reranker. The later pause audit completed
+the measurement needed from this baseline and found a same-input plateau. Preserve
+its artifacts unchanged and follow the v2 branch-rich causal-information pilot.
 
 ### Phase 2: function-preserving residual generator
 

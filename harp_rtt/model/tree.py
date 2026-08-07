@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor, nn
 
-from .common import SwiGLUResidual, safe_padding_mask
+from .common import SwiGLUResidual, safe_padding_mask, zero_linear
 from .config import HARPRTTConfig
 
 
@@ -17,6 +17,40 @@ class TreeEncoding:
     posterior_logits: Tensor
     horizon_mask: Tensor
     available: Tensor
+    acceptance_logits: Tensor | None = None
+
+
+ANYTIME_TREE_BUDGETS = (1, 4, 8, 16, 32)
+
+
+def ancestor_closed_visibility(
+    parent_ids: Tensor,
+    available: Tensor,
+    budget: int,
+) -> Tensor:
+    """Mask to a parent-before-child prefix and fail if an ancestor is absent."""
+
+    if parent_ids.ndim != 2 or available.shape != parent_ids.shape:
+        raise ValueError("tree parent IDs and availability must be [B,N]")
+    if budget not in ANYTIME_TREE_BUDGETS:
+        raise ValueError(f"anytime tree budget must be one of {ANYTIME_TREE_BUDGETS}")
+    nodes = parent_ids.shape[1]
+    visible = available.bool() & (
+        torch.arange(nodes, device=parent_ids.device)[None] < min(budget, nodes)
+    )
+    parent = parent_ids.long()
+    invalid = visible & ((parent < -1) | (parent >= nodes))
+    if invalid.any():
+        raise ValueError("visible node has an invalid parent")
+    child = visible & (parent >= 0)
+    if child.any():
+        rows = torch.arange(parent.shape[0], device=parent.device)[:, None].expand_as(parent)
+        parent_visible = visible[
+            rows[child], parent.clamp_min(0)[child]
+        ]
+        if not bool(parent_visible.all()):
+            raise ValueError("anytime visibility prefix is not ancestor closed")
+    return visible
 
 
 def _structural_attention_mask(
@@ -131,21 +165,25 @@ class AdaptiveTreeEncoder(nn.Module):
             nn.RMSNorm(config.tree_token_width),
             nn.Linear(config.tree_token_width, component_width),
         )
+        self.vocab_projection = nn.Sequential(
+            nn.RMSNorm(config.tree_token_width),
+            nn.Linear(config.tree_token_width, component_width),
+        )
+        self.vocab_statistics_projection = nn.Sequential(
+            nn.LayerNorm(6), nn.Linear(6, component_width)
+        )
         self.metadata_projection = nn.Sequential(
             nn.LayerNorm(config.tree_metadata_width),
             nn.Linear(config.tree_metadata_width, component_width),
         )
         self.node_fusion = nn.Sequential(
-            nn.Linear(component_width * 6, config.tree_ffn_width),
+            nn.Linear(component_width * 8, config.tree_ffn_width),
             nn.SiLU(),
             nn.Linear(config.tree_ffn_width, config.tree_width),
             nn.RMSNorm(config.tree_width),
         )
         self.depth_embedding = nn.Embedding(
             config.max_tree_depth + 1, config.tree_width
-        )
-        self.branch_embedding = nn.Embedding(
-            config.max_tree_branches + 1, config.tree_width
         )
         self.blocks = nn.ModuleList(
             [_TreeBlock(config) for _ in range(config.tree_blocks)]
@@ -154,7 +192,11 @@ class AdaptiveTreeEncoder(nn.Module):
             config.active_horizons, config.tree_width
         )
         self.posterior_state = nn.Linear(config.tree_width, config.tree_width)
-        self.posterior = nn.Linear(config.tree_width, 1, bias=False)
+        self.posterior = zero_linear(nn.Linear(config.tree_width, 1, bias=False))
+        self.acceptance = nn.Linear(config.tree_width, 1)
+        self.other_posterior_correction = nn.Parameter(
+            torch.zeros(config.active_horizons)
+        )
         self.output_norm = nn.RMSNorm(config.tree_width)
 
     def forward(
@@ -165,6 +207,9 @@ class AdaptiveTreeEncoder(nn.Module):
         router_input: Tensor,
         router_logits: Tensor,
         token_embeddings: Tensor,
+        vocab_token_embeddings: Tensor | None = None,
+        vocab_log_probabilities: Tensor | None = None,
+        vocab_statistics: Tensor | None = None,
         metadata: Tensor,
         depth_ids: Tensor,
         parent_ids: Tensor,
@@ -206,6 +251,50 @@ class AdaptiveTreeEncoder(nn.Module):
         )
         if (invalid_branch & available).any():
             raise ValueError("valid tree branch ID lies outside the configured range")
+        if vocab_token_embeddings is None:
+            if vocab_log_probabilities is not None or vocab_statistics is not None:
+                raise ValueError("vocabulary values require top-token embeddings")
+            vocab_pool = torch.zeros_like(token_embeddings)
+            vocab_statistics = token_embeddings.new_zeros(batch, nodes, 6)
+        else:
+            if vocab_log_probabilities is None:
+                raise ValueError("top-token embeddings require log probabilities")
+            if vocab_token_embeddings.shape[:2] != expected_prefix:
+                raise ValueError("vocabulary embeddings must begin [B,N]")
+            if vocab_token_embeddings.shape[-1] != config.tree_token_width:
+                raise ValueError("vocabulary embedding width disagrees with tree tokens")
+            if vocab_log_probabilities.shape != vocab_token_embeddings.shape[:-1]:
+                raise ValueError("vocabulary log probabilities disagree with embeddings")
+            logp = vocab_log_probabilities.float().clamp(max=0.0)
+            probability = logp.exp()
+            retained = probability.sum(dim=-1)
+            normalized = probability / retained[..., None].clamp_min(1e-12)
+            vocab_pool = torch.einsum(
+                "bnk,bnkd->bnd", normalized.to(vocab_token_embeddings.dtype),
+                vocab_token_embeddings,
+            )
+            if vocab_statistics is None:
+                if logp.shape[-1] < 2:
+                    raise ValueError("vocabulary evidence requires at least two tokens")
+                entropy = -(probability * logp).sum(dim=-1)
+                ordered_logp = torch.sort(
+                    logp, dim=-1, descending=True, stable=True
+                ).values
+                ordered_probability = ordered_logp.exp()
+                margin = ordered_logp[..., 0] - ordered_logp[..., 1]
+                vocab_statistics = torch.stack(
+                    [
+                        retained,
+                        (1.0 - retained).clamp_min(0.0),
+                        entropy,
+                        ordered_probability[..., 0],
+                        margin,
+                        ordered_probability[..., :8].sum(-1),
+                    ],
+                    dim=-1,
+                )
+        if vocab_statistics.shape != (batch, nodes, 6):
+            raise ValueError("vocabulary statistics must be [B,N,6]")
         centered_router = router_logits - router_logits.mean(dim=-1, keepdim=True)
         components = [
             self.hidden_projection(hidden),
@@ -214,12 +303,13 @@ class AdaptiveTreeEncoder(nn.Module):
             self.router_logit_projection(centered_router),
             self.token_projection(token_embeddings),
             self.metadata_projection(metadata),
+            self.vocab_projection(vocab_pool),
+            self.vocab_statistics_projection(vocab_statistics),
         ]
         states = self.node_fusion(torch.cat(components, dim=-1))
-        states = (
-            states
-            + self.depth_embedding(depth_ids.clamp(0, config.max_tree_depth))
-            + self.branch_embedding(branch_ids.clamp(0, config.max_tree_branches))
+        # Sample-local branch IDs remain audit keys, never learned semantics.
+        states = states + self.depth_embedding(
+            depth_ids.clamp(0, config.max_tree_depth)
         )
         states = states * available[..., None].to(states.dtype)
         safe, padding = safe_padding_mask(available)
@@ -238,12 +328,13 @@ class AdaptiveTreeEncoder(nn.Module):
             )
         states = self.output_norm(states)
         horizon_embedding = self.horizon_embedding.weight
-        logits = self.posterior(
+        corrections = self.posterior(
             torch.tanh(
                 self.posterior_state(states)[:, None]
                 + horizon_embedding[None, :, None]
             )
         ).squeeze(-1)
+        acceptance_logits = self.acceptance(states).squeeze(-1)
         if horizon_mask is not None:
             expected = (batch, nodes, config.active_horizons)
             if horizon_mask.shape != expected:
@@ -274,14 +365,53 @@ class AdaptiveTreeEncoder(nn.Module):
             per_horizon = torch.where(
                 missing[..., None], available[:, None], per_horizon
             )
-        # Keep raw finite logits public for branch/path auxiliary losses.  The
-        # exact branch mixture applies ``per_horizon`` only while normalizing.
+        # Observed MTP priors plus a zero-initialized correction.  Overlapping
+        # prefixes are rescaled only when their mass would exceed one; OTHER
+        # receives all residual uncaptured mass.
+        log_path = metadata[..., 0].float().clamp(max=0.0)
+        captured_prior = log_path.exp()[:, None] * per_horizon.float()
+        epsilon = 1e-6
+        mass = captured_prior.sum(dim=-1, keepdim=True)
+        scale = torch.where(
+            mass > 1.0 - epsilon,
+            (1.0 - epsilon) / mass.clamp_min(epsilon),
+            torch.ones_like(mass),
+        )
+        captured_prior = captured_prior * scale
+        other_prior = (1.0 - captured_prior.sum(dim=-1)).clamp_min(epsilon)
+        logits = torch.cat(
+            [
+                captured_prior.clamp_min(epsilon).log() + corrections.float(),
+                other_prior.log()[..., None]
+                + self.other_posterior_correction.float()[None, :, None],
+            ],
+            dim=-1,
+        )
+        mixture_mask = torch.cat(
+            [
+                per_horizon,
+                torch.ones(
+                    batch,
+                    config.active_horizons,
+                    1,
+                    dtype=torch.bool,
+                    device=states.device,
+                ),
+            ],
+            dim=-1,
+        )
         return TreeEncoding(
             states=states,
             posterior_logits=logits,
-            horizon_mask=per_horizon,
+            acceptance_logits=acceptance_logits,
+            horizon_mask=mixture_mask,
             available=available,
         )
 
 
-__all__ = ["AdaptiveTreeEncoder", "TreeEncoding"]
+__all__ = [
+    "ANYTIME_TREE_BUDGETS",
+    "AdaptiveTreeEncoder",
+    "TreeEncoding",
+    "ancestor_closed_visibility",
+]

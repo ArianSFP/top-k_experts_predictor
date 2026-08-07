@@ -180,8 +180,8 @@ def test_shapes_exact_cardinality_and_zero_step_anchor_equality() -> None:
     assert outputs["active_scores"].shape == (2, 4, 3, 12)
     assert outputs["active_marginals"].shape == (2, 4, 3, 12)
     assert outputs["top8_ids"].shape == (2, 4, 3, 3)
-    assert outputs["branch_marginals"].shape == (2, 4, 3, 4, 12)
-    assert outputs["branch_posterior_logits"].shape == (2, 4, 4)
+    assert outputs["branch_marginals"].shape == (2, 4, 3, 5, 12)
+    assert outputs["branch_posterior_logits"].shape == (2, 4, 5)
     assert torch.isfinite(outputs["branch_posterior_logits"]).all()
     assert outputs["trajectory_round_scores"].shape == (2, 2, 4, 3, 12)
     assert outputs["candidate_ids"].shape == (2, 4, 3, 6)
@@ -341,11 +341,14 @@ def test_tree_node_permutation_only_permutes_branch_diagnostics() -> None:
     second = model(**second_inputs)
     assert torch.allclose(first["active_scores"], second["active_scores"], atol=2e-6)
     assert torch.equal(first["candidate_ids"], second["candidate_ids"])
-    assert torch.allclose(
-        first["branch_marginals"][..., permutation, :],
-        second["branch_marginals"],
-        atol=2e-6,
+    expected_marginals = torch.cat(
+        (
+            first["branch_marginals"][..., permutation, :],
+            first["branch_marginals"][..., -1:, :],
+        ),
+        dim=-2,
     )
+    assert torch.allclose(expected_marginals, second["branch_marginals"], atol=2e-6)
     assert torch.allclose(
         first["candidate_branch_support_features"],
         second["candidate_branch_support_features"],
@@ -586,7 +589,7 @@ def test_nested_collated_dataset_batch_adapter() -> None:
     )
     anchor = direct["anchor_outputs"]["future_router_scores"]
     assert torch.equal(outputs["future_router_scores"], anchor)
-    assert outputs["branch_mask"].shape == (1, 4, 4)
+    assert outputs["branch_mask"].shape == (1, 4, 5)
 
 
 @torch.no_grad()
@@ -660,7 +663,8 @@ def test_empty_tree_is_finite_and_function_preserving() -> None:
     assert torch.equal(outputs["future_router_scores"], anchor)
     assert torch.isfinite(outputs["active_marginals"]).all()
     assert torch.isfinite(outputs["candidate_branch_support_features"]).all()
-    assert torch.count_nonzero(outputs["candidate_branch_support_features"]) == 0
+    assert torch.equal(outputs["branch_weights"][..., -1], torch.ones(1, 4))
+    assert torch.count_nonzero(outputs["branch_weights"][..., :-1]) == 0
 
 
 @torch.no_grad()
@@ -718,4 +722,26 @@ def test_public_schema_model_inputs_adapter() -> None:
     outputs = model(batch=public_inputs)
     anchor = direct["anchor_outputs"]["future_router_scores"]
     assert torch.equal(outputs["future_router_scores"], anchor)
-    assert outputs["branch_mask"].sum(-1).tolist() == [[1, 1, 1, 1]]
+    assert outputs["branch_mask"].sum(-1).tolist() == [[2, 2, 2, 2]]
+
+@torch.no_grad()
+def test_anytime_budget_masks_later_sibling_features_before_encoding() -> None:
+    model, inputs = _model_and_inputs(batch=1)
+    model.eval()
+    first = model(**inputs, tree_visibility_budget=1)
+    changed = dict(inputs)
+    for name in (
+        "tree_hidden",
+        "tree_fused",
+        "tree_router_input",
+        "tree_router_logits",
+        "tree_token_embeddings",
+        "tree_metadata",
+    ):
+        value = inputs[name].clone()  # type: ignore[union-attr]
+        value[:, 1:] = value[:, 1:] + 10_000
+        changed[name] = value
+    second = model(**changed, tree_visibility_budget=1)
+    assert first["tree_visibility_budget"] == 1
+    assert torch.equal(first["active_scores"], second["active_scores"])
+    assert torch.equal(first["candidate_ids"], second["candidate_ids"])

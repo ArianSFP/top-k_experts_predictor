@@ -630,6 +630,10 @@ class HarpRTTDataset(Dataset[dict[str, Any]]):
             "path_probabilities": torch.zeros((pad,), dtype=torch.float32),
             "local_probabilities": torch.zeros((pad,), dtype=torch.float32),
             "source_ready": torch.zeros((pad,), dtype=torch.float32),
+            "child_ranks": torch.zeros((pad,), dtype=torch.int64),
+            "first_divergence_depths": torch.zeros((pad,), dtype=torch.int64),
+            "cumulative_path_ranks": torch.zeros((pad,), dtype=torch.int64),
+            "sibling_counts": torch.zeros((pad,), dtype=torch.int64),
             "source_ready_event_order": torch.zeros((pad,), dtype=torch.int64),
             "source_ready_monotonic_ns": torch.zeros((pad,), dtype=torch.int64),
             "structural_valid": torch.zeros((pad,), dtype=torch.bool),
@@ -691,6 +695,36 @@ class HarpRTTDataset(Dataset[dict[str, Any]]):
         parents = torch.tensor(local_parents, dtype=torch.int64)
         horizons = metadata[:, 3]
         node_tokens = metadata[:, 7]
+        rank_column = segment.mtp_meta_column("token_rank_under_parent")
+        child_ranks = (
+            metadata[:, rank_column]
+            if rank_column is not None
+            else torch.zeros(count, dtype=torch.int64)
+        )
+        child_ranks = child_ranks.clamp_min(0)
+        sibling_counts = torch.tensor(
+            [sum(value == parent for value in local_parents) for parent in local_parents],
+            dtype=torch.int64,
+        )
+        path_ranks = torch.zeros(count, dtype=torch.int64)
+        for horizon in range(1, HORIZONS + 1):
+            rows = torch.nonzero(horizons == horizon, as_tuple=False).flatten()
+            if rows.numel():
+                order = torch.argsort(scalars[rows, 1], descending=True, stable=True)
+                path_ranks[rows[order]] = torch.arange(1, rows.numel() + 1)
+        divergence = torch.zeros(count, dtype=torch.int64)
+        for local in range(count):
+            current = local
+            first = 0
+            while current >= 0:
+                if int(child_ranks[current]) > 0:
+                    first = int(horizons[current])
+                current = local_parents[current]
+            divergence[local] = first
+        tree["child_ranks"][:count] = child_ranks
+        tree["first_divergence_depths"][:count] = divergence
+        tree["cumulative_path_ranks"][:count] = path_ranks
+        tree["sibling_counts"][:count] = sibling_counts
         tree["meta"][:count] = metadata
         tree["capture_scalars"][:count] = scalars
         tree["scalars"][:count] = scalars[:, :8]

@@ -23,8 +23,10 @@ class HARPRTTConfig:
     exact_k: int = 8
     candidate_width: int = 64
     max_tree_nodes: int = 32
-    max_tree_depth: int = 32
+    max_tree_depth: int = 4
     max_tree_branches: int = 64
+    branch_translator_width: int = 384
+    layer_adapter_rank: int = 16
 
     # Frozen centered-router geometry.
     router_rank: int = 255
@@ -103,6 +105,7 @@ class HARPRTTConfig:
                 "trajectory_rounds",
                 "reranker_set_blocks",
                 "reranker_summary_blocks",
+                "layer_adapter_rank",
             }
         }
         # Optional feature widths are the only dimensions allowed to be zero.
@@ -122,6 +125,10 @@ class HARPRTTConfig:
             raise ValueError("candidate_width must lie in [exact_k, experts]")
         if self.trajectory_rounds != 2:
             raise ValueError("HARP-RTT v1 requires exactly two trajectory rounds")
+        if self.max_tree_depth != 4:
+            raise ValueError("HARP-RTT adaptive inputs target exactly H1--H4")
+        if self.layer_adapter_rank > self.branch_translator_width:
+            raise ValueError("layer adapter rank exceeds translator width")
         for name in (
             "route_width",
             "target_width",
