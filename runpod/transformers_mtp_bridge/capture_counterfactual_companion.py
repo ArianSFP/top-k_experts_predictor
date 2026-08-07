@@ -217,13 +217,10 @@ def capture_tree(
             ),
             "valid": torch.zeros(4, 4, geometry.layers, dtype=torch.bool),
         }
-    prefix_length = len(authoritative_prefix)
-    prefix_output = None
-    prefix_cache = None
-    prefix_token_logp = None
-    if execution_mode == "sibling_isolated_cloned_prefix_cache":
+
+    def replay_prefix() -> tuple[Any, torch.Tensor, Any]:
         hooks.clear()
-        prefix_output = target(
+        output = target(
             input_ids=torch.tensor(
                 [authoritative_prefix], dtype=torch.long, device=target.device
             ),
@@ -232,10 +229,21 @@ def capture_tree(
             output_router_logits=True,
             return_dict=True,
         )
-        prefix_cache = prefix_output.past_key_values
-        prefix_token_logp = torch.log_softmax(
-            prefix_output.logits[0, -1].float(), dim=-1
+        return (
+            output.past_key_values,
+            torch.log_softmax(output.logits[0, -1].float(), dim=-1),
+            output,
         )
+
+    shared_prefix_cache = None
+    shared_prefix_logp = None
+    shared_prefix_output = None
+    if execution_mode == "sibling_isolated_cloned_prefix_cache":
+        (
+            shared_prefix_cache,
+            shared_prefix_logp,
+            shared_prefix_output,
+        ) = replay_prefix()
 
     for slot, path in enumerate(selected):
         if path is None:
@@ -255,74 +263,64 @@ def capture_tree(
                     nodes[node_index].path_log_probability
                 )
 
-        hooks.clear()
         if execution_mode == "sibling_isolated_cloned_prefix_cache":
             import copy
 
-            call_tokens = list(path.token_ids)
-            output = target(
-                input_ids=torch.tensor(
-                    [call_tokens], dtype=torch.long, device=target.device
-                ),
-                past_key_values=copy.deepcopy(prefix_cache),
-                use_cache=False,
-                output_hidden_states=False,
-                output_router_logits=True,
-                return_dict=True,
-            )
+            path_cache = copy.deepcopy(shared_prefix_cache)
+            previous_token_logp = shared_prefix_logp
         else:
-            call_tokens = authoritative_prefix + list(path.token_ids)
-            output = target(
-                input_ids=torch.tensor(
-                    [call_tokens], dtype=torch.long, device=target.device
-                ),
-                use_cache=False,
-                output_hidden_states=False,
-                output_router_logits=True,
-                return_dict=True,
-            )
-        token_logp = torch.log_softmax(output.logits[0].float(), dim=-1)
+            path_cache, previous_token_logp, prefix_output = replay_prefix()
+
         cumulative = 0.0
+        output = None
         for depth, token_id in enumerate(path.token_ids, start=1):
-            if execution_mode == "sibling_isolated_cloned_prefix_cache":
-                edge = float(
-                    (
-                        prefix_token_logp[token_id]
-                        if depth == 1
-                        else token_logp[depth - 2, token_id]
-                    ).item()
-                )
-                route_index = depth - 1
-            else:
-                prediction_index = prefix_length + depth - 2
-                edge = float(token_logp[prediction_index, token_id].item())
-                route_index = prefix_length + depth - 1
+            edge = float(previous_token_logp[token_id].item())
             cumulative += edge
             tensors["target_edge_logp"][slot, depth - 1] = edge
             tensors["target_path_logp"][slot, depth - 1] = cumulative
+
+            # Preserve autoregressive serving semantics for both modes. The
+            # reference replays the full prefix independently for each path;
+            # the optimized mode clones that exact prefix cache. Both then
+            # execute every path token as an isolated one-token target step.
+            hooks.clear()
+            output = target(
+                input_ids=torch.tensor(
+                    [[token_id]], dtype=torch.long, device=target.device
+                ),
+                past_key_values=path_cache,
+                use_cache=True,
+                output_hidden_states=False,
+                output_router_logits=True,
+                return_dict=True,
+            )
+            path_cache = output.past_key_values
+            previous_token_logp = torch.log_softmax(
+                output.logits[0, -1].float(), dim=-1
+            )
             if depth == 1:
                 continue
             router_inputs = torch.stack(
                 [
-                    hooks.rows[layer]["router_input"][0, route_index]
+                    hooks.rows[layer]["router_input"][0, 0]
                     for layer in range(geometry.layers)
                 ]
             )
             logits = torch.stack(
                 [
-                    hooks.rows[layer]["router_logits"][route_index]
+                    hooks.rows[layer]["router_logits"][0]
                     for layer in range(geometry.layers)
                 ]
             )
             selected_ids = torch.stack(
                 [
-                    hooks.rows[layer]["selected_ids"][route_index]
+                    hooks.rows[layer]["selected_ids"][0]
                     for layer in range(geometry.layers)
                 ]
             )
             selected_weights = torch.stack(
                 [
-                    hooks.rows[layer]["selected_weights"][route_index]
+                    hooks.rows[layer]["selected_weights"][0]
                     for layer in range(geometry.layers)
                 ]
             )
@@ -344,7 +342,10 @@ def capture_tree(
                 ).cpu()
                 audit["valid"][slot, depth - 1] = True
         del output
-    del prefix_output
+        if execution_mode != "sibling_isolated_cloned_prefix_cache":
+            del prefix_output
+
+    del shared_prefix_output
     validate_counterfactual_tensors(
         tensors,
         layers=geometry.layers,
