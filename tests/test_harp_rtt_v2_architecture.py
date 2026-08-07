@@ -6,6 +6,7 @@ import torch
 from harp_rtt.model.candidates import CandidateUnion
 from harp_rtt.model.config import HARPRTTConfig
 from harp_rtt.model.tree import AdaptiveTreeEncoder, ancestor_closed_visibility
+from runpod.transformers_mtp_bridge.hydrate_selected_train_sequence_starts import segment_name
 
 
 def tiny_tree_config() -> HARPRTTConfig:
@@ -112,3 +113,10 @@ def test_candidate_curriculum_preserves_anchor_then_opens_sixteen_slots() -> Non
             active_sources=active,
             anchor_quota_override=32,
         )
+
+def test_capture_segment_mapping_respects_one_based_boundaries() -> None:
+    assert segment_name("tfprod-req000000-1234abcd").endswith("000001_000016")
+    assert segment_name("tfprod-req000016-1234abcd").endswith("000001_000016")
+    assert segment_name("tfprod-req000017-1234abcd").endswith("000017_000032")
+    assert segment_name("tfprod-req000425-1234abcd").endswith("000417_000432")
+    assert segment_name("tfprod-req000608-1234abcd").endswith("000593_000608")
