@@ -286,30 +286,30 @@ the manifest hashes and split grouping remain unchanged.
 
 ```bash
 python -m harp8.overfit \
-  --capture-dir <harp8-data-root>/capture \
-  --mtp-dir <harp8-data-root>/mtp \
-  --target-state-features <harp8-data-root>/features/local_post_layer_pca.npy \
-  --mtp-state-features <harp8-data-root>/features/mtp_hidden_pca.npy \
-  --output-dir <harp8-runs-root>/overfit256_seed42
+  --capture-dir /root/harp8_current_corpus/capture \
+  --mtp-dir /root/harp8_current_corpus/mtp \
+  --target-state-features /root/harp8_current_corpus/features/local_post_layer_pca.npy \
+  --mtp-state-features /root/harp8_current_corpus/features/mtp_hidden_pca.npy \
+  --output-dir /root/harp8_runs/overfit256_seed42
 
 python -m harp8.train \
-  --capture-dir <harp8-data-root>/capture \
-  --mtp-dir <harp8-data-root>/mtp \
-  --target-state-features <harp8-data-root>/features/local_post_layer_pca.npy \
-  --mtp-state-features <harp8-data-root>/features/mtp_hidden_pca.npy \
-  --output-dir <harp8-runs-root>/h2_bridge_current_n2048_seed42 \
+  --capture-dir /root/harp8_current_corpus/capture \
+  --mtp-dir /root/harp8_current_corpus/mtp \
+  --target-state-features /root/harp8_current_corpus/features/local_post_layer_pca.npy \
+  --mtp-state-features /root/harp8_current_corpus/features/mtp_hidden_pca.npy \
+  --output-dir /root/harp8_runs/h2_bridge_current_n2048_seed42 \
   --epochs 30 --minimum-epochs 10 --patience 5 \
   --batch-size 64 --evaluation-batch-size 256 \
   --learning-rate 0.0002 --seed 42 --h2-only \
   --gradient-calibration-steps 32 --condition primary
 
 python -m harp8.train \
-  --capture-dir <harp8-data-root>/capture \
-  --mtp-dir <harp8-data-root>/mtp \
-  --target-state-features <harp8-data-root>/features/local_post_layer_pca.npy \
-  --mtp-state-features <harp8-data-root>/features/mtp_hidden_pca.npy \
-  --output-dir <harp8-runs-root>/multihorizon_current_n2048_seed42 \
-  --initialize-from <harp8-runs-root>/h2_bridge_current_n2048_seed42/best.pt \
+  --capture-dir /root/harp8_current_corpus/capture \
+  --mtp-dir /root/harp8_current_corpus/mtp \
+  --target-state-features /root/harp8_current_corpus/features/local_post_layer_pca.npy \
+  --mtp-state-features /root/harp8_current_corpus/features/mtp_hidden_pca.npy \
+  --output-dir /root/harp8_runs/multihorizon_current_n2048_seed42 \
+  --initialize-from /root/harp8_runs/h2_bridge_current_n2048_seed42/best.pt \
   --epochs 30 --minimum-epochs 10 --patience 5 \
   --batch-size 64 --evaluation-batch-size 256 \
   --learning-rate 0.0002 --seed 42 \

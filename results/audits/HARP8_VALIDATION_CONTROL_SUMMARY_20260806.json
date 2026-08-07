@@ -1,0 +1,118 @@
+{
+  "schema": "harp8.validation_control_summary.v1",
+  "created_utc": "2026-08-06",
+  "metric": {
+    "name": "request_macro_slot_recall_at_8",
+    "native_denominator": 8,
+    "bootstrap_unit": "request",
+    "bootstrap_replicates": 2000
+  },
+  "split": {
+    "validation_requests": 410,
+    "test_requests": 409,
+    "test_accessed_by_harp_pipeline": false,
+    "caveat": "The same test partition was evaluated historically by earlier J-route work and is not globally pristine."
+  },
+  "primary": {
+    "h2_bridge": {
+      "recall_h2": 0.8025617020698719,
+      "ci95": [0.7966405653676285, 0.8085916955852399],
+      "best_epoch": 30,
+      "parameters": 42022288,
+      "checkpoint_sha256": "4997a99189e23e6cbacc0ca834e9d302ba63295f1d940869f3e0909e6451a4c6"
+    },
+    "unified_h1_h8": {
+      "recall_by_horizon": [
+        0.8156603500,
+        0.7999697618,
+        0.7812143601,
+        0.7569591068,
+        0.7351973929,
+        0.7151891983,
+        0.6886486667,
+        0.6602820220
+      ],
+      "mean_recall": 0.7441401073,
+      "h2_ci95": [0.7939896744, 0.8059059935],
+      "best_epoch": 30,
+      "parameters": 42022288,
+      "checkpoint_sha256": "4317d6d03db98c72c2c2581a85e14bf664884c252ebe044db8e778c8bad06399"
+    }
+  },
+  "matched_h2_source_controls": {
+    "route_only": {
+      "recall_h2": 0.7600183514372741,
+      "ci95": [0.7519408813184312, 0.7680078891101761]
+    },
+    "route_plus_target_residual": {
+      "recall_h2": 0.764150878148744,
+      "ci95": [0.7561982652556617, 0.7718983833286869]
+    },
+    "route_plus_mtp_depth1": {
+      "recall_h2": 0.7879144549332899,
+      "ci95": [0.7812369945978038, 0.7946279114259268]
+    },
+    "full_residual_plus_mtp_depths1_6": {
+      "recall_h2": 0.8025617020698719,
+      "ci95": [0.7966405653676285, 0.8085916955852399]
+    }
+  },
+  "paired_h2_differences": {
+    "residual_minus_route": {
+      "gain": 0.0041325267,
+      "ci95": [0.0033024367, 0.0049520172]
+    },
+    "mtp1_minus_route": {
+      "gain": 0.0278961035,
+      "ci95": [0.0260639712, 0.0296189801]
+    },
+    "full_minus_route": {
+      "gain": 0.0425433506,
+      "ci95": [0.0398538736, 0.0449408596]
+    },
+    "full_minus_residual": {
+      "gain": 0.0384108239,
+      "ci95": [0.0360212232, 0.0406667431]
+    },
+    "full_minus_mtp1": {
+      "gain": 0.0146472471,
+      "ci95": [0.0135151192, 0.0158518072]
+    },
+    "mtp1_minus_residual": {
+      "gain": 0.0237635768,
+      "ci95": [0.0221269651, 0.0253930370]
+    }
+  },
+  "rank128_control": {
+    "h2_bridge": {
+      "recall_h2": 0.7861192475,
+      "ci95": [0.7796937283, 0.7925827573],
+      "parameters": 21443984,
+      "dense_minus_rank_gain": 0.01644245,
+      "dense_minus_rank_ci95": [0.01557541, 0.01728354]
+    },
+    "unified_h1_h8": {
+      "recall_by_horizon": [
+        0.7962416967,
+        0.7828715817,
+        0.7625361543,
+        0.7392075820,
+        0.7162263563,
+        0.6974109967,
+        0.6714758457,
+        0.6435706006
+      ],
+      "mean_recall": 0.7261926017,
+      "h2_ci95": [0.7765030605, 0.7893358716],
+      "checkpoint_sha256": "4d2fafcad882985102b86db16e8ab967fa2cbe108a2a1cc01e079f59fedac8d1",
+      "dense_minus_rank_h2_gain": 0.01709818,
+      "dense_minus_rank_h2_ci95": [0.01614110, 0.01800534]
+    }
+  },
+  "overfit_256_real_rows": {
+    "initial_h2_recall": 0.2179,
+    "final_h2_recall": 0.95216,
+    "steps": 350,
+    "passed": true
+  }
+}

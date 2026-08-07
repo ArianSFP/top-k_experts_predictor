@@ -1,0 +1,9 @@
+{
+  "base_point_estimate": 0.7861646055991262,
+  "ci95_lower": 0.0011840897322802062,
+  "ci95_upper": 0.001633521105370176,
+  "model_point_estimate": 0.7875678196228102,
+  "paired_gain": 0.0014032140236841617,
+  "replicates": 5000,
+  "requests": 410
+}

@@ -1,0 +1,68 @@
+{
+  "schema": "harp8_jlens_raw_complementarity_audit_v1",
+  "date": "2026-08-07",
+  "sealed_test_accessed": false,
+  "fit_split": "train",
+  "evaluation_split": "validation",
+  "request_counts": {"train": 1229, "validation": 410, "test_metadata_only": 409},
+  "feature_provenance": {
+    "j_lens_rank512_sha256": "79d28d2b4deb3a47220a554111c6742dbb394b2d3aefa00cabb70c6666e2e4a2",
+    "raw_residual_rank512_sha256": "dbe6bb47060089b846e6d6393d2e1ad084800fb5a822331da0885d809e214d47",
+    "lens_checkpoint_sha256": "2fdf5128203b0ff8cfafa782baa2f3e180e1dbb6535843cdc7cccbe5de9953d1",
+    "source_residual_sha256": "5fccdbcba2192202909edcca6e7226406ffbfbf2e49d1155a1dad614d21440a6",
+    "router_logits_sha256": "5b2438523e1dacfb6f5a826a8261e7ef4b19e8c1ff8bf3204dd8ef9ce519f655",
+    "native_top8_sha256": "3a0cfd451eb4693d021a6f95a213c4d4ee3b1498cbfe3e99b21bda63290b1386",
+    "pca_fit_pairs_sha256": "847d333bb801f24c39a618f28b6ab690f7f4392925ea96ce36b14ece64bbf6bc"
+  },
+  "pca_train_variance_fraction": {
+    "j_lens": {"128": 0.7886447473194098, "256": 0.8695585423939919, "512": 0.9322761848012553, "rank1024_bound": [0.9548507898675035, 0.9949938272085187]},
+    "raw_residual": {"128": 0.6156349076501629, "256": 0.7130418804355767, "512": 0.8106663157127546, "rank1024_bound": [0.8737775438085031, 0.9082907509899325]}
+  },
+  "raw_coordinate_subspace_overlap_rank512": {
+    "layers": 40,
+    "definition": "canonical overlap between C_raw and J_l^T C_J before per-example RMS scaling",
+    "mean_squared_canonical_correlation": 0.4190470650792122,
+    "mean_effective_shared_dimensions_of_512": 214.55209732055664,
+    "layer_mean_range": [0.35638776421546936, 0.4852988123893738]
+  },
+  "heldout_cross_stream_ridge": {
+    "layers": [4, 12, 20, 28, 36, 39],
+    "train_pairs_per_layer": 4096,
+    "validation_pairs_per_layer": 4096,
+    "ridge_per_example": 0.01,
+    "mean_j_to_raw_r2": 0.8172120279952036,
+    "mean_raw_to_j_r2": 0.7823374622288796
+  },
+  "future_router_linear_probe": {
+    "layers": 40,
+    "horizons": [1, 2, 3, 4],
+    "train_source_rows": 4096,
+    "validation_source_rows": 12300,
+    "validation_requests": 410,
+    "ridge_per_example": 0.01,
+    "j512_recall_at_8": {"mean_h1_h4": 0.6029326722566493, "h1": 0.6592085872735919, "h2": 0.6080688510853343, "h3": 0.5873788103933741, "h4": 0.5570744402742968},
+    "raw512_recall_at_8": {"mean_h1_h4": 0.6213509271157587, "h1": 0.6804496950438109, "h2": 0.6273086888379439, "h3": 0.6044098067210942, "h4": 0.5732355178601858},
+    "dual512_recall_at_8": {"mean_h1_h4": 0.6282094763137582, "h1": 0.6875444611598079, "h2": 0.6335640241351068, "h3": 0.6113216460314466, "h4": 0.5804077739286713},
+    "paired_dual_minus_raw": {
+      "mean_h1_h4": {"gain": 0.0068585491979994435, "ci95": [0.005976481385080418, 0.007746185763012163]},
+      "h1": {"gain": 0.007094766115996897, "ci95": [0.00629879292218787, 0.007918197494318208]},
+      "h2": {"gain": 0.006255335297162941, "ci95": [0.0053518547281713735, 0.007134914718341174]},
+      "h3": {"gain": 0.006911839310352399, "ci95": [0.005889208101826472, 0.00792607966642373]},
+      "h4": {"gain": 0.0071722560684855385, "ci95": [0.006084876733309613, 0.00824906006852937]},
+      "bootstrap_replicates": 5000,
+      "resampling_unit": "complete validation request"
+    },
+    "j_raw_top8_union": {"mean_h1_h4_target_coverage": 0.6688986276835203, "mean_union_size": 9.869088921576012, "mean_jaccard": 0.6659201893641999}
+  },
+  "conclusion": {
+    "dual_stream_justified": true,
+    "rank1024_priority": "raw1024_plus_j512_before_symmetric_dual1024",
+    "reason": "Dual512 gives a positive paired gain at every H1-H4 horizon; the raw rank-512 tail is much larger than the J rank-512 tail."
+  },
+  "limitations": [
+    "The future-router probe is linear and omits route history, MTP, and the nonlinear Full256 architecture.",
+    "Rank-1024 values are mathematical monotone-spectrum bounds, not a fitted rank-1024 artifact.",
+    "Subspace overlap is evaluated before per-example RMS normalization.",
+    "No sealed test tensors were indexed or evaluated."
+  ]
+}

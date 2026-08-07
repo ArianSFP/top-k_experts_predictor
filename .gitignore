@@ -1,6 +1,10 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 .venv/
 build/
 dist/
@@ -21,3 +25,5 @@ runs/
 *.parquet
 *.jsonl
 *.log
+*.orig
+*.rej
