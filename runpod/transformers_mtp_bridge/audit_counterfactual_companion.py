@@ -21,6 +21,7 @@ if str(REPO_ROOT) not in sys.path:
 from harp_rtt.counterfactual import (
     COUNTERFACTUAL_RECORD_SCHEMA,
     COUNTERFACTUAL_SCHEMA,
+    NATIVE_BF16_CENTERED_LOGIT_TOLERANCE,
     audit_counterfactual_geometry,
     selector_sha256,
 )
@@ -56,7 +57,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--companion", type=Path, required=True)
     parser.add_argument("--static-dir", type=Path, required=True)
-    parser.add_argument("--maximum-logit-error", type=float, default=6.25e-2)
+    parser.add_argument(
+        "--maximum-logit-error",
+        type=float,
+        default=NATIVE_BF16_CENTERED_LOGIT_TOLERANCE,
+    )
     parser.add_argument(
         "--authoritative-topk-device", default="cuda"
     )
@@ -65,6 +70,14 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if (
+        args.maximum_logit_error <= 0.0
+        or args.maximum_logit_error > NATIVE_BF16_CENTERED_LOGIT_TOLERANCE
+    ):
+        raise ValueError(
+            "counterfactual logit tolerance must be positive and may not exceed "
+            f"the frozen {NATIVE_BF16_CENTERED_LOGIT_TOLERANCE}"
+        )
     manifest = load_json(args.companion / "manifest.json")
     if manifest.get("schema") != COUNTERFACTUAL_SCHEMA:
         raise ValueError("counterfactual companion schema mismatch")

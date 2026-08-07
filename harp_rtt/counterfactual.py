@@ -32,6 +32,7 @@ TARGET_LAYERS = 40
 ROUTER_RANK = 255
 EXPERTS = 256
 TOP_K = 8
+NATIVE_BF16_CENTERED_LOGIT_TOLERANCE = 6.25e-2
 SEALED_SPLITS = frozenset(
     {"validation", "calibration", "test", "sealed_test", "sealed-test"}
 )
@@ -278,7 +279,7 @@ def audit_counterfactual_geometry(
     tensors: Mapping[str, Tensor],
     geometry: CenteredRouterGeometry,
     *,
-    maximum_logit_error: float = 6.25e-2,
+    maximum_logit_error: float = NATIVE_BF16_CENTERED_LOGIT_TOLERANCE,
     authoritative_topk_device: str | torch.device | None = None,
 ) -> dict[str, Any]:
     validate_counterfactual_tensors(

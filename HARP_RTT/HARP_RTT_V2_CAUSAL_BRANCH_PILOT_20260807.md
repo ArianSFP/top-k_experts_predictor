@@ -38,6 +38,43 @@ anytime masking; coverage-preserving candidate curriculum; counterfactual,
 posterior, factual acceptance and swap losses. Stage A remains optimizer-free
 and begins only from a committed, test-clean source tree.
 
+### Stage-A execution (in progress)
+
+The three request-disjoint inner partitions are frozen and checksummed under
+`/root/harp-rtt-v2-runs/partitions/causal_v2_seed42`. The partition hydrator
+resolved 388 outer-train requests from 39 audited segments without opening the
+sealed test. Engineering prompts contain four requests and eight uniform source
+positions per request.
+
+The canonical adaptive-32 capture is
+`/root/harp-rtt-v2-runs/stage_a/adaptive32_ref_d5f0c56`. It contains 32
+source trees, 199 adaptive nodes (H1/H2/H3/H4 = 32/35/50/82), all 40 target
+layers and a separate 192-node H1--H6 compatibility spine. Its blocking audit
+passes. The independently reconstructed adaptive-16 capture contains 198 nodes;
+all 198 nodes match the canonical adaptive-32 prefixes exactly, with zero
+mismatches over all 32 sources.
+
+The isolated full-prefix companion is
+`/root/harp-rtt-v2-runs/stage_a/counterfactual_reference_d5f0c56`. It
+contains 32 label-only records, 6,120 valid H2--H4 layer rows and two
+deterministic full-router-input audit records. Its first audit correctly failed:
+the auditor applied HARP's CPU stable lower-ID tie policy to native target BF16
+logits and used an FP32-only 0.02 bound. The frozen target actually selects with
+CUDA `torch.topk(softmax(z.float()))`; tied BF16 scores therefore have a
+different authoritative order. The corrected audit replays that native CUDA
+operation exactly and fixes the runtime BF16 centered-logit tolerance at
+`0.0625` before B1.
+
+The corrected reference audit passes: native selected IDs are bit-exact on all
+6,120 rows; maximum query-coordinate re-encoding error is
+`3.814697265625e-06`; and maximum `Kq+b` versus native-BF16 centered-logit
+error is `0.052258968353271484`. It also reports rather than conceals 842
+native-BF16 cutoff-boundary rows: the FP32 coordinate geometry alone reproduces
+the native selected set on 5,278/6,120 rows (86.24%). Native selected IDs remain
+the primary exact-set labels; query/geometry regression remains auxiliary.
+Cloned-cache parity, the real index/dataset join and storage/throughput closure
+remain blocking before Stage A completes. No optimizer has run.
+
 ## Frozen inputs and inner partitions
 
 The frozen HARP anchor remains reusable; v1.3 teacher checkpoints are incompatible.
