@@ -63,11 +63,22 @@ def _structure(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{key: node[key] for key in STRUCTURAL_KEYS} for node in nodes]
 
 
-def _load_rows(root: Path) -> list[dict[str, Any]]:
+def _load_control_rows(
+    root: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     path = root / "events.jsonl"
     if not path.is_file():
         raise AuditError(f"missing event trace {path}")
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    ready: list[dict[str, Any]] = []
+    resolved: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as source:
+        for line in source:
+            row = json.loads(line)
+            if row.get("event") == CONTROL_READY_EVENT:
+                ready.append(row)
+            elif row.get("event") == CONTROL_RESOLVED_EVENT:
+                resolved.append(row)
+    return ready, resolved
 
 
 def _audit_fixed_beam(ready: dict[str, Any]) -> None:
@@ -142,11 +153,7 @@ def audit(root: Path) -> dict[str, Any]:
     if capture_policy.get("matched_controls_emitted") is not True:
         raise AuditError("capture policy does not declare matched controls")
 
-    rows = _load_rows(root)
-    ready_rows = [row for row in rows if row.get("event") == CONTROL_READY_EVENT]
-    resolved_rows = [
-        row for row in rows if row.get("event") == CONTROL_RESOLVED_EVENT
-    ]
+    ready_rows, resolved_rows = _load_control_rows(root)
     ready_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     resolved_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for row in ready_rows:

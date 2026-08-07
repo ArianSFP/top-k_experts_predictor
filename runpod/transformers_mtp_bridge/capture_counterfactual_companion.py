@@ -125,18 +125,19 @@ def load_base_capture(
     trees: dict[str, list[dict[str, Any]]] = {}
     endings: dict[str, list[int]] = {}
     starts: dict[str, dict[str, Any]] = {}
-    for line in (root / "events.jsonl").read_text().splitlines():
-        if not line:
-            continue
-        event = json.loads(line)
-        if event.get("event") == "sequence_start":
-            starts[str(event["sequence_id"])] = event
-        elif event.get("event") == "mtp_node" and event.get("record_valid") is True:
-            trees.setdefault(str(event["tree_id"]), []).append(event)
-        elif event.get("event") == "sequence_end":
-            endings[str(event["sequence_id"])] = [
-                int(token) for token in event["full_committed_token_ids"]
-            ]
+    with (root / "events.jsonl").open("r", encoding="utf-8") as source:
+        for line in source:
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            if event.get("event") == "sequence_start":
+                starts[str(event["sequence_id"])] = event
+            elif event.get("event") == "mtp_node" and event.get("record_valid") is True:
+                trees.setdefault(str(event["tree_id"]), []).append(event)
+            elif event.get("event") == "sequence_end":
+                endings[str(event["sequence_id"])] = [
+                    int(token) for token in event["full_committed_token_ids"]
+                ]
     if not trees:
         raise ValueError("base capture contains no valid adaptive tree")
     ordered = []

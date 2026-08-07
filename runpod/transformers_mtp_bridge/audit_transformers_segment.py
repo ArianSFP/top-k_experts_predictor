@@ -90,21 +90,28 @@ class Store:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.manifest = json.loads((root / "run_manifest.json").read_text())
-        self.rows = [
-            json.loads(line)
-            for line in (root / "events.jsonl").read_text().splitlines()
-            if line.strip()
-        ]
-        self.by_id = {int(row["event_id"]): row for row in self.rows}
+        self.rows: list[dict[str, Any]] = []
+        self.by_id: dict[int, dict[str, Any]] = {}
         self.tensors: dict[int, dict[str, dict[str, Any]]] = defaultdict(dict)
         self.maps: dict[Path, np.memmap] = {}
-        for row in self.rows:
-            if row["event"] == "tensor":
-                parent = int(row["parent_event_id"])
-                role = str(row["tensor_role"])
-                if role in self.tensors[parent]:
-                    raise AuditError(f"duplicate tensor role {role} for event {parent}")
-                self.tensors[parent][role] = row
+        with (root / "events.jsonl").open("r", encoding="utf-8") as source:
+            for line in source:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                event_id = int(row["event_id"])
+                if event_id in self.by_id:
+                    raise AuditError(f"duplicate event ID {event_id}")
+                self.rows.append(row)
+                self.by_id[event_id] = row
+                if row["event"] == "tensor":
+                    parent = int(row["parent_event_id"])
+                    role = str(row["tensor_role"])
+                    if role in self.tensors[parent]:
+                        raise AuditError(
+                            f"duplicate tensor role {role} for event {parent}"
+                        )
+                    self.tensors[parent][role] = row
 
     def tensor(self, parent: int, role: str) -> np.ndarray:
         row = self.tensors[parent][role]
