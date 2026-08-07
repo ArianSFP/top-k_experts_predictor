@@ -52,6 +52,7 @@ def test_counterfactual_semantic_loss_reaches_queries_and_route_scores() -> None
         {
             "router_queries": queries,
             "branch_semantic_scores": geometry_scores + free_scores,
+            "branch_mask": torch.ones(1, 4, 7, dtype=torch.bool),
         },
         labels,
         exact_k=2,
@@ -73,9 +74,14 @@ def test_counterfactual_target_posterior_deduplicates_prefix_and_adds_other() ->
     assert torch.allclose(target[0, 1, 1], torch.tensor(-0.2).exp())
     assert torch.allclose(target.sum(-1)[valid], torch.ones_like(target.sum(-1)[valid]))
     logits = torch.zeros_like(target, requires_grad=True)
-    loss = counterfactual_posterior_loss(logits, labels)
+    visibility = torch.ones_like(target, dtype=torch.bool)
+    visibility[0, 1, 1] = False
+    loss = counterfactual_posterior_loss(
+        logits, labels, branch_mask=visibility
+    )
     loss.backward()
     assert logits.grad is not None and logits.grad.abs().sum() > 0
+    assert logits.grad[0, 1, 1] == 0
 
 
 def test_swap_loss_promotes_missing_truth_and_counts_outside_pool() -> None:

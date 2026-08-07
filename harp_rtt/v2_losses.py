@@ -70,6 +70,7 @@ def counterfactual_semantic_loss(
 
     scores = _required(outputs, "branch_semantic_scores")
     queries = _required(outputs, "router_queries")
+    branch_mask = _required(outputs, "branch_mask").bool()
     node_indices = _required(counterfactual, "node_local_indices").long()
     valid = _required(counterfactual, "valid").bool()
     target_queries = _required(counterfactual, "query_coordinates").detach().float()
@@ -85,6 +86,8 @@ def counterfactual_semantic_loss(
         raise ValueError("branch scores must expose H1--H4")
     if queries.shape[:4] != scores.shape[:4]:
         raise ValueError("branch scores and queries disagree")
+    if branch_mask.shape != scores.shape[:2] + (scores.shape[3],):
+        raise ValueError("branch visibility mask disagrees with branch scores")
     if target_logits.shape[:-1] != valid.shape:
         raise ValueError("counterfactual router logits disagree with validity")
     if target_queries.shape[:-1] != valid.shape:
@@ -101,7 +104,14 @@ def counterfactual_semantic_loss(
         structural = indices >= 0
         predicted_scores = _gather_branch(scores, indices, horizon=depth)
         predicted_queries = _gather_branch(queries, indices, horizon=depth)
-        cell_valid = valid[:, :, depth] & structural[..., None]
+        model_visible = branch_mask[:, depth].gather(
+            1, indices.clamp_min(0)
+        )
+        cell_valid = (
+            valid[:, :, depth]
+            & structural[..., None]
+            & model_visible[..., None]
+        )
         for path in range(4):
             active = cell_valid[:, path]
             if not bool(active.any()):
@@ -193,19 +203,33 @@ def target_branch_distribution(
 def counterfactual_posterior_loss(
     posterior_logits: Tensor,
     counterfactual: Mapping[str, Tensor],
+    *,
+    branch_mask: Tensor,
 ) -> Tensor:
-    """Cross-entropy to target path probabilities plus residual OTHER."""
+    """Cross-entropy to visible target paths plus residual OTHER."""
 
     if posterior_logits.ndim != 3 or posterior_logits.shape[1] != 4:
         raise ValueError("branch posterior logits must be [B,4,N+1]")
+    if branch_mask.shape != posterior_logits.shape:
+        raise ValueError("branch visibility mask disagrees with posterior logits")
+    visible = branch_mask.bool()
+    if not bool(visible[..., -1].all()):
+        raise ValueError("OTHER must remain visible for every anytime forecast")
     target, valid = target_branch_distribution(
         counterfactual, captured_nodes=posterior_logits.shape[-1] - 1
     )
     if target.shape != posterior_logits.shape:
         raise ValueError("counterfactual target posterior disagrees with model")
-    per_endpoint = -(
-        target * torch.log_softmax(posterior_logits.float(), dim=-1)
-    ).sum(-1)
+    hidden_mass = (
+        target[..., :-1] * ~visible[..., :-1]
+    ).sum(dim=-1)
+    target = target * visible
+    target[..., -1] += hidden_mass
+    masked_logits = posterior_logits.float().masked_fill(~visible, -torch.inf)
+    log_probability = torch.log_softmax(masked_logits, dim=-1).masked_fill(
+        ~visible, 0.0
+    )
+    per_endpoint = -(target * log_probability).sum(-1)
     active = valid.float()
     return (per_endpoint * active).sum() / active.sum().clamp_min(1.0)
 
