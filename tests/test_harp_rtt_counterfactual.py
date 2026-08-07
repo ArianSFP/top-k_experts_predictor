@@ -17,6 +17,7 @@ from harp_rtt.counterfactual import (
     select_counterfactual_paths,
     load_counterfactual_companion,
     selector_sha256,
+    validate_counterfactual_tensors,
 )
 from harp_rtt.geometry import build_centered_router_geometry
 
@@ -89,6 +90,24 @@ def test_missing_divergence_slot_is_masked_not_backfilled() -> None:
     assert selected[1:] == (None, None, None)
 
 
+def test_target_path_probabilities_are_conditional_on_exact_h1() -> None:
+    tensors = empty_counterfactual_tensors(layers=2, rank=3, experts=12)
+    tensors["path_mask"][0] = True
+    tensors["path_depths"][0] = 2
+    tensors["node_local_indices"][0, :2] = torch.tensor([0, 1])
+    tensors["target_edge_logp"][0, 1] = -0.2
+    tensors["target_path_logp"][0, 1] = -0.2
+    tensors["selected_ids"][0, 1] = torch.arange(8, dtype=torch.int32)
+    tensors["valid"][0, 1] = True
+    validate_counterfactual_tensors(tensors, layers=2, rank=3, experts=12)
+
+    tensors["target_edge_logp"][0, 0] = -0.1
+    tensors["target_path_logp"][0, 0] = -0.1
+    tensors["target_path_logp"][0, 1] = -0.3
+    with pytest.raises(ValueError, match="H1 must remain masked"):
+        validate_counterfactual_tensors(tensors, layers=2, rank=3, experts=12)
+
+
 def test_counterfactual_geometry_audit_reconstructs_rotated_layer_bases() -> None:
     torch.manual_seed(4)
     layers, experts, hidden = 3, 12, 6
@@ -107,6 +126,8 @@ def test_counterfactual_geometry_audit_reconstructs_rotated_layer_bases() -> Non
     tensors["path_mask"][0] = True
     tensors["path_depths"][0] = 2
     tensors["node_local_indices"][0, :2] = torch.tensor([0, 1])
+    tensors["target_edge_logp"][0, 1] = -0.2
+    tensors["target_path_logp"][0, 1] = -0.2
     tensors["query_coordinates"][0, 1] = query
     tensors["router_logits"][0, 1] = logits
     tensors["selected_ids"][0, 1] = ids.to(torch.int32)
@@ -130,6 +151,8 @@ def test_counterfactual_geometry_replays_native_tie_order() -> None:
     tensors["path_mask"][0] = True
     tensors["path_depths"][0] = 2
     tensors["node_local_indices"][0, :2] = torch.tensor([0, 1])
+    tensors["target_edge_logp"][0, 1] = -0.2
+    tensors["target_path_logp"][0, 1] = -0.2
     tensors["router_logits"][0, 1] = logits
     tensors["selected_ids"][0, 1] = native_ids.to(torch.int32)
     tensors["selected_weights"][0, 1] = torch.full(
@@ -209,6 +232,11 @@ def test_audited_companion_loads_by_request_position_and_rejects_sealed_split(
         "runtime_available": False,
         "split": "train",
         "sealed_test_opened": False,
+        "tensor_contract": {
+            "h1_masked": True,
+            "target_path_probability_condition": "exact_committed_h1",
+            "target_path_probability_origin": "h2_edge",
+        },
         "bindings": {
             "selector_sha256": selector_sha256(),
             "router_geometry_sha256": "geometry",

@@ -272,13 +272,17 @@ def capture_tree(
         else:
             path_cache, previous_token_logp, prefix_output = replay_prefix()
 
+        # Branch uncertainty is conditional on the exact committed H1. H1 is
+        # executed to advance the target cache, but its common token probability
+        # is masked and must not be transferred into OTHER mass.
         cumulative = 0.0
         output = None
         for depth, token_id in enumerate(path.token_ids, start=1):
             edge = float(previous_token_logp[token_id].item())
-            cumulative += edge
-            tensors["target_edge_logp"][slot, depth - 1] = edge
-            tensors["target_path_logp"][slot, depth - 1] = cumulative
+            if depth > 1:
+                cumulative += edge
+                tensors["target_edge_logp"][slot, depth - 1] = edge
+                tensors["target_path_logp"][slot, depth - 1] = cumulative
 
             # Preserve autoregressive serving semantics for both modes. The
             # reference replays the full prefix independently for each path;
@@ -534,6 +538,8 @@ def main() -> None:
             "experts": geometry.experts,
             "top_k": 8,
             "h1_masked": True,
+            "target_path_probability_condition": "exact_committed_h1",
+            "target_path_probability_origin": "h2_edge",
         },
         "records": record_manifest,
     }

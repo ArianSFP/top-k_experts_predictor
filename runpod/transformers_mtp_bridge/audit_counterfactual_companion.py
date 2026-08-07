@@ -89,6 +89,16 @@ def main() -> None:
         raise ValueError("counterfactual companion is not outer-train only")
     if manifest.get("sealed_test_opened") is not False:
         raise ValueError("counterfactual companion reports sealed-test access")
+    tensor_contract = manifest.get("tensor_contract")
+    if not isinstance(tensor_contract, dict) or (
+        tensor_contract.get("h1_masked") is not True
+        or tensor_contract.get("target_path_probability_condition")
+        != "exact_committed_h1"
+        or tensor_contract.get("target_path_probability_origin") != "h2_edge"
+    ):
+        raise ValueError(
+            "companion target path probabilities are not conditioned on exact H1"
+        )
     bindings = manifest.get("bindings")
     if not isinstance(bindings, dict):
         raise ValueError("companion bindings are missing")

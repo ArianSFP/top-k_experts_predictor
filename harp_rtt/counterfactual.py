@@ -273,6 +273,33 @@ def validate_counterfactual_tensors(
     active_ids = tensors["selected_ids"][valid]
     if active_ids.numel() and ((active_ids < 0) | (active_ids >= experts)).any():
         raise ValueError("counterfactual selected expert ID is out of range")
+    active_cells = valid.any(dim=-1)
+    target_edge = tensors["target_edge_logp"].float()
+    target_path = tensors["target_path_logp"].float()
+    for name, values in (
+        ("target_edge_logp", target_edge),
+        ("target_path_logp", target_path),
+    ):
+        if not torch.isnan(values[:, 0]).all():
+            raise ValueError(f"counterfactual {name} H1 must remain masked")
+        if torch.isfinite(values[~active_cells]).any():
+            raise ValueError(f"counterfactual {name} populated an invalid cell")
+        if active_cells.any() and not torch.isfinite(values[active_cells]).all():
+            raise ValueError(f"counterfactual {name} is missing an active cell")
+        if active_cells.any() and (values[active_cells] > 1e-6).any():
+            raise ValueError(f"counterfactual {name} contains positive log probability")
+    conditional_cumulative = torch.nan_to_num(
+        target_edge, nan=0.0
+    ).cumsum(dim=-1)
+    if active_cells.any() and not torch.allclose(
+        target_path[active_cells],
+        conditional_cumulative[active_cells],
+        rtol=0.0,
+        atol=2e-5,
+    ):
+        raise ValueError(
+            "counterfactual target path probability is not conditional on exact H1"
+        )
 
 
 def audit_counterfactual_geometry(
@@ -368,6 +395,16 @@ def load_counterfactual_companion(
     if not isinstance(manifest, dict) or manifest.get("schema") != COUNTERFACTUAL_SCHEMA:
         raise ValueError("counterfactual companion manifest schema mismatch")
     assert_label_only_mapping(manifest)
+    tensor_contract = manifest.get("tensor_contract")
+    if not isinstance(tensor_contract, Mapping) or (
+        tensor_contract.get("h1_masked") is not True
+        or tensor_contract.get("target_path_probability_condition")
+        != "exact_committed_h1"
+        or tensor_contract.get("target_path_probability_origin") != "h2_edge"
+    ):
+        raise ValueError(
+            "counterfactual target path probabilities are not conditioned on exact H1"
+        )
     if manifest.get("split") != "train" or manifest.get("sealed_test_opened") is not False:
         raise PermissionError("counterfactual companion is not outer-train-only")
     audit = json.loads((directory / "COUNTERFACTUAL_AUDIT.json").read_text())
