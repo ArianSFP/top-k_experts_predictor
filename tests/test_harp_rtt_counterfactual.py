@@ -95,6 +95,8 @@ def test_target_path_probabilities_are_conditional_on_exact_h1() -> None:
     tensors["path_mask"][0] = True
     tensors["path_depths"][0] = 2
     tensors["node_local_indices"][0, :2] = torch.tensor([0, 1])
+    tensors["source_path_logp"][0, 0] = 0.0
+    tensors["source_path_logp"][0, 1] = -0.2
     tensors["target_edge_logp"][0, 1] = -0.2
     tensors["target_path_logp"][0, 1] = -0.2
     tensors["selected_ids"][0, 1] = torch.arange(8, dtype=torch.int32)
@@ -126,6 +128,8 @@ def test_counterfactual_geometry_audit_reconstructs_rotated_layer_bases() -> Non
     tensors["path_mask"][0] = True
     tensors["path_depths"][0] = 2
     tensors["node_local_indices"][0, :2] = torch.tensor([0, 1])
+    tensors["source_path_logp"][0, 0] = 0.0
+    tensors["source_path_logp"][0, 1] = -0.2
     tensors["target_edge_logp"][0, 1] = -0.2
     tensors["target_path_logp"][0, 1] = -0.2
     tensors["query_coordinates"][0, 1] = query
@@ -151,6 +155,8 @@ def test_counterfactual_geometry_replays_native_tie_order() -> None:
     tensors["path_mask"][0] = True
     tensors["path_depths"][0] = 2
     tensors["node_local_indices"][0, :2] = torch.tensor([0, 1])
+    tensors["source_path_logp"][0, 0] = 0.0
+    tensors["source_path_logp"][0, 1] = -0.2
     tensors["target_edge_logp"][0, 1] = -0.2
     tensors["target_path_logp"][0, 1] = -0.2
     tensors["router_logits"][0, 1] = logits

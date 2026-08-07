@@ -263,17 +263,42 @@ def validate_counterfactual_tensors(
                 f"expected {tuple(reference.shape)}/{reference.dtype}"
             )
     path_mask = tensors["path_mask"].bool()
+    path_depths = tensors["path_depths"].long()
+    node_indices = tensors["node_local_indices"].long()
+    structural_cells = node_indices >= 0
     valid = tensors["valid"].bool()
+    active_cells = valid.any(dim=-1)
+    if not torch.equal(path_mask, path_depths > 0):
+        raise ValueError("counterfactual path mask/depth contract is inconsistent")
+    if (path_depths > MAX_DEPTH).any():
+        raise ValueError("counterfactual path depth exceeds H4")
+    if not torch.equal(
+        structural_cells.sum(dim=-1), path_depths
+    ):
+        raise ValueError("counterfactual node path length disagrees with path depth")
+    expected_active = structural_cells.clone()
+    expected_active[:, 0] = False
+    if not torch.equal(active_cells, expected_active):
+        raise ValueError("counterfactual valid cells disagree with selected path nodes")
     if valid[:, 0].any():
         raise ValueError("counterfactual H1 labels must remain masked")
     if (valid & ~path_mask[:, None, None]).any():
         raise ValueError("masked counterfactual path contains valid labels")
-    if (tensors["path_depths"] > MAX_DEPTH).any():
-        raise ValueError("counterfactual path depth exceeds H4")
+    source_path = tensors["source_path_logp"].float()
+    if not torch.equal(torch.isfinite(source_path), structural_cells):
+        raise ValueError("counterfactual source path probabilities disagree with topology")
+    if structural_cells.any() and (source_path[structural_cells] > 1e-6).any():
+        raise ValueError("counterfactual source path contains positive log probability")
+    if path_mask.any() and not torch.allclose(
+        source_path[path_mask, 0],
+        torch.zeros_like(source_path[path_mask, 0]),
+        rtol=0.0,
+        atol=1e-7,
+    ):
+        raise ValueError("counterfactual source path is not rooted at exact H1")
     active_ids = tensors["selected_ids"][valid]
     if active_ids.numel() and ((active_ids < 0) | (active_ids >= experts)).any():
         raise ValueError("counterfactual selected expert ID is out of range")
-    active_cells = valid.any(dim=-1)
     target_edge = tensors["target_edge_logp"].float()
     target_path = tensors["target_path_logp"].float()
     for name, values in (
