@@ -117,6 +117,34 @@ def test_counterfactual_geometry_audit_reconstructs_rotated_layer_bases() -> Non
     assert report["valid_layer_rows"] == layers
 
 
+def test_counterfactual_geometry_replays_native_tie_order() -> None:
+    layers, experts, hidden = 2, 12, 6
+    geometry = build_centered_router_geometry(
+        torch.zeros(layers, experts, hidden), relative_rank_threshold=1e-7
+    )
+    tensors = empty_counterfactual_tensors(
+        layers=layers, rank=geometry.maximum_rank, experts=experts
+    )
+    logits = torch.zeros(layers, experts, dtype=torch.bfloat16)
+    native_ids = torch.topk(torch.softmax(logits.float(), dim=-1), 8, dim=-1).indices
+    tensors["path_mask"][0] = True
+    tensors["path_depths"][0] = 2
+    tensors["node_local_indices"][0, :2] = torch.tensor([0, 1])
+    tensors["router_logits"][0, 1] = logits
+    tensors["selected_ids"][0, 1] = native_ids.to(torch.int32)
+    tensors["selected_weights"][0, 1] = torch.full(
+        (layers, 8), 0.125, dtype=torch.bfloat16
+    )
+    tensors["valid"][0, 1] = True
+
+    report = audit_counterfactual_geometry(tensors, geometry)
+
+    assert report["passed"]
+    assert report["native_selected_ids_exact"]
+    assert report["geometry_selected_ids_exact"] is False
+    assert report["geometry_numerical_boundary_rows"] == layers
+
+
 class _OneItem(Dataset[dict[str, object]]):
     def __len__(self) -> int:
         return 1

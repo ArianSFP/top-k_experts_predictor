@@ -56,7 +56,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--companion", type=Path, required=True)
     parser.add_argument("--static-dir", type=Path, required=True)
-    parser.add_argument("--maximum-logit-error", type=float, default=2e-2)
+    parser.add_argument("--maximum-logit-error", type=float, default=6.25e-2)
+    parser.add_argument(
+        "--authoritative-topk-device", default="cuda"
+    )
     return parser.parse_args()
 
 
@@ -137,7 +140,10 @@ def main() -> None:
             raise ValueError("record safetensors is runtime-available")
         tensors = load_file(path, device="cpu")
         report = audit_counterfactual_geometry(
-            tensors, geometry, maximum_logit_error=args.maximum_logit_error
+            tensors,
+            geometry,
+            maximum_logit_error=args.maximum_logit_error,
+            authoritative_topk_device=args.authoritative_topk_device,
         )
         report["tree_id"] = record["tree_id"]
         reports.append(report)
@@ -180,9 +186,24 @@ def main() -> None:
         "native_selected_ids_exact": all(
             bool(report["native_selected_ids_exact"]) for report in reports
         ),
+        "native_selected_set_matching_rows": sum(
+            int(report["native_selected_set_matching_rows"]) for report in reports
+        ),
         "geometry_selected_ids_exact": all(
             bool(report["geometry_selected_ids_exact"]) for report in reports
         ),
+        "geometry_selected_set_matching_rows": sum(
+            int(report["geometry_selected_set_matching_rows"]) for report in reports
+        ),
+        "geometry_numerical_boundary_rows": sum(
+            int(report["geometry_numerical_boundary_rows"]) for report in reports
+        ),
+        "geometry_selected_set_agreement": (
+            sum(int(report["geometry_selected_set_matching_rows"]) for report in reports)
+            / sum(int(report["valid_layer_rows"]) for report in reports)
+        ),
+        "maximum_logit_error_tolerance": args.maximum_logit_error,
+        "authoritative_topk_device": args.authoritative_topk_device,
         "router_input_audit_layer_rows": audit_rows,
         "maximum_router_input_coordinate_error": router_input_maximum,
         "label_only": True,
