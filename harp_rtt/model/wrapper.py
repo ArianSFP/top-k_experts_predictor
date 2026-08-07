@@ -985,6 +985,10 @@ class HARPRTTTeacher(nn.Module):
                 "branch_posteriors": mixture.branch_weights,
                 "branch_posterior_logits": hybrid.branch_logits,
                 "branch_geometry_scores": hybrid.geometry_scores,
+                "branch_free_scores": hybrid.free_scores,
+                "branch_semantic_scores": (
+                    hybrid.geometry_scores + hybrid.free_scores.float()
+                ),
                 "branch_mask": tree.horizon_mask,
                 "branch_acceptance_logits": tree.acceptance_logits,
                 "other_branch_index": config.max_tree_nodes,

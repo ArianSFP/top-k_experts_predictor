@@ -68,7 +68,7 @@ def counterfactual_semantic_loss(
 ) -> CounterfactualSemanticLoss:
     """Balance branch translation equally over available path/depth cells."""
 
-    scores = _required(outputs, "branch_geometry_scores")
+    scores = _required(outputs, "branch_semantic_scores")
     queries = _required(outputs, "router_queries")
     node_indices = _required(counterfactual, "node_local_indices").long()
     valid = _required(counterfactual, "valid").bool()

@@ -44,11 +44,15 @@ def test_counterfactual_semantic_loss_reaches_queries_and_route_scores() -> None
     labels = synthetic_counterfactual()
     torch.manual_seed(11)
     queries = torch.randn(1, 4, 2, 7, 3, requires_grad=True)
-    scores = torch.randn(1, 4, 2, 7, 12, requires_grad=True)
+    geometry_scores = torch.randn(1, 4, 2, 7, 12, requires_grad=True)
+    free_scores = torch.randn(1, 4, 2, 7, 12, requires_grad=True)
     # exact_k=2 consumes the leading two authoritative IDs.
     labels["selected_ids"] = labels["selected_ids"][..., :2]
     result = counterfactual_semantic_loss(
-        {"router_queries": queries, "branch_geometry_scores": scores},
+        {
+            "router_queries": queries,
+            "branch_semantic_scores": geometry_scores + free_scores,
+        },
         labels,
         exact_k=2,
     )
@@ -56,7 +60,8 @@ def test_counterfactual_semantic_loss_reaches_queries_and_route_scores() -> None
     assert torch.isfinite(result.total)
     result.total.backward()
     assert queries.grad is not None and queries.grad.abs().sum() > 0
-    assert scores.grad is not None and scores.grad.abs().sum() > 0
+    assert geometry_scores.grad is not None and geometry_scores.grad.abs().sum() > 0
+    assert free_scores.grad is not None and free_scores.grad.abs().sum() > 0
 
 
 def test_counterfactual_target_posterior_deduplicates_prefix_and_adds_other() -> None:
