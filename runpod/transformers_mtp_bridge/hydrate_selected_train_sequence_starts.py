@@ -18,7 +18,9 @@ def segment_name(request_id: str) -> str:
     if match is None:
         raise ValueError(f"unexpected production request ID {request_id!r}")
     ordinal = int(match.group("ordinal"))
-    start = ((max(ordinal, 1) - 1) // 16) * 16 + 1
+    if ordinal == 0:
+        return "gcrp2r_tf_bf16_seg_000000_000000"
+    start = ((ordinal - 1) // 16) * 16 + 1
     end = start + 15
     return f"gcrp2r_tf_bf16_seg_{start:06d}_{end:06d}"
 

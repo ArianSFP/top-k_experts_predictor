@@ -115,7 +115,7 @@ def test_candidate_curriculum_preserves_anchor_then_opens_sixteen_slots() -> Non
         )
 
 def test_capture_segment_mapping_respects_one_based_boundaries() -> None:
-    assert segment_name("tfprod-req000000-1234abcd").endswith("000001_000016")
+    assert segment_name("tfprod-req000000-1234abcd").endswith("000000_000000")
     assert segment_name("tfprod-req000016-1234abcd").endswith("000001_000016")
     assert segment_name("tfprod-req000017-1234abcd").endswith("000017_000032")
     assert segment_name("tfprod-req000425-1234abcd").endswith("000417_000432")
