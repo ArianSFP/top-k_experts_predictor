@@ -77,12 +77,20 @@ def main() -> None:
             request_id = str(row["request_id"])
             if request_id not in expected:
                 raise PermissionError("hydration emitted an unselected request")
+            original_split = str(
+                row.get("original_split") or ""
+            ).strip().lower()
             if (
                 row.get("event") != "sequence_start"
-                or row.get("original_split") != "train"
-                or row.get("external_evaluation") is not False
+                or original_split in {
+                    "validation", "valid", "val", "calibration", "test",
+                    "sealed_test", "sealed-test",
+                }
+                or bool(row.get("external_evaluation", False))
             ):
-                raise PermissionError("hydration emitted a non-train sequence start")
+                raise PermissionError(
+                    "hydration emitted a sealed/evaluation sequence start"
+                )
             if request_id in captured:
                 raise ValueError(f"duplicate hydrated request {request_id}")
             captured[request_id] = row
