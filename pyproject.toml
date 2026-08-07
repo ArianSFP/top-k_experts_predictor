@@ -9,11 +9,17 @@ description = "HARP8 multi-horizon top-k expert-route predictor research code"
 requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.26",
+  "safetensors>=0.4",
   "torch>=2.4",
 ]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+capture = [
+  "accelerate>=1.10",
+  "huggingface-hub>=0.27",
+  "transformers>=5.14.1",
+]
 
 [project.scripts]
 harp8-train = "harp8.train:main"
@@ -23,9 +29,12 @@ harp8-export-candidates = "harp8.candidates:main"
 harp8-train-reranker = "harp8.reranker:main"
 harp8-prepare-features = "harp8.features:main"
 harp8-shuffle-tail = "harp8.shuffle_tail:main"
+harp-rtt-index = "harp_rtt.index:main"
+harp-rtt-static = "harp_rtt.static_artifacts:main"
+harp-rtt-train = "harp_rtt.train:main"
 
 [tool.setuptools.packages.find]
-include = ["harp8*"]
+include = ["harp8*", "harp_rtt*", "gcrp2r_training*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
