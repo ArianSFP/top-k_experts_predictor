@@ -1,0 +1,87 @@
+{
+  "schema": "j_harp_jspace_safe_stop_summary_v1",
+  "date": "2026-08-07",
+  "status": "paused_safe_no_active_gpu_jobs",
+  "selection_partition": "validation",
+  "test_model_evidence_accessed": false,
+  "test_catalog_access_incident": {
+    "occurred": true,
+    "records_printed_with_test_tag": 1,
+    "contents_category": "catalog_metadata_and_token_ids",
+    "test_tensors_routes_labels_predictions_metrics_or_candidate_pools_opened": false,
+    "used_for_model_or_experiment_decisions": false
+  },
+  "scientific_goal": {
+    "metric": "request_macro_mean_recall_at_8_h1_h4",
+    "target": 0.9,
+    "achieved": false
+  },
+  "final_oof_run": {
+    "name": "jspace_v2_c64_raw512_w64_rq16_seed42_20260807a",
+    "model_schema": "harp8_jspace_v2_candidate_reranker_v1",
+    "best_epoch": 11,
+    "parameters": 1808425,
+    "candidate_count": 64,
+    "representation": "raw_residual_rank512",
+    "level2_protocol": "transductive_preprocessing_oof_proxy",
+    "meta_train_requests": 246,
+    "validation_requests": 410,
+    "base_fit_requests": 983,
+    "base_fit_meta_train_overlap": 0,
+    "meta_train_validation_overlap": 0,
+    "base_recall_at_8_h1_h4": [0.8136218126447484, 0.7938031155052424, 0.7798854250220522, 0.7573480692244612],
+    "model_recall_at_8_h1_h4": [0.8150055433940816, 0.795243664152449, 0.7812890932711323, 0.7587329776735778],
+    "candidate_coverage_at_64_h1_h4": [0.987505080143963, 0.9796496271984879, 0.9692564898182988, 0.957123982630125],
+    "base_mean_h1_h4": 0.7861646055991262,
+    "model_mean_h1_h4": 0.7875678196228102,
+    "coverage_mean_h1_h4": 0.9733837949477187,
+    "paired_gain": 0.0014032140236841617,
+    "paired_gain_ci95": [0.0011840897322802062, 0.001633521105370176],
+    "bootstrap_replicates": 5000,
+    "exact_set_at_8_h1_h4": [0.3226866223207702, 0.3095826981707348, 0.3068823760818283, 0.2921605691056931],
+    "practical_interpretation": "statistically_positive_but_operationally_negligible"
+  },
+  "completed_comparison_results": {
+    "historical_harp_mean_h1_h4": 0.7884509,
+    "best_fullsplit_generator_mean_h1_h4": 0.7931011,
+    "original_c32_reranker_mean_h1_h4": 0.7941871,
+    "original_v1_raw512_mean_h1_h4": 0.79474204,
+    "original_v1_j512_mean_h1_h4": 0.79460631,
+    "paired_j_minus_raw": -0.000135729,
+    "paired_j_minus_raw_ci95": [-0.0001682591, -0.0001037424],
+    "oof_full256_base_mean_h1_h4": 0.786164617,
+    "oof_full256_model_mean_h1_h4": 0.7864062495,
+    "oof_full256_paired_gain": 0.0002416324,
+    "oof_full256_paired_gain_ci95": [0.0002019221, 0.0002793009]
+  },
+  "representation_audit": {
+    "sparse_j_h1_h2": [0.545, 0.4927],
+    "residual_pca_h1_h2": [0.6155, 0.5497],
+    "dense_j_rank512_linear_mean_h1_h4": 0.60293267,
+    "raw_rank512_linear_mean_h1_h4": 0.62135093,
+    "dual_rank512_linear_mean_h1_h4": 0.62820948,
+    "dual_minus_raw": 0.00685855,
+    "dual_minus_raw_ci95": [0.00597648, 0.00774619],
+    "j_rank512_variance_fraction": 0.93227618,
+    "raw_rank512_variance_fraction": 0.81066632
+  },
+  "not_launched_after_stop": [
+    "matched_oof_dense_j_rank512",
+    "dual_raw_j_nonlinear",
+    "candidate_residual_scale_grid",
+    "rank1024_feature_build",
+    "corrected_mtp_path_ablation",
+    "sealed_test_evaluation"
+  ],
+  "durable_archive": {
+    "canonical_path": "/workspace/LLM_prefetch_study/artifacts/harp8/j_harp_c64_runs/oof_proxy/jspace_v2_c64_raw512_w64_rq16_seed42_20260807a",
+    "backup_path": "/workspace/LLM_prefetch_study/artifacts/harp8/j_harp_c64_runs/oof_v2_raw512_c64_stop_20260807",
+    "best_checkpoint_sha256": "eb3cc889f0cd6b0ed8728ea107c32924001b1b036a1ba739ce4193e486f85763",
+    "last_checkpoint_sha256": "7f5b082dce9ce7b189c9b61e50736ccce191422a7969cf74ec98aab9eaa54efe",
+    "manifest_sha256": "48b5e88980956c200f5f09c3169e240ce711dd6f75404b95e961e6bc13b93fad",
+    "validation_metrics_sha256": "05200adb9dec84c96adbc3f1881facf53c804b3af2b221a973622636af8ad162",
+    "paired_bootstrap_sha256": "baa2502c9a5721ac21d5cfe764f40868efd4fa43cd674a6823e6a1c16020dd0e",
+    "source_tree_sha256": "981f67f59a1d25032535dbaa5368e128e823be2a13acf73db6d0c5da7055b87f"
+  },
+  "conclusion": "Current OOF residual and J-space ranking paths do not materially close the gap to 0.90; new causal information is a higher-priority next step than widening the same ranker."
+}

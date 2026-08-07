@@ -5,7 +5,7 @@
 All RunPod work for this experiment is paused at a safe boundary. The active c64 reranker was stopped before its first epoch; no c128 export, c128 reranker, or high-dimensional MTP feature build started. The RunPod files remain intact under:
 
 ```
-<harp8-expansion-root>/
+/root/harp8_accuracy_expansion/
 ```
 
 The test partition was never opened. All reported values below are validation-only unless explicitly labelled as an inner-split diagnostic.
@@ -139,7 +139,7 @@ Completed local artifacts include:
 The large c32/c64 memmap pools remain on the RunPod under:
 
 ```
-<harp8-expansion-root>/pools/
+/root/harp8_accuracy_expansion/pools/
 ```
 
 They were not deleted or overwritten.

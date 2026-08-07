@@ -1,0 +1,313 @@
+{
+  "schema": "harp8_full256_oof_proxy_aggregate_audit_v1",
+  "date": "2026-08-07",
+  "metric": "complete_request_macro_recall_at_8",
+  "selection_metric": "mean_h1_h4_recall_at_8",
+  "sealed_test_accessed": false,
+  "scope": "aggregate train and validation facts only; no request rows or checkpoint payloads",
+  "original_in_sample_pool_diagnosis": {
+    "base_train_mean_h1_h4_recall_at_8": 0.84948215,
+    "base_train_h1_h4_recall_at_8": [
+      0.84906050,
+      0.84876774,
+      0.85212506,
+      0.84797532
+    ],
+    "base_validation_mean_h1_h4_recall_at_8": 0.7931948095207261,
+    "base_validation_h1_h4_recall_at_8": [
+      0.8215565067558314,
+      0.8024490398416585,
+      0.7858829285068706,
+      0.7628907629785439
+    ],
+    "train_route_persistence": 0.27898,
+    "validation_route_persistence": 0.27919,
+    "train_validation_expert_frequency_correlation": 0.9992,
+    "interpretation": "in-sample base outputs are mismatched to out-of-sample validation outputs for level-2 stacking"
+  },
+  "matched_fullsplit_rank192": {
+    "epoch0_mean_h1_h4_recall_at_8": 0.7931948095207261,
+    "j_rank512_validation_by_epoch": [
+      0.7931948095207261,
+      0.7900848673383001,
+      0.7890525062109217,
+      0.7881699211220935,
+      0.788106883115246
+    ],
+    "raw_rank512_validation_by_epoch": [
+      0.7931948095207261,
+      0.7901231611315231,
+      0.789078530480512,
+      0.7882163257964784,
+      0.7881144686538755
+    ],
+    "epoch4_raw_minus_j": 0.0000075855386295,
+    "status": "negative at trained alpha 1.0; invalid for promotion because level-2 train base outputs were in-sample"
+  },
+  "fullsplit_validation_oracle_scale_audits": {
+    "designation": "validation_oracle_diagnostic_not_deployable_selection",
+    "selected_alpha": 0.5,
+    "j_rank512": {
+      "mean_h1_h4_recall_at_8": 0.7954388969073386,
+      "mean_h1_h8_recall_at_8": 0.7488055880758802,
+      "h1_h4_recall_at_8": [
+        0.8249344170324817,
+        0.804862101950112,
+        0.7876844134590612,
+        0.7642746551876995
+      ]
+    },
+    "raw_rank512": {
+      "mean_h1_h4_recall_at_8": 0.7954408728770053,
+      "mean_h1_h8_recall_at_8": 0.748807680656095,
+      "h1_h4_recall_at_8": [
+        0.8249254090624744,
+        0.8048487635815612,
+        0.7877067875842485,
+        0.7642825312797373
+      ]
+    },
+    "paired_confidence_intervals": "pending"
+  },
+  "oof_proxy": {
+    "preprocessing_profile": "transductive_preprocessing_oof_proxy",
+    "limitation": "preprocessing predates the inner 983/246 split; strict cross-fit requires fold-local preprocessing",
+    "base_generator": {
+      "fit_requests": 983,
+      "epoch": 30,
+      "seed": 42,
+      "sha256": "4f17a6025f789c3df6105e2e8af45e5d3f8f4b8cbd25df776061ab7f47fe94b8",
+      "checkpoint_load_profile": "zero_initialized_direct_extension"
+    },
+    "level2_train_pool": {
+      "requests": 246,
+      "rows": 8118,
+      "source_data_split": "validation",
+      "source_offline_split": "train",
+      "level2_split": "train",
+      "base_fold_id": "inner_holdout_0",
+      "base_fit_excluded": true,
+      "base_fit_overlap_count": 0,
+      "base_mean_h1_h4_recall_at_8": 0.7846176473611617,
+      "manifest_sha256": "a447f398655f6f04f87813c313a2f9214e797fc8f13cb9c251b68853901a79e0",
+      "exported_request_ids_sha256": "d2984cae4ebe27dbfb6fb560c04abc72002336bf94d7f61fe00864d653a6c813"
+    },
+    "level2_validation_pool": {
+      "requests": 410,
+      "rows": 13530,
+      "source_data_split": "validation",
+      "source_offline_split": "validation",
+      "level2_split": "validation",
+      "base_fold_id": "inner_holdout_0",
+      "base_fit_excluded": true,
+      "base_fit_overlap_count": 0,
+      "base_mean_h1_h4_recall_at_8": 0.7861646170241023,
+      "base_h1_h8_recall_at_8": [
+        0.8136218243993748,
+        0.7938031270990727,
+        0.7798854366019602,
+        0.7573480799960017,
+        0.7326421995407959,
+        0.7139990850818223,
+        0.6872482033671479,
+        0.6596063068191832
+      ],
+      "manifest_sha256": "aa95ac9b835810190d7f77a12c45008e8d89568a4d24221070b5ad16e986aeab",
+      "exported_request_ids_sha256": "2853e54060250ad220c1e713984055b7839298908023b60319b5c4ae29c29c58"
+    },
+    "model": {
+      "representation": "raw_residual_rank512",
+      "output_rank": 16,
+      "completed_epoch": 3,
+      "best_epoch_by_h1_h4": 1,
+      "epoch_metrics": [
+        {
+          "epoch": 0,
+          "mean_h1_h4_recall_at_8": 0.7861646170241023,
+          "h2_recall_at_8": 0.7938031270990727,
+          "mean_h1_h8_recall_at_8": 0.7422692828631698
+        },
+        {
+          "epoch": 1,
+          "mean_h1_h4_recall_at_8": 0.7864062494638941,
+          "h2_recall_at_8": 0.7940255928766152,
+          "mean_h1_h8_recall_at_8": 0.7424323996059444
+        },
+        {
+          "epoch": 2,
+          "mean_h1_h4_recall_at_8": 0.7863982332996496,
+          "h2_recall_at_8": 0.7940017742997819,
+          "mean_h1_h8_recall_at_8": 0.7424371556084912
+        },
+        {
+          "epoch": 3,
+          "mean_h1_h4_recall_at_8": 0.7856808801674126,
+          "h2_recall_at_8": 0.7932700670169519,
+          "mean_h1_h8_recall_at_8": 0.7419694936939685
+        }
+      ],
+      "best_epoch_h1_h4_recall_at_8": [
+        0.8140013050929494,
+        0.7940255928766152,
+        0.7801445827918329,
+        0.7574535170941789
+      ],
+      "best_epoch_point_gain_h1_h4": 0.0002416324397918,
+      "run_manifest_sha256": "96a5a6c817bc93fdee10a22a1a3bf7903d3080155f7f47f6861bce7ff4ad63ff",
+      "training_history_sha256": "d8023dac49be5516504ac147fa8fe66f47214273442d15224f1fa125568bdec7",
+      "validation_horizon_metrics_sha256": "2f1c6ef0487b1799dcc92524c4c5e745f43582571878277531876ed312f1d4f6"
+    },
+    "meta_train_scale_selection": {
+      "eligible_for_model_selection": true,
+      "selected_alpha": 1.0,
+      "alpha0_mean_h1_h4_recall_at_8": 0.7846176473611617,
+      "selected_mean_h1_h4_recall_at_8": 0.7849093063206799,
+      "paired_gain": 0.0002916589595182,
+      "paired_ci95": [
+        0.0002447975002410,
+        0.0003398163964986
+      ],
+      "bootstrap_requests": 246,
+      "bootstrap_replicates": 5000,
+      "bootstrap_seed": 20260807,
+      "manifest_sha256": "31ceb4c710b1f22d032c1bcf304a5cee8706783e4cca4e35a8186d9f667db2f1",
+      "scale_summary_sha256": "76f1b86eaf98db4164ffc9421c7af26205338a69077fbb0f8de5ca2ab906056c"
+    },
+    "outer_validation_scale_selected_evaluation": {
+      "alpha": 1.0,
+      "alpha_selected_on": "level2_meta_train",
+      "alpha0_mean_h1_h4_recall_at_8": 0.7861646170241023,
+      "selected_mean_h1_h4_recall_at_8": 0.7864062494638941,
+      "selected_mean_h1_h8_recall_at_8": 0.7424323996059444,
+      "paired_gain": 0.0002416324397917,
+      "paired_ci95": [
+        0.0002019220868176,
+        0.0002793008770314
+      ],
+      "bootstrap_requests": 410,
+      "bootstrap_request_horizon_pairs": 1640,
+      "bootstrap_replicates": 5000,
+      "bootstrap_seed": 20260807,
+      "same_alpha_was_validation_oracle_best": true,
+      "selection_used_outer_validation_labels": false,
+      "statistically_supported_h1_h4": true,
+      "practically_negligible": true,
+      "promotion_passed": false,
+      "per_horizon": [
+        {
+          "horizon": 1,
+          "recall_at_8": 0.8140013050929494,
+          "base_recall_at_8": 0.8136218243993748,
+          "paired_gain": 0.0003794806935747,
+          "paired_ci95": [
+            0.0003143417453896,
+            0.0004432278689815
+          ]
+        },
+        {
+          "horizon": 2,
+          "recall_at_8": 0.7940255928766152,
+          "base_recall_at_8": 0.7938031270990727,
+          "paired_gain": 0.0002224657775425,
+          "paired_ci95": [
+            0.0001617281531018,
+            0.0002827268054641
+          ]
+        },
+        {
+          "horizon": 3,
+          "recall_at_8": 0.7801445827918329,
+          "base_recall_at_8": 0.7798854366019602,
+          "paired_gain": 0.0002591461898725,
+          "paired_ci95": [
+            0.0002035735108773,
+            0.0003157025496794
+          ]
+        },
+        {
+          "horizon": 4,
+          "recall_at_8": 0.7574535170941789,
+          "base_recall_at_8": 0.7573480799960017,
+          "paired_gain": 0.0001054370981770,
+          "paired_ci95": [
+            0.0000454712943666,
+            0.0001636246295979
+          ]
+        },
+        {
+          "horizon": 5,
+          "recall_at_8": 0.7327110600635437,
+          "base_recall_at_8": 0.7326421995407959,
+          "paired_gain": 0.0000688605227479,
+          "paired_ci95": [
+            0.0000194494756756,
+            0.0001172203667770
+          ]
+        },
+        {
+          "horizon": 6,
+          "recall_at_8": 0.7141234860415586,
+          "base_recall_at_8": 0.7139990850818223,
+          "paired_gain": 0.0001244009597363,
+          "paired_ci95": [
+            0.0000732250367770,
+            0.0001763933892029
+          ]
+        },
+        {
+          "horizon": 7,
+          "recall_at_8": 0.6873464418656354,
+          "base_recall_at_8": 0.6872482033671479,
+          "paired_gain": 0.0000982384984874,
+          "paired_ci95": [
+            0.0000468607648745,
+            0.0001476398078736
+          ]
+        },
+        {
+          "horizon": 8,
+          "recall_at_8": 0.6596532110212410,
+          "base_recall_at_8": 0.6596063068191832,
+          "paired_gain": 0.0000469042020579,
+          "paired_ci95": [
+            -0.0000076220214094,
+            0.0001017311001026
+          ]
+        }
+      ],
+      "manifest_sha256": "0d6667b48af8348d5ea76484b0b45ec62c455a7c1175485a8791ae6b2a97288e",
+      "scale_summary_sha256": "317a49c85c02572dd04679f059a5f27116754ae2b559a81a773b6c7f2916871e"
+    }
+  },
+  "mtp_path_audit": {
+    "status": "implemented_and_unit_tested_not_accuracy_evaluated",
+    "findings": [
+      "legacy diagonal read contextualized rather than node-local MTP memories",
+      "legacy null memory competed with present real nodes",
+      "legacy all-depth attention lacked an explicit horizon-by-depth bias"
+    ],
+    "corrections": [
+      "node-local H1-depth1 through H6-depth6 diagonal with explicit H7-H8 missing values",
+      "null memory enabled only when all MTP nodes are missing",
+      "zero-initialized per-head horizon-by-depth hidden and router attention biases"
+    ],
+    "documentation": "J_HARP_FULL256_MTP_PATH_CORRECTIONS_20260807.md"
+  },
+  "artifact_references": {
+    "ledger": "J_HARP_FULL256_EXPERIMENT_LEDGER_20260807.md",
+    "oof_protocol": "HARP8_LEVEL2_OOF_CANDIDATE_POOL_PROTOCOL_20260807.md",
+    "trust_region_controls": "J_HARP_FULL256_TRUST_REGION_CONTROLS_20260807.md",
+    "j_fullsplit_manifest": {
+      "sha256": "33cb0ac967166e6e1ea3ace19ca4f5e3efa99db48bd17e6565b6d92a7b5922f9"
+    },
+    "raw_fullsplit_manifest": {
+      "sha256": "be37a496b7b8999eb0ea62a5e11c0f28408ff75e687f99c3c67a5889bcc41b61"
+    },
+    "j_validation_oracle_scale_summary": {
+      "sha256": "88046da09da9db764f3ada6d4b02be9217e8ff3055b699a69414bf870603c5f7"
+    },
+    "raw_validation_oracle_scale_summary": {
+      "sha256": "ca9da6f1c1615b7be46cd2e7c5e8c7f69627a17ca3ca885ca9e06a7dd47b61d8"
+    }
+  }
+}

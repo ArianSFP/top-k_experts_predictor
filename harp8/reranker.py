@@ -13,7 +13,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .candidates import POOL_SCHEMA
+from .candidates import SUPPORTED_POOL_SCHEMAS
 from .train import sha256_file
 
 
@@ -26,7 +26,7 @@ class CandidatePool:
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
         manifest = json.loads((self.root / "manifest.json").read_text(encoding="utf-8"))
-        if manifest.get("schema") != POOL_SCHEMA:
+        if manifest.get("schema") not in SUPPORTED_POOL_SCHEMAS:
             raise ValueError("candidate pool has an incompatible schema")
         self.manifest = manifest
         self.rows = int(manifest["rows"])
@@ -57,20 +57,40 @@ class CandidatePool:
         if len(self.request_ids) != self.rows:
             raise ValueError("candidate metadata row count disagrees with manifest")
 
-    def batch(self, rows: np.ndarray, device: str) -> dict[str, torch.Tensor]:
+    def batch(
+        self,
+        rows: np.ndarray,
+        device: str,
+        *,
+        active_horizons: int | None = None,
+        include_context: bool = True,
+    ) -> dict[str, torch.Tensor]:
+        """Materialize selected rows, optionally restricting the horizon prefix.
+
+        The keyword-only controls preserve the historical all-horizon/context
+        behavior for the original fixed-set reranker.  J-HARP uses the prefix
+        path during training so inactive H5--H8 tensors never cross PCIe.
+        """
+
+        horizons = self.horizons if active_horizons is None else int(active_horizons)
+        if not 1 <= horizons <= self.horizons:
+            raise ValueError("active_horizons must lie within the candidate pool")
+        selection = (rows, slice(0, horizons))
         values = {
-            "candidate_scores": np.asarray(self.candidate_scores[rows], dtype=np.float32),
-            "candidate_ids": np.asarray(self.candidate_ids[rows], dtype=np.int64),
-            "target_membership": np.asarray(self.target_membership[rows], dtype=np.float32),
-            "teacher_candidate_scores": np.asarray(self.teacher_candidate_scores[rows], dtype=np.float32),
-            "valid_future": np.asarray(self.valid_future[rows], dtype=np.bool_),
-            "current_scores": np.asarray(self.current_scores[rows], dtype=np.float32),
-            "current_rank": np.asarray(self.current_rank[rows], dtype=np.float32),
-            "source_gates": np.asarray(self.source_gates[rows], dtype=np.float32),
-            "copy_gates": np.asarray(self.copy_gates[rows], dtype=np.float32),
+            "candidate_scores": np.asarray(self.candidate_scores[selection], dtype=np.float32),
+            "candidate_ids": np.asarray(self.candidate_ids[selection], dtype=np.int64),
+            "target_membership": np.asarray(self.target_membership[selection], dtype=np.float32),
+            "teacher_candidate_scores": np.asarray(
+                self.teacher_candidate_scores[selection], dtype=np.float32
+            ),
+            "valid_future": np.asarray(self.valid_future[selection], dtype=np.bool_),
+            "current_scores": np.asarray(self.current_scores[selection], dtype=np.float32),
+            "current_rank": np.asarray(self.current_rank[selection], dtype=np.float32),
+            "source_gates": np.asarray(self.source_gates[selection], dtype=np.float32),
+            "copy_gates": np.asarray(self.copy_gates[selection], dtype=np.float32),
         }
-        if self.context is not None:
-            values["context"] = np.asarray(self.context[rows], dtype=np.float32)
+        if include_context and self.context is not None:
+            values["context"] = np.asarray(self.context[selection], dtype=np.float32)
         return {name: torch.as_tensor(value, device=device) for name, value in values.items()}
 
 

@@ -4,9 +4,10 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 
-from harp8.candidates import export_candidate_pool
+from harp8.candidates import POOL_SCHEMA_V2, export_candidate_pool
 from harp8.config import HARPConfig
 from harp8.data import CompactHARPData
 from harp8.model import HARP8Teacher
@@ -81,6 +82,42 @@ def test_candidate_pool_rejects_wrong_schema(tmp_path: Path) -> None:
         raise AssertionError("wrong candidate schema was accepted")
 
 
+def test_candidate_pool_can_read_only_an_active_horizon_prefix_without_context(
+    tmp_path: Path,
+) -> None:
+    pool = CandidatePool(_write_pool(tmp_path / "pool", horizons=2))
+    rows = np.asarray([2, 0], dtype=np.int64)
+
+    complete = pool.batch(rows, "cpu")
+    prefix = pool.batch(
+        rows,
+        "cpu",
+        active_horizons=1,
+        include_context=False,
+    )
+
+    assert "context" in complete
+    assert "context" not in prefix
+    for name in (
+        "candidate_scores",
+        "candidate_ids",
+        "target_membership",
+        "teacher_candidate_scores",
+        "valid_future",
+        "current_scores",
+        "current_rank",
+        "source_gates",
+        "copy_gates",
+    ):
+        assert prefix[name].shape[1] == 1
+        assert torch.equal(prefix[name], complete[name][:, :1])
+
+    with pytest.raises(ValueError, match="active_horizons"):
+        pool.batch(rows, "cpu", active_horizons=0)
+    with pytest.raises(ValueError, match="active_horizons"):
+        pool.batch(rows, "cpu", active_horizons=pool.horizons + 1)
+
+
 def test_candidate_exporter_writes_horizon_aligned_pool(tmp_path: Path) -> None:
     capture = tmp_path / "capture"
     mtp = tmp_path / "mtp"
@@ -117,8 +154,23 @@ def test_candidate_exporter_writes_horizon_aligned_pool(tmp_path: Path) -> None:
     torch.save({"schema": "harp8t_training_v1", "model_config": config.to_dict(),
                 "model_state": model.state_dict(), "epoch": 1, "seed": 1}, checkpoint)
     output = tmp_path / "pool-out"
-    manifest = export_candidate_pool(data, checkpoint, output, split="validation",
-                                     candidate_count=16, batch_size=2, device="cpu")
+    manifest = export_candidate_pool(
+        data,
+        checkpoint,
+        output,
+        source_data_split="validation",
+        level2_split="validation",
+        source_offline_split="validation",
+        base_fold_id="outer-train-base",
+        base_fit_excluded=False,
+        candidate_count=16,
+        batch_size=2,
+        device="cpu",
+    )
+    assert manifest["schema"] == POOL_SCHEMA_V2
+    assert manifest["source_data_split"] == "validation"
+    assert manifest["level2_split"] == "validation"
+    assert manifest["base_train_request_ids_sha256"] is None
     assert manifest["rows"] == 3
     pool = CandidatePool(output)
     assert pool.current_scores.shape == (3, 2, 2, 16)

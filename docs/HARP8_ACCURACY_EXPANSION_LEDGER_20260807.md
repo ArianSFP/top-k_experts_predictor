@@ -2,7 +2,7 @@
 
 **Opened:** 2026-08-07
 **Backend:** PyTorch/Transformers-compatible HARP trainer on RTX 3090
-**Expansion workspace:** `<harp8-expansion-root>`
+**RunPod workspace:** `/root/harp8_accuracy_expansion`
 **Test policy:** outer test remains sealed; all decisions use the nested inner split
 
 ## Fixed design contract

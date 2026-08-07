@@ -23,6 +23,16 @@ harp8-export-candidates = "harp8.candidates:main"
 harp8-train-reranker = "harp8.reranker:main"
 harp8-prepare-features = "harp8.features:main"
 harp8-shuffle-tail = "harp8.shuffle_tail:main"
+harp8-build-m3-shards = "harp8.build_m3_derived_shards:main"
+harp8-prepare-jspace = "harp8.prepare_jspace_features:main"
+harp8-router-geometry = "harp8.router_geometry:main"
+harp8-train-jspace-reranker = "harp8.train_jspace_reranker:main"
+harp8-train-jspace-v2 = "harp8.train_jspace_v2_reranker:main"
+harp8-train-full-router = "harp8.train_jspace_router_forecaster:main"
+harp8-evaluate-jspace = "harp8.evaluate_jspace_checkpoint:main"
+harp8-evaluate-full-router = "harp8.evaluate_jspace_router_checkpoint:main"
+harp8-audit-jlens-complementarity = "harp8.audit_jlens_complementarity:main"
+harp8-audit-jspace-plateau = "harp8.audit_jspace_plateau:main"
 
 [tool.setuptools.packages.find]
 include = ["harp8*"]
