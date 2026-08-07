@@ -1,0 +1,18 @@
+{
+  "schema": "harp_rtt_static_artifact_build_failure_ledger_v1",
+  "attempts": [
+    {
+      "attempt_id": "static_target_qwen36_35b_a3b_rev995ad96_v1_attempt_001",
+      "timestamp_utc": "2026-08-07T12:31:52Z",
+      "source_snapshot_id": "harp_rtt_static_v1_source_20260807T1220Z",
+      "output_artifact_id": "static_target_qwen36_35b_a3b_rev995ad96_v1",
+      "output_created": false,
+      "failure_stage": "model_index_metadata_validation",
+      "exception_type": "ValueError",
+      "exception_message": "model index metadata.total_size must be an integer",
+      "observed_value": 71903645408.0,
+      "root_cause": "The pinned Hugging Face index encodes an integral byte count as a JSON number parsed as float.",
+      "resolution": "Preserve v1 source unchanged; create immutable r1 source accepting only finite, positive, integer-valued int or float values."
+    }
+  ]
+}
