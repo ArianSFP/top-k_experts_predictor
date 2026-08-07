@@ -599,6 +599,7 @@ class HarpRTTDataset(Dataset[dict[str, Any]]):
             "vocab_top64_log_probabilities": padded_role(
                 "vocab_top64_log_probabilities"
             ).float(),
+            "vocab_statistics": torch.zeros((pad, 6), dtype=torch.float32),
             "meta": torch.zeros((pad, meta_width), dtype=torch.int64),
             # ``scalars`` retains the frozen eight-channel legacy contract for
             # the anchor bridge. ``capture_scalars`` preserves every indexed
@@ -758,6 +759,43 @@ class HarpRTTDataset(Dataset[dict[str, Any]]):
         tree["token_ids"][:count] = node_tokens
         tree["path_log_probabilities"][:count] = scalars[:, 1]
         tree["path_probabilities"][:count] = scalars[:, 2]
+        vocab_logp = tree["vocab_top64_log_probabilities"][:count].float()
+        vocab_probability = vocab_logp.clamp(max=0.0).exp()
+        retained_mass = vocab_probability.sum(dim=-1)
+        entropy_column = segment.mtp_scalar_column("vocabulary_entropy")
+        vocabulary_entropy = (
+            scalars[:, entropy_column]
+            if entropy_column is not None
+            else -(vocab_probability * vocab_logp).sum(dim=-1)
+        )
+        margin_column = segment.mtp_scalar_column(
+            "next_top1_top2_logprob_margin"
+        )
+        ordered_logp = torch.sort(
+            vocab_logp, dim=-1, descending=True, stable=True
+        ).values
+        top1_top2_margin = (
+            scalars[:, margin_column]
+            if margin_column is not None
+            else ordered_logp[:, 0] - ordered_logp[:, 1]
+        )
+        top8_mass_column = segment.mtp_scalar_column("vocabulary_top8_mass")
+        top8_mass = (
+            scalars[:, top8_mass_column]
+            if top8_mass_column is not None
+            else ordered_logp[:, :8].exp().sum(dim=-1)
+        )
+        tree["vocab_statistics"][:count] = torch.stack(
+            [
+                retained_mass,
+                (1.0 - retained_mass).clamp_min(0.0),
+                vocabulary_entropy,
+                ordered_logp[:, 0].exp(),
+                top1_top2_margin,
+                top8_mass,
+            ],
+            dim=-1,
+        )
         local_probability_column = segment.mtp_scalar_column(
             "local_token_probability"
         )

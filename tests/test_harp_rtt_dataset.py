@@ -503,6 +503,10 @@ def test_adaptive_tree_fields_and_siblings_survive_index_and_dataset(
     assert tree["router_logits"].shape == (32, 256)
     assert tree["vocab_top64_ids"].shape == (32, 64)
     assert tree["vocab_top64_log_probabilities"].shape == (32, 64)
+    assert tree["vocab_statistics"].shape == (32, 6)
+    assert tree["vocab_statistics"][:count, 2].tolist() == pytest.approx(
+        [1.0 + local for local in range(count)]
+    )
     assert tree["capture_scalars"].shape == (32, 9)
     assert tree["path_log_probabilities"][:count].tolist() == pytest.approx(
         [0.0, -0.1, -0.3, -0.6, -0.4, -0.9, -1.5]
