@@ -33,6 +33,14 @@ from native_mtp_branch import (  # noqa: E402
     stable_topk_log_probabilities,
 )
 from mtp_router_semantics import native_topk_router_distribution  # noqa: E402
+from matched_tree_controls import (  # noqa: E402
+    CONTROL_SCHEMA,
+    assert_ready_record,
+    assert_resolved_record,
+    resolved_labels,
+    serialize_nodes,
+    structural_hash,
+)
 
 
 def observation(path: tuple[int, ...], *, uncertain: bool) -> NodeObservation:
@@ -153,15 +161,16 @@ def test_fixed_beam_controls_are_exact_budgeted_and_deterministic(
     )
 
 
-def test_confident_policy_is_deep_and_narrow() -> None:
+def test_confident_policy_preserves_greedy_spine_then_fills_exact_budget() -> None:
     nodes = AdaptiveMTPTreeBuilder(AdaptiveExpansionPolicy(max_nodes=32)).build(
         tree_id="seq:confident",
         exact_h1_token_id=9,
         evaluate=lambda path: observation(path, uncertain=False),
     )
-    assert len(nodes) == 4
-    assert [node.depth for node in nodes] == [1, 2, 3, 4]
-    assert all(node.token_rank_under_parent == 0 for node in nodes)
+    assert len(nodes) == 32
+    assert [node.depth for node in nodes[:4]] == [1, 2, 3, 4]
+    assert all(node.token_rank_under_parent == 0 for node in nodes[:4])
+    assert any(node.token_rank_under_parent > 0 for node in nodes[4:])
 
 
 def test_anchor_spine_is_exact_h1_through_h6_parent_coherent_top1() -> None:
@@ -406,3 +415,57 @@ def test_native_router_execution_weights_match_transformers_bf16_semantics() -> 
     assert torch.equal(probabilities, reference_probabilities)
     assert torch.equal(ids, reference_ids)
     assert torch.equal(weights, reference_weights)
+
+
+def test_matched_control_ready_and_resolved_contract_separates_labels() -> None:
+    nodes = AdaptiveMTPTreeBuilder(AdaptiveExpansionPolicy(max_nodes=16)).build(
+        tree_id="seq:control-contract",
+        exact_h1_token_id=77,
+        evaluate=lambda path: observation(path, uncertain=False),
+    )
+    ready = {
+        "control_schema": CONTROL_SCHEMA,
+        "control_name": "adaptive16",
+        "diagnostic_only": True,
+        "model_input": False,
+        "target_labels_present": False,
+        "node_count": len(nodes),
+        "nodes": serialize_nodes(nodes),
+        "structural_hash": structural_hash(nodes),
+    }
+    assert_ready_record(ready)
+    assert "labels" not in ready
+    resolved = {
+        "control_schema": CONTROL_SCHEMA,
+        "control_name": "adaptive16",
+        "node_count": len(nodes),
+        **resolved_labels(
+            nodes,
+            committed_token_ids=[999, *nodes[3].token_path_ids],
+            committed_prefix_position=0,
+        ),
+        "labels_only": True,
+        "available_at_runtime": False,
+    }
+    assert_resolved_record(resolved)
+    assert resolved["path_occurrence_by_horizon"]["4"] is True
+
+
+def test_matched_control_ready_rejects_target_label_leakage() -> None:
+    nodes = AdaptiveMTPTreeBuilder(AdaptiveExpansionPolicy(max_nodes=16)).build(
+        tree_id="seq:control-leak",
+        exact_h1_token_id=77,
+        evaluate=lambda path: observation(path, uncertain=False),
+    )
+    ready = {
+        "control_schema": CONTROL_SCHEMA,
+        "control_name": "adaptive16",
+        "diagnostic_only": True,
+        "model_input": False,
+        "target_labels_present": True,
+        "node_count": len(nodes),
+        "nodes": serialize_nodes(nodes),
+        "structural_hash": structural_hash(nodes),
+    }
+    with pytest.raises(ValueError, match="target labels"):
+        assert_ready_record(ready)

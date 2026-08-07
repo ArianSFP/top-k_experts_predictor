@@ -615,7 +615,9 @@ def _audit_anchor_spines(
     }
 
 
-def audit_adaptive_mtp(store: Store, *, maximum_node_budget: int) -> dict[str, Any]:
+def audit_adaptive_mtp(
+    store: Store, *, maximum_node_budget: int, exact_node_budget: bool = False
+) -> dict[str, Any]:
     nodes = [row for row in store.rows if row.get("event") == "mtp_node"]
     if not nodes:
         raise AuditError("adaptive capture contains no MTP nodes")
@@ -732,6 +734,11 @@ def audit_adaptive_mtp(store: Store, *, maximum_node_budget: int) -> dict[str, A
         rows.sort(key=lambda row: int(row["node_local_index"]))
         if len(rows) > maximum_node_budget:
             raise AuditError(f"tree {tree_id} exceeds first-teacher budget: {len(rows)}")
+        if exact_node_budget and len(rows) != maximum_node_budget:
+            raise AuditError(
+                f"tree {tree_id} has {len(rows)} nodes, expected exact "
+                f"budget {maximum_node_budget}"
+            )
         if tree_id not in ready_by_tree or tree_id not in resolved_by_tree:
             raise AuditError(f"tree {tree_id} lacks ready/resolved boundary events")
         ready = ready_by_tree[tree_id]
@@ -932,7 +939,12 @@ def audit(root: Path) -> dict[str, Any]:
         anchor_checksum_count = _check_anchor_checksum_inventory(root)
         target = audit_target(store)
         mtp = audit_adaptive_mtp(
-            store, maximum_node_budget=maximum_node_budget
+            store,
+            maximum_node_budget=maximum_node_budget,
+            exact_node_budget=(
+                manifest.get("capture_policy", {}).get("exact_tree_node_budget")
+                is True
+            ),
         )
         anchor_provenance = _audit_anchor_manifest(
             manifest, mtp["anchor_spine"]

@@ -39,8 +39,10 @@ from adaptive_mtp_tree import (  # noqa: E402
     AdaptiveMTPTreeBuilder,
     AdaptiveTreeNode,
     AnchorSpineNode,
+    FixedBeamPolicy,
     build_anchor_spine,
     build_acceptance_labels,
+    build_fixed_beam_tree,
 )
 from adaptive_capture_contract import (  # noqa: E402
     ANCHOR_SPINE_NODE_EVENT,
@@ -72,6 +74,18 @@ from capture_transformers_segment import (  # noqa: E402
 )
 from qwen35_mtp import load_checkpoint_mtp  # noqa: E402
 from native_mtp_branch import NativeMTPBranchRunner  # noqa: E402
+from matched_tree_controls import (  # noqa: E402
+    CONTROL_NAMES,
+    CONTROL_READY_EVENT,
+    CONTROL_RESOLVED_EVENT,
+    CONTROL_SCHEMA,
+    assert_identical_structure,
+    assert_ready_record,
+    assert_resolved_record,
+    resolved_labels,
+    serialize_nodes,
+    structural_hash,
+)
 
 
 class AdaptiveCaptureRun(CaptureRun):
@@ -86,6 +100,7 @@ class AdaptiveCaptureRun(CaptureRun):
         candidate_vector_audit_percent: int,
         prompt_history_tokens: int,
         production_capture: bool,
+        emit_matched_controls: bool,
     ) -> None:
         super().__init__(
             output,
@@ -101,12 +116,16 @@ class AdaptiveCaptureRun(CaptureRun):
             capture_profile=CAPTURE_PROFILE,
         )
         self.policy = policy
+        self.emit_matched_controls = bool(emit_matched_controls)
         self.adaptive_tree_count = 0
         self.adaptive_source_positions = 0
         self.native_mtp_calls = 0
         self.anchor_native_mtp_calls = 0
         self.anchor_spine_count = 0
         self.anchor_spine_nodes = 0
+        self.control_tree_count: Counter[str] = Counter()
+        self.control_node_count: Counter[str] = Counter()
+        self.control_native_mtp_calls: Counter[str] = Counter()
         self.nodes_by_depth: Counter[int] = Counter()
         sidecars = output / "sidecars"
         self.anchor_states = Sidecar(
@@ -456,6 +475,144 @@ class AdaptiveCaptureRun(CaptureRun):
         return node_event
 
 
+def _build_matched_controls(
+    run: AdaptiveCaptureRun,
+    *,
+    mtp,
+    tree_id: str,
+    nodes: list[AdaptiveTreeNode],
+    sequence_id: str,
+    request_id: str,
+    cycle_id: int,
+    committed_prefix_position: int,
+    root_prefix: list[int],
+    final_hidden_history: list[torch.Tensor],
+    exact_h1_token: int,
+    eos_token_id: int | None,
+) -> tuple[dict[str, list[AdaptiveTreeNode]], dict[str, int]]:
+    """Build all causal B1 views and emit their label-free ready records."""
+
+    if len(nodes) != run.policy.max_nodes:
+        raise RuntimeError("canonical adaptive tree did not fill its declared budget")
+    if run.policy.max_nodes != 32:
+        raise ValueError("matched B1 controls require a canonical adaptive-32 tree")
+
+    independent_runner = NativeMTPBranchRunner(
+        mtp=mtp,
+        authoritative_prefix_token_ids=root_prefix,
+        authoritative_target_hidden_through_t=final_hidden_history,
+        exact_h1_token_id=exact_h1_token,
+    )
+    independent16 = AdaptiveMTPTreeBuilder(
+        AdaptiveExpansionPolicy(max_nodes=16)
+    ).build(
+        tree_id=tree_id,
+        exact_h1_token_id=exact_h1_token,
+        evaluate=independent_runner.evaluate,
+        eos_token_id=eos_token_id,
+    )
+    assert_identical_structure(nodes[:16], independent16)
+    run.control_native_mtp_calls["adaptive16_independent"] += (
+        independent_runner.native_call_count
+    )
+
+    fixed_views: dict[str, list[AdaptiveTreeNode]] = {}
+    fixed_manifests: dict[str, dict[str, Any]] = {}
+    for name, widths in (("fixed16", (5, 5, 5)), ("fixed32", (11, 10, 10))):
+        policy = FixedBeamPolicy(widths)
+        runner = NativeMTPBranchRunner(
+            mtp=mtp,
+            authoritative_prefix_token_ids=root_prefix,
+            authoritative_target_hidden_through_t=final_hidden_history,
+            exact_h1_token_id=exact_h1_token,
+        )
+        fixed_views[name] = build_fixed_beam_tree(
+            tree_id=f"{tree_id}:control:{name}",
+            exact_h1_token_id=exact_h1_token,
+            evaluate=runner.evaluate,
+            policy=policy,
+        )
+        fixed_manifests[name] = policy.manifest()
+        run.control_native_mtp_calls[name] += runner.native_call_count
+
+    greedy = nodes[:4]
+    if [node.depth for node in greedy] != [1, 2, 3, 4] or any(
+        node.token_rank_under_parent != 0 for node in greedy
+    ):
+        raise RuntimeError("canonical adaptive tree does not begin with its greedy spine")
+
+    views = {
+        "greedy": greedy,
+        "fixed16": fixed_views["fixed16"],
+        "adaptive16": nodes[:16],
+        "fixed32": fixed_views["fixed32"],
+        "adaptive32": nodes,
+    }
+    policy_manifests = {
+        "greedy": {
+            "schema": "harp_rtt_greedy_spine_control_v1",
+            "depths": [1, 2, 3, 4],
+            "selection": "local_rank_zero_parent_coherent",
+            "uses_target_labels": False,
+        },
+        "fixed16": fixed_manifests["fixed16"],
+        "adaptive16": AdaptiveExpansionPolicy(max_nodes=16).manifest(),
+        "fixed32": fixed_manifests["fixed32"],
+        "adaptive32": run.policy.manifest(),
+    }
+
+    ready_event_ids: dict[str, int] = {}
+    for name in CONTROL_NAMES:
+        control_nodes = views[name]
+        serialized = serialize_nodes(control_nodes)
+        record = {
+            "run_id": run.run_id,
+            "sequence_id": sequence_id,
+            "request_id": request_id,
+            "verifier_cycle_id": cycle_id,
+            "control_schema": CONTROL_SCHEMA,
+            "control_name": name,
+            "control_tree_id": f"{tree_id}:view:{name}",
+            "canonical_adaptive_tree_id": tree_id,
+            "committed_prefix_position": committed_prefix_position,
+            "authoritative_prefix_hash": prefix_hash(root_prefix),
+            "exact_h1_token_id": exact_h1_token,
+            "node_count": len(control_nodes),
+            "nodes_by_horizon": {
+                str(depth): sum(node.depth == depth for node in control_nodes)
+                for depth in range(1, MAX_CAPTURE_DEPTH + 1)
+            },
+            "nodes": serialized,
+            "structural_hash": structural_hash(control_nodes),
+            "policy": policy_manifests[name],
+            "policy_hash": sha256_bytes(canonical_json(policy_manifests[name])),
+            "adaptive16_definition": (
+                "first_16_parent_before_child_nodes_of_canonical_adaptive32"
+                if name == "adaptive16"
+                else None
+            ),
+            "independent_adaptive16_structural_hash": (
+                structural_hash(independent16) if name == "adaptive16" else None
+            ),
+            "independent_adaptive16_exact_match": (
+                True if name == "adaptive16" else None
+            ),
+            "source_ready_event_order": run.events.next_id,
+            "synchronous_before_target_h1_execution": True,
+            "causal_input_only": True,
+            "diagnostic_only": True,
+            "model_input": False,
+            "target_labels_present": False,
+            "acceptance_present": False,
+            "factual_continuation_used": False,
+            "sealed_test_opened": False,
+        }
+        assert_ready_record(record)
+        ready_event_ids[name] = run.events.emit(CONTROL_READY_EVENT, **record)
+        run.control_tree_count[name] += 1
+        run.control_node_count[name] += len(control_nodes)
+    return views, ready_event_ids
+
 @torch.no_grad()
 def capture_adaptive_sequence(
     run: AdaptiveCaptureRun,
@@ -548,6 +705,15 @@ def capture_adaptive_sequence(
     cycle_id = 0
     captured_trees: list[
         tuple[int, int, list[AdaptiveTreeNode], dict[int, int], str]
+    ] = []
+    captured_controls: list[
+        tuple[
+            int,
+            int,
+            str,
+            dict[str, list[AdaptiveTreeNode]],
+            dict[str, int],
+        ]
     ] = []
 
     def target_call(token_ids: list[int], phase: str, start_position: int):
@@ -663,6 +829,31 @@ def capture_adaptive_sequence(
                 expansion_uses_realized_future=False,
                 expansion_uses_acceptance=False,
             )
+
+            if run.emit_matched_controls:
+                control_views, control_ready_event_ids = _build_matched_controls(
+                    run,
+                    mtp=mtp,
+                    tree_id=tree_id,
+                    nodes=nodes,
+                    sequence_id=sequence_id,
+                    request_id=request_id,
+                    cycle_id=cycle_id,
+                    committed_prefix_position=committed_prefix_position,
+                    root_prefix=root_prefix,
+                    final_hidden_history=final_hidden_history,
+                    exact_h1_token=exact_h1_token,
+                    eos_token_id=eos_id,
+                )
+                captured_controls.append(
+                    (
+                        cycle_id,
+                        committed_prefix_position,
+                        tree_id,
+                        control_views,
+                        control_ready_event_ids,
+                    )
+                )
 
             # Re-run an independent, anchor-only greedy path through every
             # pinned preprocessing depth.  This neither consumes the adaptive
@@ -792,6 +983,42 @@ def capture_adaptive_sequence(
             labels_only=True,
         )
 
+    for (
+        control_cycle_id,
+        committed_prefix_position,
+        tree_id,
+        control_views,
+        control_ready_event_ids,
+    ) in captured_controls:
+        for name in CONTROL_NAMES:
+            control_nodes = control_views[name]
+            resolved = resolved_labels(
+                control_nodes,
+                committed_token_ids=committed_tokens,
+                committed_prefix_position=committed_prefix_position,
+            )
+            record = {
+                "run_id": run.run_id,
+                "sequence_id": sequence_id,
+                "request_id": request_id,
+                "verifier_cycle_id": control_cycle_id,
+                "control_schema": CONTROL_SCHEMA,
+                "control_name": name,
+                "control_tree_id": f"{tree_id}:view:{name}",
+                "canonical_adaptive_tree_id": tree_id,
+                "control_ready_event_id": control_ready_event_ids[name],
+                "committed_prefix_position": committed_prefix_position,
+                "node_count": len(control_nodes),
+                "structural_hash": structural_hash(control_nodes),
+                **resolved,
+                "labels_only": True,
+                "available_at_runtime": False,
+                "model_input": False,
+                "sealed_test_opened": False,
+            }
+            assert_resolved_record(record)
+            run.events.emit(CONTROL_RESOLVED_EVENT, **record)
+
     run.events.emit(
         "sequence_end",
         run_id=run.run_id,
@@ -879,6 +1106,22 @@ def build_adaptive_manifest(
         "realized_future_inputs": False,
         "source_ready_before_target_h1_execution": True,
     }
+    matched_control_manifest = {
+        "schema": CONTROL_SCHEMA,
+        "enabled": run.emit_matched_controls,
+        "control_names": list(CONTROL_NAMES),
+        "canonical_view": "adaptive32",
+        "adaptive16_definition": (
+            "first_16_parent_before_child_nodes_of_canonical_adaptive32"
+        ),
+        "adaptive16_independent_rebuild_required": True,
+        "fixed16_depth_widths": {"1": 1, "2": 5, "3": 5, "4": 5},
+        "fixed32_depth_widths": {"1": 1, "2": 11, "3": 10, "4": 10},
+        "selection_inputs": "causal_native_mtp_only",
+        "ready_records_contain_target_labels": False,
+        "resolved_records_label_only": True,
+        "model_input": False,
+    }
     manifest.update(
         {
             "schema": MANIFEST_SCHEMA,
@@ -900,6 +1143,10 @@ def build_adaptive_manifest(
             "adaptive_expansion_policy_hash": sha256_bytes(
                 canonical_json(policy_manifest)
             ),
+            "matched_tree_control_manifest": matched_control_manifest,
+            "matched_tree_control_manifest_hash": sha256_bytes(
+                canonical_json(matched_control_manifest)
+            ),
             "clock_domain_definitions": {
                 **manifest["clock_domain_definitions"],
                 "host_monotonic_after_native_mtp_materialization": (
@@ -913,6 +1160,8 @@ def build_adaptive_manifest(
                 "exact_committed_h1_root": True,
                 "adaptive_native_mtp_h2_h4": True,
                 "maximum_tree_nodes_including_root": run.policy.max_nodes,
+                "exact_tree_node_budget": True,
+                "matched_controls_emitted": run.emit_matched_controls,
                 "parent_before_child": True,
                 "isolated_sibling_execution": True,
                 "acceptance_labels_separate": True,
@@ -934,6 +1183,11 @@ def build_adaptive_manifest(
                 "adaptive_trees": run.adaptive_tree_count,
                 "adaptive_source_positions": run.adaptive_source_positions,
                 "native_mtp_branch_calls": run.native_mtp_calls,
+                "matched_control_trees": dict(run.control_tree_count),
+                "matched_control_nodes": dict(run.control_node_count),
+                "matched_control_native_mtp_calls": dict(
+                    run.control_native_mtp_calls
+                ),
                 "legacy_anchor_spines": run.anchor_spine_count,
                 "legacy_anchor_spine_nodes": run.anchor_spine_nodes,
                 "legacy_anchor_native_mtp_branch_calls": run.anchor_native_mtp_calls,
@@ -975,6 +1229,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--candidate-vector-audit-percent", type=int, default=5)
     parser.add_argument("--prompt-history-tokens", type=int, default=8)
     parser.add_argument("--production-capture", action="store_true")
+    parser.add_argument(
+        "--emit-matched-controls",
+        action="store_true",
+        help="emit causal greedy/fixed/adaptive B1 diagnostic views",
+    )
     args = parser.parse_args()
     # The shared provenance builder expects this legacy attribute.  It is
     # immediately replaced by the adaptive graph manifest.
@@ -1023,6 +1282,7 @@ def main() -> None:
         candidate_vector_audit_percent=args.candidate_vector_audit_percent,
         prompt_history_tokens=args.prompt_history_tokens,
         production_capture=args.production_capture,
+        emit_matched_controls=args.emit_matched_controls,
     )
     run.model = target
     if args.prompt_manifest:

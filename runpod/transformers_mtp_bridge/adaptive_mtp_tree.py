@@ -6,11 +6,13 @@ capture writer.  Its evaluator receives only a speculative token path rooted on
 the already-selected H1 token.  It may return native MTP outputs for that path,
 but it never receives realized H2--H4 tokens or acceptance decisions.
 
-Expansion is confidence-adaptive and bounded.  A greedy spine first guarantees
-coverage through H4 when the root is non-terminal.  Remaining budget is filled
-best-first: low-entropy parents expose fewer alternatives, high-entropy parents
-expose more, and a depth bonus favors completing promising paths instead of
-spending the whole budget at H2.
+Expansion is confidence-adaptive and exact-budgeted.  A greedy spine first
+guarantees coverage through H4 when the root is non-terminal.  Preferred edges
+are filled best-first: low-entropy parents initially expose fewer alternatives,
+high-entropy parents initially expose more, and a depth bonus favors completing
+promising paths instead of spending the whole budget at H2.  If that preferred
+frontier is exhausted, deterministic lower-ranked edges refill it so
+``adaptive-16`` is always the canonical prefix of ``adaptive-32``.
 """
 
 from __future__ import annotations
@@ -174,6 +176,12 @@ class AdaptiveExpansionPolicy:
                 "candidate_rank",
                 "token_id",
             ],
+            "exact_node_budget_when_nonterminal_root": True,
+            "frontier_refill": {
+                "trigger": "preferred_frontier_exhausted_before_node_budget",
+                "maximum_rank_exclusive": self.maximum_width,
+                "ranking": "same_best_first_priority_and_stable_tie_break",
+            },
             "uses_realized_future_tokens": False,
             "uses_acceptance_labels": False,
         }
@@ -547,17 +555,25 @@ class AdaptiveMTPTreeBuilder:
         # Heap entries are fully ordered, so equal model scores never make the
         # expansion depend on Python object identity or hash randomization.
         frontier: list[tuple[float, int, int, int, int]] = []
+        queued_edges: set[tuple[int, int]] = set()
 
-        def enqueue(parent: AdaptiveTreeNode) -> None:
+        def enqueue(parent: AdaptiveTreeNode, *, preferred_only: bool) -> None:
             if parent.depth >= self.policy.max_depth:
                 return
             if eos_token_id is not None and parent.token_id == eos_token_id:
                 return
-            width = self.policy.width(parent.observation, depth=parent.depth)
+            width = (
+                self.policy.width(parent.observation, depth=parent.depth)
+                if preferred_only
+                else min(
+                    self.policy.maximum_width,
+                    len(parent.observation.top_token_ids),
+                )
+            )
             for rank in range(width):
                 token_id = parent.observation.top_token_ids[rank]
                 edge = (parent.local_index, token_id)
-                if edge in occupied_edges:
+                if edge in occupied_edges or edge in queued_edges:
                     continue
                 local_logp = parent.observation.top_log_probabilities[rank]
                 priority = self.policy.proposal_priority(
@@ -569,15 +585,24 @@ class AdaptiveMTPTreeBuilder:
                     frontier,
                     (-priority, parent.depth + 1, parent.local_index, rank, token_id),
                 )
+                queued_edges.add(edge)
 
         for node in nodes:
-            enqueue(node)
+            enqueue(node, preferred_only=True)
 
-        while frontier and len(nodes) < self.policy.max_nodes:
+        while len(nodes) < self.policy.max_nodes:
+            if not frontier:
+                # Thresholds allocate the preferred frontier. They must not
+                # silently turn a declared view into a variable-size tree.
+                for node in nodes:
+                    enqueue(node, preferred_only=False)
+                if not frontier:
+                    break
             _negative_priority, _depth, parent_index, rank, token_id = heapq.heappop(
                 frontier
             )
             edge = (parent_index, token_id)
+            queued_edges.discard(edge)
             if edge in occupied_edges:
                 continue
             parent = nodes[parent_index]
@@ -588,9 +613,14 @@ class AdaptiveMTPTreeBuilder:
                 rank=rank,
                 local_log_probability=parent.observation.top_log_probabilities[rank],
             )
-            enqueue(child)
+            enqueue(child, preferred_only=True)
 
         validate_tree_structure(nodes, policy=self.policy, exact_h1_token_id=exact_h1_token_id)
+        if (
+            (eos_token_id is None or exact_h1_token_id != eos_token_id)
+            and len(nodes) != self.policy.max_nodes
+        ):
+            raise RuntimeError("adaptive tree did not consume its exact node budget")
         return nodes
 
 
