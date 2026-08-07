@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "top-k-experts-predictor"
+version = "0.1.0"
+description = "HARP8 multi-horizon top-k expert-route predictor research code"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "torch>=2.4",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+harp8-train = "harp8.train:main"
+harp8-evaluate = "harp8.evaluate:main"
+harp8-overfit = "harp8.overfit:main"
+harp8-export-candidates = "harp8.candidates:main"
+harp8-train-reranker = "harp8.reranker:main"
+harp8-prepare-features = "harp8.features:main"
+harp8-shuffle-tail = "harp8.shuffle_tail:main"
+
+[tool.setuptools.packages.find]
+include = ["harp8*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+pythonpath = ["."]
