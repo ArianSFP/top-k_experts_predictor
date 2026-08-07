@@ -38,7 +38,7 @@ anytime masking; coverage-preserving candidate curriculum; counterfactual,
 posterior, factual acceptance and swap losses. Stage A remains optimizer-free
 and begins only from a committed, test-clean source tree.
 
-### Stage-A execution (passed)
+### Stage-A execution (passed; definitive exact-budget rerun)
 
 The three request-disjoint inner partitions are frozen and checksummed under
 `/root/harp-rtt-v2-runs/partitions/causal_v2_seed42`. The partition hydrator
@@ -46,72 +46,85 @@ resolved 388 outer-train requests from 39 audited segments without opening the
 sealed test. Engineering prompts contain four requests and eight uniform source
 positions per request.
 
-The canonical adaptive-32 capture is
-`/root/harp-rtt-v2-runs/stage_a/adaptive32_ref_d5f0c56`. It contains 32
-source trees, 199 adaptive nodes (H1/H2/H3/H4 = 32/35/50/82), all 40 target
-layers and a separate 192-node H1--H6 compatibility spine. Its blocking audit
-passes. The independently reconstructed adaptive-16 capture contains 198 nodes;
-all 198 nodes match the canonical adaptive-32 prefixes exactly, with zero
-mismatches over all 32 sources.
+An audit of the first run found that the confidence policy treated 32 as a
+maximum rather than the experiment's required exact budget. That run and its
+passed numerical checks remain preserved as superseded diagnostics. Commit
+`31c18ffe13eadcc2320e8f7d8cab716ba35071a7` makes the contract exact: once
+confidence-qualified edges are exhausted, the constructor deterministically
+fills from the remaining stable probability-ranked frontier. Thus adaptive-32
+always has 32 parent-before-child nodes and adaptive-16 is exactly its first 16
+nodes as well as equal to an independent 16-node construction.
+
+The definitive base capture is
+`/root/harp-rtt-v2-runs/stage_a/adaptive32_controls_exact_31c18ff`. It contains
+32 source trees and exactly 1,024 adaptive nodes (H1/H2/H3/H4 =
+32/99/279/614), all 40 target layers and a separate 192-node H1--H6
+compatibility spine. Both the adaptive capture audit and independently
+reconstructed matched-control audit pass. Path occurrence at H1--H4 is:
+
+| View | H1 | H2 | H3 | H4 |
+| --- | ---: | ---: | ---: | ---: |
+| Greedy spine | 1.00000 | 0.96875 | 0.87500 | 0.81250 |
+| Fixed beam-16 | 1.00000 | 1.00000 | 0.93750 | 0.90625 |
+| Adaptive-16 | 1.00000 | 1.00000 | 0.93750 | 0.93750 |
+| Fixed beam-32 | 1.00000 | 1.00000 | 0.96875 | 0.93750 |
+| Adaptive-32 | 1.00000 | 1.00000 | 0.96875 | 0.93750 |
 
 The first companion pair, bound to `d5f0c56`, is retained only as diagnostic
-failure evidence. Its first audit exposed that CPU stable lower-ID ordering is
-not the frozen target's native BF16 tie policy: the target selects with CUDA
-`torch.topk(softmax(z.float()))`. After that was corrected, cross-mode parity
-still failed (maximum logit difference 4.875 and non-identical selected IDs)
-because the old reference put prefix plus branch in one call while the cache
-mode introduced a hybrid linear/full-attention boundary after the prefix. These
-artifacts were never indexed or promoted.
+failure evidence. Its audit exposed the frozen target's native BF16 tie policy
+and a hybrid attention-boundary error in the old replay. These artifacts were
+never indexed or promoted. Commit
+`480f19ad6e6f191006a9f1f1489c705f5ef4fcba` corrects the execution contract:
+each branch independently replays the authoritative prefix and then executes
+speculative tokens as isolated one-token target steps. The optimized mode
+differs only by cloning the completed authoritative-prefix cache for siblings.
 
-Commit `480f19ad6e6f191006a9f1f1489c705f5ef4fcba` corrects the execution
-contract. Each reference branch independently replays the full authoritative
-prefix into a fresh cache, and both modes then execute speculative tokens as
-isolated one-token target steps. The optimized mode differs only by cloning the
-completed authoritative-prefix cache for siblings.
-
-The final reference and optimized companions are respectively
-`counterfactual_reference_480f19a` and
-`counterfactual_cloned_cache_480f19a`. Both contain 32 label-only records,
-6,120 valid H2--H4 layer rows and two deterministic full-router-input audit
+The definitive reference and optimized companions are respectively
+`counterfactual_reference_exact_31c18ff` and
+`counterfactual_cloned_cache_exact_31c18ff`. Both contain 32 label-only records,
+14,360 valid H2--H4 layer rows and two deterministic full-router-input audit
 records. Their blocking audits pass:
 
-- native CUDA selected IDs are exact on all 6,120 rows;
+- native CUDA selected IDs are exact on all 14,360 rows;
 - maximum query-coordinate re-encoding error is
   `6.9141387939453125e-06`;
 - maximum `Kq+b` versus native-BF16 centered-logit error is
-  `0.03273892402648926`, below the immutable pre-B1 bound `0.0625`;
-- 793 native-BF16 cutoff-boundary rows are reported explicitly; FP32 coordinate
-  geometry alone reproduces 5,327/6,120 native selected sets (87.04%), so
-  native selected IDs remain the primary exact-set labels and query regression
-  remains auxiliary.
+  `0.03311729431152344`, below the immutable pre-B1 bound `0.0625`;
+- 1,805 native-BF16 cutoff-boundary rows are reported explicitly; FP32
+  coordinate geometry alone reproduces 12,555/14,360 native selected sets
+  (87.43%), so native selected IDs remain primary exact-set labels and query
+  regression remains auxiliary.
 
 The definitive parity report
-`COUNTERFACTUAL_CACHE_PARITY_480f19a.json` passes with identical structural
-tensors and selected IDs and exactly zero difference in query coordinates,
-router logits and execution weights. The optimized execution is promoted.
+`COUNTERFACTUAL_CACHE_PARITY_EXACT_31c18ff.json` passes with identical
+structural tensors and selected IDs and exactly zero difference in query
+coordinates, router logits and execution weights. The optimized execution is
+promoted.
 
 The real writer -> auditor -> rich index -> dataset path also passes. The index
 contains four outer-train sequences, 32 adaptive samples, 41,280 target-layer
-rows, 199 adaptive nodes and 192 anchor nodes. All 32 companion records join
+rows, 1,024 adaptive nodes and 192 anchor nodes. All 32 companion records join
 one-to-one. A collated batch has the specified tensor geometry, counterfactual
 labels exist only under `targets.counterfactual`, and validation, calibration,
 test and ordinary-inference access are each rejected.
 
-Exact artifact sizes are 1,419,582,103 bytes (adaptive-32), 1,416,324,122 bytes
-(adaptive-16), 37,712,848 bytes (reference companion), 37,712,847 bytes
-(optimized companion), and 8,342,179 bytes (data-flow audit/index). End-to-end
-companion wall times measured from fresh output-directory birth through manifest
-write were about 431.2 seconds for reference and 350.0 seconds for optimized,
-including full 67 GiB checkpoint loading: 0.074 and 0.091 source positions per
-second respectively. Capture-only timings will be written directly into the B1
-manifest because checkpoint loading dominates these Stage-A rates.
+Exact artifact sizes are 1,508,797,457 bytes (adaptive-32 plus controls),
+37,712,904 bytes (reference companion), 37,712,903 bytes (optimized companion),
+and 8,751,532 bytes (data-flow audit/index). Capture-only timings will be
+written directly into the B1 manifest because checkpoint loading dominates the
+small Stage-A rate.
 
 Passed artifacts, frozen partitions and preserved failure evidence were mirrored
 read-only to
-`/workspace/LLM_prefetch_study/artifacts/harp_rtt/v2_causal_branch_pilot_20260807`.
+`/workspace/LLM_prefetch_study/artifacts/harp_rtt/v2_causal_branch_pilot_exact32_20260807`.
 Every embedded capture/companion checksum passes in the mirror and the promotion
-report is byte-identical. No capture, optimizer or training process remains;
-training has not started and sealed data was not opened.
+report is byte-identical. No optimizer or training process was used; sealed data
+was not opened.
+
+Stage B1 began from test-clean commit
+`4f687d30f8de9525d59827d37f3c727733b7e5db`. The 2,048-position diagnostic
+capture uses only the frozen outer-train probe and emits all five matched views.
+It is an information gate, not a training run.
 
 ## Frozen inputs and inner partitions
 
