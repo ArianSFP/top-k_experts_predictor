@@ -280,15 +280,17 @@ def test_anchor_frozen_pca_inputs_are_exact_under_bfloat16_autocast(
     device = torch.device(device_type)
     torch.manual_seed(41)
     config = _config()
-    bridge = LegacyHARPAnchorBridge(
-        HARP8Teacher(config),
-        target_means=torch.randn(config.layers, 6),
-        target_components=torch.randn(
-            config.layers, 6, config.target_state_width
-        ),
-        mtp_means=torch.randn(2, 6),
-        mtp_components=torch.randn(2, 6, config.mtp_state_width),
-    ).to(device).eval()
+    bridge = (
+        LegacyHARPAnchorBridge(
+            HARP8Teacher(config),
+            target_means=torch.randn(config.layers, 6),
+            target_components=torch.randn(config.layers, 6, config.target_state_width),
+            mtp_means=torch.randn(2, 6),
+            mtp_components=torch.randn(2, 6, config.mtp_state_width),
+        )
+        .to(device)
+        .eval()
+    )
     batch = _move(_batch(), device)
     assert isinstance(batch, dict)
     reference_inputs = bridge.legacy_inputs(batch)
@@ -328,6 +330,33 @@ def test_anchor_bridge_is_permanently_frozen() -> None:
     bridge.train()
     assert not bridge.anchor.training
     assert not any(parameter.requires_grad for parameter in bridge.anchor.parameters())
+
+
+def test_anchor_bridge_clamps_position_to_legacy_training_support() -> None:
+    config = _config()
+    bridge = LegacyHARPAnchorBridge(
+        HARP8Teacher(config),
+        target_means=torch.zeros(config.layers, 6),
+        target_components=torch.randn(config.layers, 6, config.target_state_width),
+        mtp_means=torch.zeros(2, 6),
+        mtp_components=torch.randn(2, 6, config.mtp_state_width),
+    ).eval()
+    late = _batch()
+    late["inputs"]["within_request"] = torch.tensor([32.0, 400.0])
+    clipped = copy.deepcopy(late)
+    clipped["inputs"]["within_request"] = torch.tensor([32.0, 32.0])
+
+    late_inputs = bridge.legacy_inputs(late)
+    assert late_inputs["within_request"].tolist() == [32.0, 32.0]
+    late_outputs = bridge(batch=late)
+    clipped_outputs = bridge(batch=clipped)
+    for name in late_outputs:
+        assert torch.equal(late_outputs[name], clipped_outputs[name])
+
+    invalid = copy.deepcopy(late)
+    invalid["inputs"]["within_request"] = torch.tensor([-1.0, 2.0])
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        bridge.legacy_inputs(invalid)
 
 
 def test_anchor_bridge_allows_selected_phase3_gradients() -> None:

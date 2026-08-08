@@ -137,20 +137,21 @@ def _load_control_labels(
         raise ValueError("one or more B1 sources lack all five controls")
     if set(occurrence) != set(uncertainty):
         raise ValueError("B1 uncertainty/control source inventories differ")
-    return dict(occurrence), uncertainty, {"sequences": starts, "sources": len(occurrence)}
+    return (
+        dict(occurrence),
+        uncertainty,
+        {"sequences": starts, "sources": len(occurrence)},
+    )
 
 
 def _stable_top(scores: Tensor, width: int) -> Tensor:
-    return torch.argsort(scores.float(), dim=-1, descending=True, stable=True)[..., :width]
+    return torch.argsort(scores.float(), dim=-1, descending=True, stable=True)[
+        ..., :width
+    ]
 
 
 def _coverage(ids: Tensor, target: Tensor) -> Tensor:
-    return (
-        (ids.unsqueeze(-1) == target.unsqueeze(-2))
-        .any(dim=-2)
-        .float()
-        .mean(dim=-1)
-    )
+    return (ids.unsqueeze(-1) == target.unsqueeze(-2)).any(dim=-2).float().mean(dim=-1)
 
 
 def _anchor_branch_union(anchor: Tensor, branch: Tensor) -> Tensor:
@@ -184,7 +185,9 @@ def _anchor_branch_union(anchor: Tensor, branch: Tensor) -> Tensor:
     return result.reshape(*leading, CANDIDATES)
 
 
-def _oracle_branch_scores(counterfactual: Mapping[str, Tensor]) -> tuple[Tensor, Tensor]:
+def _oracle_branch_scores(
+    counterfactual: Mapping[str, Tensor]
+) -> tuple[Tensor, Tensor]:
     """Target-path-probability-weighted route evidence, deduplicated by node."""
 
     logits = counterfactual["router_logits"].float().cpu()
@@ -212,7 +215,9 @@ def _oracle_branch_scores(counterfactual: Mapping[str, Tensor]) -> tuple[Tensor,
                     logits[sample, path, horizon], dim=-1
                 )
             if not seen:
-                raise ValueError(f"sample {sample} lacks oracle branches at H{horizon + 1}")
+                raise ValueError(
+                    f"sample {sample} lacks oracle branches at H{horizon + 1}"
+                )
             if captured_mass[sample, horizon] > 1.0 + 2e-5:
                 raise ValueError("deduplicated captured target path mass exceeds one")
     return scores, captured_mass
@@ -405,7 +410,9 @@ def _path_occurrence_summary(
         )
         horizon_report = {}
         for horizon in range(HORIZONS):
-            mean, per_request = _request_macro(values[:, horizon : horizon + 1], request_ids)
+            mean, per_request = _request_macro(
+                values[:, horizon : horizon + 1], request_ids
+            )
             horizon_report[f"H{horizon + 1}"] = {
                 "request_macro_path_occurrence": mean,
                 "requests": len(per_request),
@@ -461,9 +468,7 @@ def main() -> None:
         corpus_root=args.corpus_root,
         max_tree_nodes=32,
     )
-    dataset = CounterfactualDatasetAdapter(
-        base, labels, split="train", training=True
-    )
+    dataset = CounterfactualDatasetAdapter(base, labels, split="train", training=True)
     if len(dataset) != 2048 or len(labels) != 2048 or len(controls) != 2048:
         raise ValueError(
             "B1 requires exactly 2,048 one-to-one source/control/companion records"
@@ -493,7 +498,10 @@ def main() -> None:
 
     with torch.inference_mode():
         for start in range(0, len(dataset), args.batch_size):
-            items = [dataset[index] for index in range(start, min(start + args.batch_size, len(dataset)))]
+            items = [
+                dataset[index]
+                for index in range(start, min(start + args.batch_size, len(dataset)))
+            ]
             batch = collate_harp_rtt(items)
             metadata = batch["metadata"]
             batch_requests = [str(value) for value in metadata["request_id"]]
@@ -518,7 +526,9 @@ def main() -> None:
                 enabled=enabled,
             ):
                 anchor_outputs = bridge(batch=device_batch)
-            anchor_scores = anchor_outputs["future_router_scores"][:, :HORIZONS].float().cpu()
+            anchor_scores = (
+                anchor_outputs["future_router_scores"][:, :HORIZONS].float().cpu()
+            )
             target_ids = batch["targets"]["future_selected_ids"].long().cpu()
             counterfactual = batch["targets"]["counterfactual"]
             branch_scores, captured_mass = _oracle_branch_scores(counterfactual)
@@ -575,9 +585,7 @@ def main() -> None:
             ):
                 values = values.masked_fill(~valid, float("nan"))
                 # Average unique/selected path rows into one sample/horizon/layer grid.
-                cf_metric_rows[name].append(
-                    torch.nanmean(values, dim=1).numpy()
-                )
+                cf_metric_rows[name].append(torch.nanmean(values, dim=1).numpy())
 
     metrics = {name: np.concatenate(rows, axis=0) for name, rows in metric_rows.items()}
     cf_metrics = {
@@ -631,15 +639,15 @@ def main() -> None:
     mismatch_mean, mismatch_requests = _request_macro(
         metrics["oracle_coverage_at_64"], request_ids, h4_mismatch_mask
     )
-    aggregate["oracle_coverage_at_64"]["h4_prefix_mismatch_request_macro"] = mismatch_mean
+    aggregate["oracle_coverage_at_64"][
+        "h4_prefix_mismatch_request_macro"
+    ] = mismatch_mean
     aggregate["oracle_coverage_at_64"]["h4_prefix_mismatch_requests"] = len(
         mismatch_requests
     )
 
     oracle_mean = aggregate["oracle_coverage_at_64"]["mean_h1_h4_request_macro"]
-    oracle_h4 = aggregate["oracle_coverage_at_64"]["horizons"][3][
-        "request_macro_mean"
-    ]
+    oracle_h4 = aggregate["oracle_coverage_at_64"]["horizons"][3]["request_macro_mean"]
     gate_results = {
         "mean_h1_h4": {
             "value": oracle_mean,
@@ -664,12 +672,10 @@ def main() -> None:
         cf_summary[name] = {
             "mean": float(np.nanmean(values)),
             "by_horizon": [
-                float(np.nanmean(values[:, horizon]))
-                for horizon in range(HORIZONS)
+                float(np.nanmean(values[:, horizon])) for horizon in range(HORIZONS)
             ],
             "by_layer": [
-                float(np.nanmean(values[:, :, layer]))
-                for layer in range(LAYERS)
+                float(np.nanmean(values[:, :, layer])) for layer in range(LAYERS)
             ],
             "by_block_phase_layer_mod_4": [
                 float(np.nanmean(values[:, :, phase::4])) for phase in range(4)
@@ -679,7 +685,9 @@ def main() -> None:
     report = {
         "schema": SCHEMA,
         "passed": all_gates,
-        "decision": "promote_to_B2" if all_gates else "stop_before_B2_change_tree_policy",
+        "decision": (
+            "promote_to_B2" if all_gates else "stop_before_B2_change_tree_policy"
+        ),
         "stage": "B1_oracle",
         "split": "outer_train_inner_diagnostic_probe",
         "source_positions": len(request_ids),
@@ -778,7 +786,9 @@ def main() -> None:
             "companion": str(args.companion.resolve()),
             "companion_manifest_sha256": _sha256(args.companion / "manifest.json"),
             "index": str(args.index_root.resolve()),
-            "static_geometry_sha256": static.manifest["files"]["router_geometry.safetensors"]["sha256"],
+            "static_geometry_sha256": static.manifest["files"][
+                "router_geometry.safetensors"
+            ]["sha256"],
             "anchor": anchor_provenance,
         },
         "safety": {

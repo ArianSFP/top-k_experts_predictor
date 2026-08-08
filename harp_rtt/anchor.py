@@ -23,6 +23,7 @@ from harp8.model import HARP8Teacher
 
 
 HARP_ANCHOR_BRIDGE_SCHEMA = "harp_rtt_legacy_harp_anchor_bridge_v2"
+HARP_LEGACY_MAX_SOURCE_POSITION = 32.0
 _CHECKPOINT_NUMPY_GLOBALS = {
     "numpy.dtype",
     "numpy.ndarray",
@@ -108,7 +109,9 @@ def _tensor_preprocessing(path: Path) -> dict[str, Tensor]:
     value = torch.load(Path(path), map_location="cpu", weights_only=True, mmap=True)
     if not isinstance(value, Mapping):
         raise TypeError(f"preprocessing artifact is not a mapping: {path}")
-    return {name: tensor for name, tensor in value.items() if isinstance(tensor, Tensor)}
+    return {
+        name: tensor for name, tensor in value.items() if isinstance(tensor, Tensor)
+    }
 
 
 class LegacyHARPAnchorBridge(nn.Module):
@@ -146,7 +149,9 @@ class LegacyHARPAnchorBridge(nn.Module):
         ):
             raise ValueError("target PCA components disagree with HARP config")
         if mtp_means.ndim != 2 or mtp_components.ndim != 3:
-            raise ValueError("MTP preprocessing must be [D,H] means and [D,H,R] components")
+            raise ValueError(
+                "MTP preprocessing must be [D,H] means and [D,H,R] components"
+            )
         if mtp_means.shape != mtp_components.shape[:2]:
             raise ValueError("MTP mean/component hidden widths disagree")
         if mtp_components.shape[-1] != self.config.mtp_state_width:
@@ -175,9 +180,13 @@ class LegacyHARPAnchorBridge(nn.Module):
         required_target = {"local_means", "local_components"}
         required_mtp = {"mtp_mean", "mtp_components"}
         if not required_target <= target.keys():
-            raise KeyError(f"target preprocessing lacks {sorted(required_target - target.keys())}")
+            raise KeyError(
+                f"target preprocessing lacks {sorted(required_target - target.keys())}"
+            )
         if not required_mtp <= mtp.keys():
-            raise KeyError(f"MTP preprocessing lacks {sorted(required_mtp - mtp.keys())}")
+            raise KeyError(
+                f"MTP preprocessing lacks {sorted(required_mtp - mtp.keys())}"
+            )
         bridge = cls(
             anchor,
             target_means=target["local_means"],
@@ -193,6 +202,9 @@ class LegacyHARPAnchorBridge(nn.Module):
                 "mtp_preprocessing_sha256": sha256_file(mtp_preprocessing),
                 "target_source_role": "post_moe_residual_xplus",
                 "mtp_source_role": "mtp_vocabulary_head_input",
+                "within_request_policy": (
+                    "causal_clamp_to_legacy_training_support_[0,32]"
+                ),
                 "labels_read": False,
             }
         )
@@ -258,14 +270,18 @@ class LegacyHARPAnchorBridge(nn.Module):
         if adaptive_contract.numel() == 1 and route.shape[0] != 1:
             adaptive_contract = adaptive_contract.expand(route.shape[0])
         if adaptive_contract.shape != (route.shape[0],):
-            raise ValueError("adaptive tree contract marker must be one value per batch row")
+            raise ValueError(
+                "adaptive tree contract marker must be one value per batch row"
+            )
         if adaptive_contract.any() and not adaptive_contract.all():
             raise ValueError("mixed adaptive/legacy anchor batches are unsupported")
 
         if adaptive_contract.all():
             anchor_inputs = batch.get("anchor_inputs")
             if not isinstance(anchor_inputs, Mapping):
-                raise KeyError("adaptive batch lacks the separate anchor_inputs channel")
+                raise KeyError(
+                    "adaptive batch lacks the separate anchor_inputs channel"
+                )
             spine = anchor_inputs.get("mtp_spine")
             if not isinstance(spine, Mapping):
                 raise KeyError("adaptive batch lacks its explicit legacy anchor spine")
@@ -273,11 +289,14 @@ class LegacyHARPAnchorBridge(nn.Module):
                 str(key)
                 for key in spine
                 if "accept" in str(key).lower()
-                or "label" in str(key).lower() and str(key) != "labels_present"
+                or "label" in str(key).lower()
+                and str(key) != "labels_present"
                 or "future" in str(key).lower()
             ]
             if forbidden:
-                raise ValueError(f"anchor spine carries forbidden label/future fields: {forbidden}")
+                raise ValueError(
+                    f"anchor spine carries forbidden label/future fields: {forbidden}"
+                )
             contract = spine.get("contract")
             raw_hidden = spine.get("hidden_states")
             raw_router = spine.get("router_logits")
@@ -299,9 +318,13 @@ class LegacyHARPAnchorBridge(nn.Module):
                 or mask.shape != expected_grid
                 or contract.bool().reshape(-1).shape != (batch_size,)
             ):
-                raise ValueError("anchor spine geometry disagrees with pinned preprocessing")
+                raise ValueError(
+                    "anchor spine geometry disagrees with pinned preprocessing"
+                )
             if not contract.bool().all():
-                raise ValueError("anchor spine contract is not valid for every batch row")
+                raise ValueError(
+                    "anchor spine contract is not valid for every batch row"
+                )
             if not mask.bool().all():
                 raise ValueError("anchor spine mask must contain every pinned depth")
             expected_depth = torch.arange(
@@ -311,7 +334,9 @@ class LegacyHARPAnchorBridge(nn.Module):
                 -1, captured_depths - 1, dtype=torch.int64, device=parent.device
             )[None].expand(batch_size, -1)
             if not torch.equal(depth.long(), expected_depth):
-                raise ValueError("anchor spine depths are not exact H1 through pinned depth")
+                raise ValueError(
+                    "anchor spine depths are not exact H1 through pinned depth"
+                )
             if not torch.equal(parent.long(), expected_parent):
                 raise ValueError("anchor spine parent chain is incoherent")
             labels_present = spine.get("labels_present")
@@ -320,8 +345,12 @@ class LegacyHARPAnchorBridge(nn.Module):
             token_ids = spine.get("token_ids")
             exact_token = inputs.get("exact_next_token_id")
             if isinstance(token_ids, Tensor) and isinstance(exact_token, Tensor):
-                if not torch.equal(token_ids[:, 0].long(), exact_token.reshape(-1).long()):
-                    raise ValueError("anchor spine root is not the exact committed H1 token")
+                if not torch.equal(
+                    token_ids[:, 0].long(), exact_token.reshape(-1).long()
+                ):
+                    raise ValueError(
+                        "anchor spine root is not the exact committed H1 token"
+                    )
             raw_mtp = raw_hidden.float()
             selected_router_tensor = raw_router.float()
             captured_available = mask.bool()
@@ -401,6 +430,17 @@ class LegacyHARPAnchorBridge(nn.Module):
             dim=-1,
         )
         within = inputs["within_request"].float().reshape(batch_size)
+        if not torch.isfinite(within).all() or (within < 0).any():
+            raise ValueError(
+                "within-request source positions must be finite and non-negative"
+            )
+        # The frozen HARP anchor was trained on 34 rows/request, of which only
+        # source rows 0--32 have t+1 labels. Its learned position projection
+        # divides this scalar by 33 and includes a squared term; passing later
+        # adaptive-capture positions through unchanged is severe, unsupported
+        # extrapolation. Clamp only the compatibility channel while the v2
+        # model retains the raw causal position in its own inputs.
+        within = within.clamp_max(HARP_LEGACY_MAX_SOURCE_POSITION)
         return {
             "route_history": route_history,
             "route_available": route_available,
@@ -425,6 +465,7 @@ class LegacyHARPAnchorBridge(nn.Module):
 
 __all__ = [
     "HARP_ANCHOR_BRIDGE_SCHEMA",
+    "HARP_LEGACY_MAX_SOURCE_POSITION",
     "LegacyHARPAnchorBridge",
     "load_harp_anchor_checkpoint",
     "sha256_file",
