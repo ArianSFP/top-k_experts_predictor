@@ -17,6 +17,7 @@ from evaluate_harp_rtt_b1_oracle import (  # noqa: E402
     _bootstrap_delta,
     _first_divergence,
     _finite_mean_or_none,
+    _metric_summary,
     _oracle_branch_scores,
 )
 
@@ -24,6 +25,8 @@ from evaluate_harp_rtt_b1_oracle import (  # noqa: E402
 def test_finite_mean_serializes_empty_mask_as_null() -> None:
     assert _finite_mean_or_none(np.asarray([np.nan, np.nan])) is None
     assert _finite_mean_or_none(np.asarray([1.0, np.nan, 3.0])) == 2.0
+    empty = _metric_summary(np.asarray([[np.nan]]), ["request"])
+    assert empty == {"request_macro_mean": None, "requests": 0, "per_request": {}}
 
 
 def test_oracle_union_preserves_anchor48_and_fills_from_branch() -> None:

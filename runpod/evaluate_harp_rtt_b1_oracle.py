@@ -269,7 +269,7 @@ def _metric_summary(
 ) -> dict[str, Any]:
     mean, per_request = _request_macro(values, request_ids, sample_mask)
     return {
-        "request_macro_mean": mean,
+        "request_macro_mean": mean if per_request else None,
         "requests": len(per_request),
         "per_request": per_request,
     }
@@ -347,7 +347,10 @@ def _stratified_metrics(
         expanded = mask[:, :, None]
         for name, values in metrics.items():
             mean, per_request = _request_macro(values, request_ids, expanded)
-            output[name] = {"request_macro_mean": mean, "requests": len(per_request)}
+            output[name] = {
+                "request_macro_mean": mean if per_request else None,
+                "requests": len(per_request),
+            }
         return output
 
     result["prefix_match"] = {
@@ -382,7 +385,7 @@ def _stratified_metrics(
                 values[:, :, layer : layer + 1], request_ids
             )
             layer_result[name] = {
-                "request_macro_mean": mean,
+                "request_macro_mean": mean if per_request else None,
                 "requests": len(per_request),
             }
         result["layer"][str(layer)] = layer_result
@@ -395,7 +398,7 @@ def _stratified_metrics(
             selected = values[:, :, layer_mask]
             mean, per_request = _request_macro(selected, request_ids)
             phase_result[name] = {
-                "request_macro_mean": mean,
+                "request_macro_mean": mean if per_request else None,
                 "requests": len(per_request),
             }
         result["block_phase_layer_mod_4"][str(phase)] = phase_result
@@ -810,7 +813,8 @@ def main() -> None:
 
     args.output.mkdir(parents=True)
     (args.output / "B1_ORACLE_GATE_REPORT.json").write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
     )
     np.savez_compressed(
         args.output / "B1_REQUEST_METRICS.npz",
@@ -832,7 +836,7 @@ def main() -> None:
     (args.output / "SHA256SUMS.json").write_text(
         json.dumps(hashes, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    print(json.dumps(report, indent=2, sort_keys=True))
+    print(json.dumps(report, indent=2, sort_keys=True, allow_nan=False))
 
 
 if __name__ == "__main__":
