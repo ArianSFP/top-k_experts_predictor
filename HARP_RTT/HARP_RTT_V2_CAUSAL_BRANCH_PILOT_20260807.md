@@ -1,15 +1,17 @@
 # HARP-RTT v2 Branch-Rich Causal Information Pilot
 
-**Status:** controlling execution plan  
-**Lineage:** `agent/harp-rtt-causal-branches-v2` from `c972450`  
+**Status:** Stage A passed; Stage B1 completed and failed all promotion gates; B2/B3 stopped by design
+**Lineage:** `agent/harp-rtt-causal-branches-v2` from `c972450`
 **Decision:** do not resume the legacy C64 run. The pause evidence supersedes
 the v1.3 resume instruction: candidate generation and within-pool ranking are
 separate bottlenecks, and the next test is counterfactual causal branch evidence.
 
+The definitive execution evidence, kill decision and next experiment are recorded in
+`HARP_RTT_V2_CAUSAL_BRANCH_PILOT_RESULTS_20260808.md`.
+
 ## Execution record
 
-Preflight completed on 2026-08-07 on the supplied
-`root@213.192.2.104:40168` pod:
+Preflight completed on 2026-08-07 on the supplied RunPod:
 
 - GPU: RTX PRO 6000 Blackwell Server Edition, 97,887 MiB total and about
   97,252 MiB free at inspection; host RAM 1.5 TiB.
@@ -98,8 +100,21 @@ records. Their blocking audits pass:
 The definitive parity report
 `COUNTERFACTUAL_CACHE_PARITY_EXACT_31c18ff.json` passes with identical
 structural tensors and selected IDs and exactly zero difference in query
-coordinates, router logits and execution weights. The optimized execution is
-promoted.
+coordinates, router logits and execution weights. The optimized execution was
+promoted for cache parity only; its probability-label semantics are superseded
+by the following audit.
+
+A later target-mass audit found that both `exact_31c18ff` companions included
+the target probability of the already-known exact H1 root in cumulative path
+mass, while the source-side root is correctly conditioned at log probability
+zero. Their route tensors, selected IDs and cache-parity result remain valid,
+but `target_path_logp`, captured branch mass, posterior targets and OTHER mass
+must not be used. No optimizer consumed these artifacts. Commit
+`52c117ab55158c42879491069a1c53120d75ad33` conditions target path mass on exact
+H1 and starts accumulation at the H2 edge; commit
+`0ee2368f095a2db475257ac7b0a35125a5c4df65` adds fail-closed topology checks.
+Fresh v3 Stage-A reference/optimized companions and dataflow audit replace them
+before any translator training.
 
 The real writer -> auditor -> rich index -> dataset path also passes. The index
 contains four outer-train sequences, 32 adaptive samples, 41,280 target-layer
@@ -125,6 +140,33 @@ Stage B1 began from test-clean commit
 `4f687d30f8de9525d59827d37f3c727733b7e5db`. The 2,048-position diagnostic
 capture uses only the frozen outer-train probe and emits all five matched views.
 It is an information gate, not a training run.
+
+The first B1 attempt from `4f687d3` is preserved as fail-closed evidence at
+`adaptive32_controls_probe_4f687d3`; it has no final manifest or checksum
+inventory and is forbidden from gates/training. After 103 completed requests,
+request 104 exposed two previously untested EOS boundary conditions:
+
+1. an MTP greedy branch may terminate before H4, so the first four adaptive
+   nodes are not necessarily one greedy path; and
+2. the legacy split's `usable_t_plus_2_positions` can include positions after a
+   target truth EOS that the old speculative writer failed to terminate on.
+
+Commit `691bae7806ede1c35f4c06bce97ce8b434fe2524` makes the diagnostic greedy
+view the actual one-to-four-node, parent-coherent rank-zero prefix while keeping
+fixed/adaptive 16/32 exact-budgeted. Commit
+`7a5b456abca501dbf7768947b3cb75d6b0280da5` freezes partition schema v3:
+all offsets are uniform over positions with complete H1--H4 factual tokens,
+H4 may itself equal the first EOS, and no post-EOS row is eligible. The v3
+partition preserves all 388 request identities and their order. It is bound to
+sequence-start SHA-256
+`261b8a249c17636bcdc6989a6dc028ab7180e0c076aec5df8f3bf05d32acad7d`,
+sequence-end SHA-256
+`fe225a7e8fef5639ae2d80f2fb4d5b7c4e50234c772b1dcfabff78827d4a5423`,
+and manifest SHA-256
+`f6baebb80244f21b3f15563d394b00543cd819b9c60f437b69ed812067405a6a`.
+Fourteen selected requests have a first EOS; the minimum valid H1--H4 span is
+110 positions and none falls below its required 8/16 positions. The exact
+request-104 v3 replay produced all 16 trees and passed both blocking audits.
 
 ## Frozen inputs and inner partitions
 
