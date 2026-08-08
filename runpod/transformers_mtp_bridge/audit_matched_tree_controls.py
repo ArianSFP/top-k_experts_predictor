@@ -29,12 +29,12 @@ from matched_tree_controls import (  # noqa: E402
 
 
 EXPECTED_COUNTS = {
-    "greedy": 4,
     "fixed16": 16,
     "adaptive16": 16,
     "fixed32": 32,
     "adaptive32": 32,
 }
+GREEDY_COUNT_RANGE = (1, 4)
 EXPECTED_DEPTHS = {
     "greedy": [1, 1, 1, 1],
     "fixed16": [1, 5, 5, 5],
@@ -190,7 +190,11 @@ def audit(root: Path) -> dict[str, Any]:
             raise AuditError(f"resolved control {key} precedes its causal ready record")
         if resolved["structural_hash"] != ready["structural_hash"]:
             raise AuditError(f"resolved control {key} changed tree structure")
-        if int(ready["node_count"]) != EXPECTED_COUNTS[name]:
+        node_count = int(ready["node_count"])
+        if name == "greedy":
+            if not GREEDY_COUNT_RANGE[0] <= node_count <= GREEDY_COUNT_RANGE[1]:
+                raise AuditError("greedy control has an invalid terminal length")
+        elif node_count != EXPECTED_COUNTS[name]:
             raise AuditError(f"{name} did not consume its exact node budget")
         if resolved.get("all_labels_valid") is not True:
             raise AuditError(f"{name} has incomplete H1--H4 factual labels")
@@ -213,8 +217,12 @@ def audit(root: Path) -> dict[str, Any]:
         greedy = views["greedy"]["nodes"]
         if _structure(adaptive32[:16]) != _structure(adaptive16):
             raise AuditError(f"tree {tree_id} adaptive16 is not adaptive32[:16]")
-        if _structure(adaptive32[:4]) != _structure(greedy):
-            raise AuditError(f"tree {tree_id} greedy is not adaptive32[:4]")
+        if _structure(adaptive32[: len(greedy)]) != _structure(greedy):
+            raise AuditError(f"tree {tree_id} greedy is not an adaptive32 prefix")
+        if [int(node["depth"]) for node in greedy] != list(
+            range(1, len(greedy) + 1)
+        ) or any(int(node["token_rank_under_parent"]) != 0 for node in greedy):
+            raise AuditError(f"tree {tree_id} greedy is not a rank-zero spine")
         if views["adaptive16"].get("independent_adaptive16_exact_match") is not True:
             raise AuditError(f"tree {tree_id} lacks independent adaptive16 parity")
         if (
@@ -228,6 +236,11 @@ def audit(root: Path) -> dict[str, Any]:
     expected_node_counts = {
         name: len(by_tree) * count for name, count in EXPECTED_COUNTS.items()
     }
+    expected_node_counts["greedy"] = sum(
+        int(ready["node_count"])
+        for (_tree_id, name), ready in ready_by_key.items()
+        if name == "greedy"
+    )
     if counts.get("matched_control_trees") != expected_tree_counts:
         raise AuditError("manifest matched-control tree counts differ")
     if counts.get("matched_control_nodes") != expected_node_counts:
@@ -249,7 +262,10 @@ def audit(root: Path) -> dict[str, Any]:
         "tree_count": tree_count,
         "ready_record_count": len(ready_rows),
         "resolved_record_count": len(resolved_rows),
-        "exact_node_counts": EXPECTED_COUNTS,
+        "node_count_contract": {
+            "greedy": {"minimum": 1, "maximum": 4, "terminal_shortened": True},
+            **{name: {"exact": count} for name, count in EXPECTED_COUNTS.items()},
+        },
         "adaptive16_prefix_parity": True,
         "adaptive16_independent_parity": True,
         "fixed_beam_selection_reconstructed": True,

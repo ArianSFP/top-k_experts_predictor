@@ -67,6 +67,38 @@ def assert_identical_structure(
         raise RuntimeError("canonical adaptive-16 prefix differs from independent build")
 
 
+def greedy_spine_prefix(nodes: list[AdaptiveTreeNode]) -> list[AdaptiveTreeNode]:
+    """Return the canonical rank-zero prefix, shortened when it terminates.
+
+    The adaptive builder emits its greedy path first, but deliberately stops
+    expanding that path when MTP predicts EOS.  Subsequent nodes may therefore
+    belong to a different branch and must never be mislabeled as greedy.
+    """
+
+    if not nodes:
+        raise ValueError("cannot extract a greedy spine from an empty tree")
+    root = nodes[0]
+    if root.parent_local_index is not None or root.depth != 1:
+        raise ValueError("adaptive tree has an invalid greedy root")
+    result = [root]
+    while result[-1].depth < 4:
+        parent = result[-1]
+        children = [
+            node
+            for node in nodes
+            if node.parent_local_index == parent.local_index
+            and node.token_rank_under_parent == 0
+        ]
+        if not children:
+            break
+        if len(children) != 1:
+            raise ValueError("adaptive tree has multiple rank-zero children")
+        child = children[0]
+        if child.local_index != len(result) or child.depth != parent.depth + 1:
+            raise ValueError("adaptive greedy spine is not the canonical tree prefix")
+        result.append(child)
+    return result
+
 def serialize_nodes(nodes: Iterable[AdaptiveTreeNode]) -> list[dict[str, Any]]:
     """Serialize causal node data sufficient to re-audit beam selection."""
 

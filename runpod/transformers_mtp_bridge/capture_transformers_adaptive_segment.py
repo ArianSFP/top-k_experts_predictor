@@ -80,6 +80,7 @@ from matched_tree_controls import (  # noqa: E402
     CONTROL_RESOLVED_EVENT,
     CONTROL_SCHEMA,
     assert_identical_structure,
+    greedy_spine_prefix,
     assert_ready_record,
     assert_resolved_record,
     resolved_labels,
@@ -535,11 +536,7 @@ def _build_matched_controls(
         fixed_manifests[name] = policy.manifest()
         run.control_native_mtp_calls[name] += runner.native_call_count
 
-    greedy = nodes[:4]
-    if [node.depth for node in greedy] != [1, 2, 3, 4] or any(
-        node.token_rank_under_parent != 0 for node in greedy
-    ):
-        raise RuntimeError("canonical adaptive tree does not begin with its greedy spine")
+    greedy = greedy_spine_prefix(nodes)
 
     views = {
         "greedy": greedy,
@@ -551,8 +548,10 @@ def _build_matched_controls(
     policy_manifests = {
         "greedy": {
             "schema": "harp_rtt_greedy_spine_control_v1",
-            "depths": [1, 2, 3, 4],
+            "maximum_depth": 4,
             "selection": "local_rank_zero_parent_coherent",
+            "source": "canonical_adaptive32_prefix",
+            "terminal_shortening": "stop_when_rank_zero_child_is_absent_after_eos",
             "uses_target_labels": False,
         },
         "fixed16": fixed_manifests["fixed16"],

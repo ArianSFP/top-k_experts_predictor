@@ -37,6 +37,7 @@ from matched_tree_controls import (  # noqa: E402
     CONTROL_SCHEMA,
     assert_ready_record,
     assert_resolved_record,
+    greedy_spine_prefix,
     resolved_labels,
     serialize_nodes,
     structural_hash,
@@ -172,6 +173,34 @@ def test_confident_policy_preserves_greedy_spine_then_fills_exact_budget() -> No
     assert all(node.token_rank_under_parent == 0 for node in nodes[:4])
     assert any(node.token_rank_under_parent > 0 for node in nodes[4:])
 
+
+def test_greedy_control_stops_before_non_greedy_nodes_after_eos() -> None:
+    eos_token_id = 2
+
+    def terminal_greedy_observation(path: tuple[int, ...]) -> NodeObservation:
+        if len(path) == 1:
+            ids = (eos_token_id, 101, 202, 303, 404, 505, 606, 707)
+        else:
+            offset = (1000 + 17 * sum(path) + len(path)) % 30_000
+            ids = tuple((offset + rank) % 32_000 for rank in range(8))
+        return NodeObservation(
+            ids,
+            tuple(-1.4 - 0.2 * rank for rank in range(8)),
+            32_000,
+            9.4,
+        )
+
+    nodes = AdaptiveMTPTreeBuilder(AdaptiveExpansionPolicy(max_nodes=32)).build(
+        tree_id="seq:terminal-greedy",
+        exact_h1_token_id=77,
+        evaluate=terminal_greedy_observation,
+        eos_token_id=eos_token_id,
+    )
+    greedy = greedy_spine_prefix(nodes)
+    assert len(nodes) == 32
+    assert [node.depth for node in greedy] == [1, 2]
+    assert [node.token_id for node in greedy] == [77, eos_token_id]
+    assert nodes[2].parent_local_index != greedy[-1].local_index
 
 def test_anchor_spine_is_exact_h1_through_h6_parent_coherent_top1() -> None:
     """The legacy anchor spine is separate from the bounded H1--H4 tree.
