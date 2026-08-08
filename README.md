@@ -1,17 +1,30 @@
-# Top-k Experts Predictor (HARP8)
+# Top-k Experts Predictor (HARP8 and HARP-RTT)
 
-This repository contains the source release of the HARP8 multi-horizon expert-route predictor used in the Qwen3.6/MoE caching study. HARP8 predicts the target router top-8 experts for horizons t+1 through t+8 and exposes candidate pools for a separate scheduler or reranker.
+This repository contains the HARP8 multi-horizon expert-route predictor and the
+experimental HARP-RTT branch-aware successor used in the Qwen3.6/MoE caching
+study. HARP8 predicts the target router top-8 experts for horizons t+1 through
+t+8 and exposes candidate pools for a separate scheduler or reranker. HARP-RTT
+focuses accuracy on t+1 through t+4 using exact-cardinality retrieval, target
+router geometry, an adaptive native-MTP tree, and a rich C64 reranker.
 
 The model is a research prototype and is router-preserving: predictions do not replace native routing or change model outputs.
 
 ## Included
 
 - harp8/: model, causal data adapter, feature preparation, losses, training, evaluation, candidate export, and set reranker.
-- tests/: focused generator and reranker contract tests.
-- docs/: implementation/validation handoff and chronological accuracy-expansion ledger.
+- harp_rtt/: branch-aware model, exact-k objectives, rich event index/dataset,
+  staged trainer, probes, and frozen HARP anchor bridge.
+- HARP_RTT/: formal architecture, immutable pause manifest, and detailed
+  implementation/experiment handoff.
+- runpod/transformers_mtp_bridge/: audited adaptive-tree capture utilities;
+  no captured data or model weights are included.
+- tests/: focused HARP8 and HARP-RTT contract tests.
+- docs/: HARP8 implementation/validation handoff and chronological
+  accuracy-expansion ledger.
 - results/: small validation metric summaries.
 
-Raw traces, PCA arrays, checkpoints, candidate memmaps, RunPod scripts, credentials, and private infrastructure details are intentionally excluded.
+Raw traces, PCA arrays, checkpoints, candidate memmaps, credentials, and private
+runtime artifacts are intentionally excluded.
 
 ## Install and test
 
@@ -23,9 +36,35 @@ python -m venv .venv
 python -m pip install --upgrade pip
 python -m pip install -e '.[test]'
 pytest -q tests/test_harp8.py tests/test_harp8_reranker.py
+pytest -q tests/test_harp_rtt_*.py
 ~~~
 
-The verified source release passes 16 focused tests. GPU training is not required for those tests.
+The HARP-RTT snapshot was verified with 146 passing tests and three CUDA-only
+skips. GPU training is not required for the CPU contract suite.
+
+## HARP-RTT status
+
+HARP-RTT is an accuracy-research implementation, not a completed production
+prefetcher. It includes:
+
+- exact H1 token conditioning and an adaptive H2--H4 native-MTP tree;
+- independent target control/content gates and frozen expert-router geometry;
+- exact-cardinality top-8 likelihoods and marginal inclusion probabilities;
+- direct horizon/layer decoding, branch mixtures, trajectory refinement, and
+  C64 candidate reranking;
+- request/lineage-safe data handling and fail-closed sealed-test controls;
+- function-preserving initialization from the published HARP8 checkpoint.
+
+The latest same-input C64 baseline was paused after epoch 8 at validation mean
+H1--H4 Recall@8 `0.7948381`, while its fixed candidate pool had `0.9740958`
+oracle coverage. Prefix-stratified audits show that the remaining bottleneck is
+branch-rich causal information, particularly when the single greedy MTP prefix
+is wrong. Training is therefore paused pending a newly planned adaptive data
+capture. See `HARP_RTT/HARP_RTT_PAUSE_CAUSAL_RECAPTURE_HANDOFF_20260807.md`.
+
+The existing legacy single-chain index is deliberately rejected by formal
+HARP-RTT Phase 2--5 training. No test partition was opened to make these
+decisions.
 
 ## Data contract
 
