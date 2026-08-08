@@ -92,3 +92,21 @@ def test_legacy_four_path_oracle_is_still_readable() -> None:
     assert torch.equal(
         result["target_branch"][0, 3, 0, :8] > 0, torch.ones(8, dtype=torch.bool)
     )
+
+
+def test_node_budget_diagnostics_preserve_batch_dimension() -> None:
+    labels = empty_node_counterfactual_tensors()
+    batched = {
+        name: torch.stack([value, value], dim=0)
+        for name, value in labels.items()
+    }
+    batch_size = batched["budget_realized"].shape[0]
+    rows = torch.cat(
+        [
+            batched["budget_realized"].long(),
+            batched["budget_category_counts"].long().reshape(batch_size, -1),
+            batched["budget_node_masks"].sum(-1).long(),
+        ],
+        dim=-1,
+    )
+    assert rows.shape == (2, 18)

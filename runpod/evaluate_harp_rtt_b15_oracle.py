@@ -731,11 +731,12 @@ def main() -> None:
                 )
                 target_greedy_occurrence.append(target_greedy_present.numpy())
             if "node_mask" in counterfactual:
+                batch_size = counterfactual["budget_realized"].shape[0]
                 budget_rows.append(
                     torch.cat(
                         [
                             counterfactual["budget_realized"].long(),
-                            counterfactual["budget_category_counts"].long().reshape(-1),
+                            counterfactual["budget_category_counts"].long().reshape(batch_size, -1),
                             counterfactual["budget_node_masks"].sum(-1).long(),
                         ],
                         dim=-1,
