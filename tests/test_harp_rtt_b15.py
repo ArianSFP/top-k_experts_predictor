@@ -11,6 +11,7 @@ from harp_rtt.b15 import (
     factual_branch_candidates,
     global_candidates,
     h1_root_supervision_loss,
+    required_b15_free_bytes,
     select_path_budget,
     selected_set_inclusion_mass,
 )
@@ -80,6 +81,20 @@ def test_budget_eight_causally_backfills_only_informative_endpoints() -> None:
         observed.update(path)
 
 
+def test_path_budgets_are_explicitly_nested() -> None:
+    nodes = tree()
+    four = select_path_budget(nodes, 4)
+    eight = select_path_budget(nodes, 8)
+    sixteen = select_path_budget(nodes, 16)
+    all_nodes = select_path_budget(nodes, "all")
+    assert set(four.endpoint_local_indices) <= set(eight.endpoint_local_indices)
+    assert set(eight.endpoint_local_indices) <= set(sixteen.endpoint_local_indices)
+    assert set(sixteen.endpoint_local_indices) <= set(all_nodes.endpoint_local_indices)
+    assert all(not left or right for left, right in zip(four.node_mask, eight.node_mask))
+    assert all(not left or right for left, right in zip(eight.node_mask, sixteen.node_mask))
+    assert all(not left or right for left, right in zip(sixteen.node_mask, all_nodes.node_mask))
+
+
 def test_selected_set_inclusion_mass_is_exact_overlap_objective() -> None:
     ids = torch.tensor([[[0, 1]], [[1, 2]]])
     probability = torch.tensor([0.3, 0.4])
@@ -112,6 +127,41 @@ def test_candidate_quota_preserves_anchor_and_fills_distinct_branch_ids() -> Non
     assert candidates.tolist() == [[0, 1, 3, 4]]
 
 
+def test_candidate_quota_all_zero_branch_exactly_reproduces_anchor() -> None:
+    anchor = torch.tensor([[4.0, 9.0, 7.0, 8.0, 6.0, 5.0]])
+    result = candidate_union(
+        anchor, torch.zeros_like(anchor), anchor_quota=2, width=5
+    )
+    assert result.tolist() == [[1, 3, 2, 4, 5]]
+
+
+def test_candidate_quota_falls_back_after_fewer_positive_branch_experts() -> None:
+    anchor = torch.tensor([[9.0, 8.0, 7.0, 6.0, 5.0, 4.0]])
+    branch = torch.tensor([[0.3, 0.0, 0.0, 0.0, 0.4, 0.0]])
+    result = candidate_union(anchor, branch, anchor_quota=2, width=5)
+    # Expert 0 overlaps the anchor quota, expert 4 is the only new positive,
+    # and the remaining positions fall back to anchor order.
+    assert result.tolist() == [[0, 1, 4, 2, 3]]
+
+
+def test_candidate_quota_positive_ties_are_stable_and_unique() -> None:
+    anchor = torch.arange(8, dtype=torch.float32).flip(0).unsqueeze(0)
+    branch = torch.tensor(
+        [[0.0, 0.0, 0.5, 0.5, 0.5, 0.0, 0.0, 0.0]]
+    )
+    result = candidate_union(anchor, branch, anchor_quota=2, width=6)
+    assert result.tolist() == [[0, 1, 2, 3, 4, 5]]
+    assert len(set(result[0].tolist())) == 6
+
+
+def test_b15_storage_preflight_uses_absolute_and_estimated_floors() -> None:
+    gib = 1 << 30
+    assert required_b15_free_bytes(0) == 100 * gib
+    assert required_b15_free_bytes(80 * gib) == 100 * gib
+    assert required_b15_free_bytes(100 * gib) == 125 * gib
+    with pytest.raises(ValueError, match="non-negative"):
+        required_b15_free_bytes(-1)
+
 
 def test_factual_ceiling_fills_from_anchor_score_order_without_duplicates() -> None:
     anchor = torch.tensor([[0.0, 9.0, 7.0, 8.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0]])
@@ -137,6 +187,9 @@ def test_node_contract_is_parent_before_child_and_h1_masked() -> None:
     tensors["source_path_logp"][:] = torch.tensor([0.0, -0.1, -0.3, -0.4])
     tensors["target_edge_logp"][1:] = torch.tensor([-0.15, -0.25, -0.35])
     tensors["target_path_logp"][1:] = torch.tensor([-0.15, -0.4, -0.5])
+    tensors["target_next_token_ids"][:] = torch.tensor([20, 30, 40, 41])
+    tensors["target_next_token_logp"][:] = torch.tensor([-0.1, -0.2, -0.3, -0.4])
+    tensors["target_next_token_valid"][:] = True
     tensors["valid"][1:] = True
     tensors["selected_ids"][1:] = torch.arange(8, dtype=torch.int32)
     validate_node_counterfactual_tensors(

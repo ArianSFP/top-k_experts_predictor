@@ -27,6 +27,7 @@ from harp_rtt.b15 import (  # noqa: E402
     B15_ORACLE_SCHEMA,
     H1_C64_GATE,
     add_other_anchor_mass,
+    b15_candidate_union_sha256,
     candidate_union,
     global_candidates,
     selected_set_inclusion_mass,
@@ -390,6 +391,59 @@ def _factual_candidates(
     return result, occurrence
 
 
+def _target_greedy_candidates(
+    counterfactual: Mapping[str, Tensor],
+    tree: Mapping[str, Tensor],
+    anchor_scores: Tensor,
+    *,
+    budget: str,
+) -> tuple[Tensor, Tensor] | None:
+    if "target_next_token_ids" not in counterfactual:
+        return None
+    selection = _selection_mask(counterfactual, budget)
+    if selection is None:
+        raise ValueError("target-greedy diagnostics require node-indexed labels")
+    anchor_order = _stable_top(anchor_scores, EXPERTS)
+    result = anchor_order[..., :CANDIDATES].clone()
+    occurrence = torch.zeros(anchor_scores.shape[:2], dtype=torch.bool)
+    occurrence[:, 0] = True
+    token_ids = tree["token_ids"].long().cpu()
+    parents = tree["parent"].long().cpu()
+    depth = counterfactual["depth"].long().cpu()
+    next_ids = counterfactual["target_next_token_ids"].long().cpu()
+    next_valid = counterfactual["target_next_token_valid"].bool().cpu()
+    for sample in range(anchor_scores.shape[0]):
+        current = 0
+        for horizon in range(1, HORIZONS):
+            if not bool(next_valid[sample, current]):
+                break
+            wanted = next_ids[sample, current]
+            children = torch.nonzero(
+                selection[sample]
+                & (parents[sample] == current)
+                & (depth[sample] == horizon + 1)
+                & (token_ids[sample] == wanted),
+                as_tuple=False,
+            ).flatten()
+            if len(children) > 1:
+                raise ValueError("target-greedy tree path has duplicate children")
+            if not len(children):
+                break
+            current = int(children[0])
+            occurrence[sample, horizon] = True
+            exact = counterfactual["selected_ids"][sample, current].long().cpu()
+            for layer in range(LAYERS):
+                chosen = exact[layer].tolist()
+                selected = set(chosen)
+                chosen.extend(
+                    int(expert)
+                    for expert in anchor_order[sample, horizon, layer].tolist()
+                    if int(expert) not in selected
+                )
+                result[sample, horizon, layer] = torch.tensor(chosen[:CANDIDATES])
+    return result, occurrence
+
+
 def _aggregate_metric(values: np.ndarray, request_ids: Sequence[str]) -> tuple[dict[str, Any], dict[str, float]]:
     mean, per_request = _request_macro(values, request_ids)
     horizons = []
@@ -591,6 +645,7 @@ def main() -> None:
     metric_rows: dict[str, list[np.ndarray]] = defaultdict(list)
     target_masses, source_masses = [], []
     factual_occurrence = []
+    target_greedy_occurrence = []
     budget_rows = []
 
     with torch.inference_mode():
@@ -665,6 +720,16 @@ def main() -> None:
                 _coverage(factual_c64, target_ids).numpy()
             )
             factual_occurrence.append(factual_present.numpy())
+            target_greedy = _target_greedy_candidates(
+                counterfactual, batch["inputs"]["tree"], anchor_scores,
+                budget=args.path_budget,
+            )
+            if target_greedy is not None:
+                target_greedy_c64, target_greedy_present = target_greedy
+                metric_rows["captured_target_greedy_coverage_at_64"].append(
+                    _coverage(target_greedy_c64, target_ids).numpy()
+                )
+                target_greedy_occurrence.append(target_greedy_present.numpy())
             if "node_mask" in counterfactual:
                 budget_rows.append(
                     torch.cat(
@@ -681,6 +746,11 @@ def main() -> None:
     masses_target = np.concatenate(target_masses)
     masses_source = np.concatenate(source_masses)
     factual_path_occurrence = np.concatenate(factual_occurrence)
+    target_greedy_path_occurrence = (
+        None
+        if not target_greedy_occurrence
+        else np.concatenate(target_greedy_occurrence)
+    )
     greedy_match = np.asarray(
         [[row["greedy"][h] for h in range(1, HORIZONS + 1)] for row in occurrence_rows],
         dtype=bool,
@@ -736,7 +806,9 @@ def main() -> None:
             "authoritative_route_labels": "native_BF16_selected_ids",
             "inclusion_mass": "sum_unique_nodes(path_probability * selected_set_indicator)",
             "other": "residual_probability_times_exact_k_anchor_marginal",
+            "candidate_union_algorithm_sha256": b15_candidate_union_sha256(),
             "target_and_causal_mtp_priors_reported_separately": True,
+            "target_greedy_oracle_is_diagnostic_not_promotion": True,
             "quota_policies": [list(value) for value in QUOTA_POLICIES],
             "global_policy": "top64_of_full_inclusion_mass",
             "h1_excluded_from_branch_promotion": True,
@@ -757,6 +829,14 @@ def main() -> None:
             f"H{h + 1}": float(factual_path_occurrence[:, h].mean())
             for h in range(HORIZONS)
         },
+        "captured_target_greedy_path_occurrence": (
+            None
+            if target_greedy_path_occurrence is None
+            else {
+                f"H{h + 1}": float(target_greedy_path_occurrence[:, h].mean())
+                for h in range(HORIZONS)
+            }
+        ),
         "captured_target_path_mass": {
             f"H{h + 1}": {
                 "mean": float(masses_target[:, h].mean()),
@@ -827,6 +907,11 @@ def main() -> None:
         },
     }
 
+    request_metric_extras = {}
+    if target_greedy_path_occurrence is not None:
+        request_metric_extras["target_greedy_path_occurrence"] = (
+            target_greedy_path_occurrence
+        )
     args.output.mkdir(parents=True)
     (args.output / "B15_ORACLE_GATE_REPORT.json").write_text(
         json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n"
@@ -840,6 +925,7 @@ def main() -> None:
         captured_target_path_mass=masses_target,
         captured_mtp_path_mass=masses_source,
         factual_path_occurrence=factual_path_occurrence,
+        **request_metric_extras,
         **metrics,
     )
     hashes = {

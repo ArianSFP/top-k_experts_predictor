@@ -33,6 +33,7 @@ from capture_transformers_segment import (  # noqa: E402
     sha256_file,
 )
 from harp_rtt.b15 import (  # noqa: E402
+    b15_candidate_union_sha256,
     b15_selector_manifest,
     b15_selector_sha256,
     select_path_budget,
@@ -81,6 +82,36 @@ def _first_divergence(path: tuple[int, ...], greedy: tuple[int, ...]) -> int:
         if token != reference:
             return depth
     return -1
+
+
+def _ancestor_indices(
+    nodes: list[FrozenTreeNode], endpoint: int
+) -> tuple[int, ...]:
+    path = []
+    current: int | None = endpoint
+    while current is not None:
+        path.append(current)
+        current = nodes[current].parent_local_index
+    return tuple(reversed(path))
+
+
+def _capture_target_next_token(
+    tensors: dict[str, torch.Tensor], *, node: int, logp: torch.Tensor
+) -> None:
+    token_id = int(torch.argmax(logp).item())
+    token_logp = float(logp[token_id].item())
+    if bool(tensors["target_next_token_valid"][node]):
+        if int(tensors["target_next_token_ids"][node]) != token_id or not torch.isclose(
+            tensors["target_next_token_logp"][node],
+            torch.tensor(token_logp, dtype=torch.float32),
+            rtol=0.0,
+            atol=1e-6,
+        ):
+            raise ValueError("target-greedy diagnostic changed across isolated replay")
+        return
+    tensors["target_next_token_ids"][node] = token_id
+    tensors["target_next_token_logp"][node] = token_logp
+    tensors["target_next_token_valid"][node] = True
 
 
 def _capture_route(
@@ -201,7 +232,13 @@ def capture_node_tree(
             cache, previous_logp, prefix_output = replay_prefix()
             cumulative = 0.0
             output = None
-            for depth, token_id in enumerate(node.token_path_ids, start=1):
+            path_nodes = _ancestor_indices(nodes, node.local_index)
+            if len(path_nodes) != len(node.token_path_ids):
+                raise ValueError("node token path and topology depth disagree")
+            for path_node, token_id in zip(
+                path_nodes, node.token_path_ids, strict=True
+            ):
+                depth = nodes[path_node].depth
                 edge = float(previous_logp[token_id].item())
                 if depth > 1:
                     cumulative += edge
@@ -217,10 +254,14 @@ def capture_node_tree(
                     return_dict=True,
                 )
                 cache = output.past_key_values
-                previous_logp = torch.log_softmax(
+                next_logp = torch.log_softmax(
                     output.logits[0, -1].float(), dim=-1
                 )
-                if depth == node.depth:
+                _capture_target_next_token(
+                    tensors, node=path_node, logp=next_logp
+                )
+                previous_logp = next_logp
+                if path_node == node.local_index:
                     tensors["target_edge_logp"][node.local_index] = edge
                     tensors["target_path_logp"][node.local_index] = cumulative
                     _capture_route(
@@ -247,6 +288,7 @@ def capture_node_tree(
         )
         root_cache = root_output.past_key_values
         root_logp = torch.log_softmax(root_output.logits[0, -1].float(), dim=-1)
+        _capture_target_next_token(tensors, node=0, logp=root_logp)
         children: dict[int, list[int]] = {node.local_index: [] for node in nodes}
         for node in nodes[1:]:
             assert node.parent_local_index is not None
@@ -272,6 +314,9 @@ def capture_node_tree(
                 )
                 child_cache = output.past_key_values
                 child_logp = torch.log_softmax(output.logits[0, -1].float(), dim=-1)
+                _capture_target_next_token(
+                    tensors, node=child_id, logp=child_logp
+                )
                 tensors["target_edge_logp"][child_id] = edge
                 tensors["target_path_logp"][child_id] = child_cumulative
                 _capture_route(
@@ -441,6 +486,7 @@ def main() -> None:
         "bindings": {
             "source_commit": args.source_commit,
             "selector_sha256": b15_selector_sha256(),
+            "candidate_union_algorithm_sha256": b15_candidate_union_sha256(),
             "base_capture_manifest_sha256": sha256_file(args.base_capture / "run_manifest.json"),
             "base_capture_audit_sha256": sha256_file(args.base_capture / "CAPTURE_AUDIT_ADAPTIVE.json"),
             "base_capture_checksums_sha256": sha256_file(args.base_capture / "SHA256SUMS"),
@@ -463,6 +509,8 @@ def main() -> None:
             "h1_masked": True,
             "target_path_probability_condition": "exact_committed_h1",
             "target_path_probability_origin": "h2_edge",
+            "target_greedy_diagnostic": "next-token argmax ID and log probability",
+            "target_greedy_runtime_available": False,
         },
         "records": records,
     }
@@ -481,7 +529,7 @@ def main() -> None:
     (args.output / "STOP_BEFORE_TRAINING.json").write_text(
         json.dumps(
             {
-                "schema": "harp_rtt_counterfactual_nodes_stop_v3",
+                "schema": "harp_rtt_counterfactual_nodes_stop_v4",
                 "capture_complete": True,
                 "audit_complete": False,
                 "training_started": False,

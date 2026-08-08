@@ -92,10 +92,15 @@ def main() -> None:
             "budget_endpoint_masks",
             "budget_realized",
             "budget_category_counts",
+            "target_next_token_ids",
+            "target_next_token_valid",
             "valid",
         ):
             structural_exact &= torch.equal(left[name], right[name])
-        for name in ("source_edge_logp", "source_path_logp", "target_edge_logp", "target_path_logp"):
+        for name in (
+            "source_edge_logp", "source_path_logp", "target_edge_logp",
+            "target_path_logp", "target_next_token_logp",
+        ):
             probability_exact &= torch.allclose(
                 left[name].float(), right[name].float(), rtol=0.0, atol=0.0, equal_nan=True
             )

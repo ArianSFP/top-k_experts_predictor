@@ -21,7 +21,7 @@ from prepare_causal_pilot_partitions import (
 )
 
 
-SCHEMA = "harp_rtt_b15_confirmation_partition_v1"
+SCHEMA = "harp_rtt_b15_confirmation_partition_v2_group_disjoint"
 PARTITION = "b15_confirmation"
 REQUESTS = 64
 POSITIONS_PER_REQUEST = 32
@@ -80,14 +80,22 @@ def main() -> None:
                 train.append(row)
     selected = select_confirmation_requests(train, seed=args.seed)
     selected_ids = {str(row["request_id"]) for row in selected}
+    selected_groups = {str(row["split_group_id"]) for row in selected}
     prior_ids = set()
+    prior_groups = set()
     for name in ("engineering", "diagnostic_probe", "translator_fitting"):
         for line in (args.base_partitions / f"{name}_requests.jsonl").read_text().splitlines():
             if line:
-                prior_ids.add(str(json.loads(line)["request_id"]))
+                prior = json.loads(line)
+                prior_ids.add(str(prior["request_id"]))
+                prior_groups.add(str(prior["split_group_id"]))
     if selected_ids & prior_ids or len(prior_ids) != 388:
         raise ValueError("B1.5 confirmation is not disjoint from all frozen v3 partitions")
 
+    if selected_groups & prior_groups:
+        raise ValueError(
+            "B1.5 confirmation has split-group/lineage overlap with frozen v3 partitions"
+        )
     starts = load_event_rows(
         args.train_sequence_starts,
         event="sequence_start",
@@ -166,6 +174,7 @@ def main() -> None:
         "selection": "all previously unused seed42 outer-train requests; uniform complete pre-EOS H1-H4 positions",
         "request_slice": [388, 452],
         "request_disjoint_from_frozen_v3": True,
+        "split_group_disjoint_from_frozen_v3": True,
         "minimum_pre_eos_h1_h4_usable_positions": min(
             int(row["pre_eos_h1_h4_usable_positions"]) for row in requests
         ),

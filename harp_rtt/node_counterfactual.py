@@ -12,7 +12,10 @@ import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 
-from .b15 import b15_selector_sha256
+from .b15 import (
+    b15_candidate_union_sha256,
+    b15_selector_sha256,
+)
 from .counterfactual import (
     EXPERTS,
     MAX_DEPTH,
@@ -27,9 +30,9 @@ from .exact_k import stable_topk
 from .geometry import CenteredRouterGeometry
 
 
-NODE_COUNTERFACTUAL_SCHEMA = "harp_rtt_counterfactual_target_companion_v3_nodes"
-NODE_COUNTERFACTUAL_RECORD_SCHEMA = "harp_rtt_counterfactual_target_record_v3_nodes"
-NODE_ROUTER_AUDIT_SCHEMA = "harp_rtt_counterfactual_router_input_audit_v3_nodes"
+NODE_COUNTERFACTUAL_SCHEMA = "harp_rtt_counterfactual_target_companion_v4_nodes"
+NODE_COUNTERFACTUAL_RECORD_SCHEMA = "harp_rtt_counterfactual_target_record_v4_nodes"
+NODE_ROUTER_AUDIT_SCHEMA = "harp_rtt_counterfactual_router_input_audit_v4_nodes"
 MAX_TREE_NODES = 32
 
 
@@ -68,6 +71,9 @@ def empty_node_counterfactual_tensors(
         "source_path_logp": torch.full((nodes,), float("nan"), dtype=torch.float32),
         "target_edge_logp": torch.full((nodes,), float("nan"), dtype=torch.float32),
         "target_path_logp": torch.full((nodes,), float("nan"), dtype=torch.float32),
+        "target_next_token_ids": torch.full((nodes,), -1, dtype=torch.int64),
+        "target_next_token_logp": torch.full((nodes,), float("nan"), dtype=torch.float32),
+        "target_next_token_valid": torch.zeros(nodes, dtype=torch.bool),
         "query_coordinates": torch.zeros(nodes, layers, rank, dtype=torch.float32),
         "router_logits": torch.zeros(nodes, layers, experts, dtype=torch.bfloat16),
         "selected_ids": torch.full((nodes, layers, TOP_K), -1, dtype=torch.int32),
@@ -88,7 +94,7 @@ def validate_node_counterfactual_tensors(
         nodes=nodes, layers=layers, rank=rank, experts=experts
     )
     if set(tensors) != set(expected):
-        raise ValueError("node counterfactual keys disagree with the v3 contract")
+        raise ValueError("node counterfactual keys disagree with the v4 contract")
     for name, reference in expected.items():
         value = tensors[name]
         if value.shape != reference.shape or value.dtype != reference.dtype:
@@ -105,6 +111,9 @@ def validate_node_counterfactual_tensors(
     budget_endpoints = tensors["budget_endpoint_masks"].bool()
     budget_realized = tensors["budget_realized"].long()
     budget_counts = tensors["budget_category_counts"].long()
+    target_next_ids = tensors["target_next_token_ids"].long()
+    target_next_logp = tensors["target_next_token_logp"].float()
+    target_next_valid = tensors["target_next_token_valid"].bool()
     valid = tensors["valid"].bool()
     count = int(mask.sum().item())
     if count < 2:
@@ -139,6 +148,13 @@ def validate_node_counterfactual_tensors(
         raise ValueError("budget endpoint count disagrees with realized budget")
     if not torch.equal(budget_counts.sum(-1), budget_realized):
         raise ValueError("budget category counts disagree with realized budget")
+    for lower, upper in ((0, 1), (1, 2)):
+        if (budget_nodes[lower] & ~budget_nodes[upper]).any():
+            raise ValueError("budget node masks are not nested")
+        if (budget_endpoints[lower] & ~budget_endpoints[upper]).any():
+            raise ValueError("budget endpoint masks are not nested")
+    if (budget_nodes[2] & ~mask).any() or (budget_endpoints[2] & ~mask).any():
+        raise ValueError("budget 16 is not contained by all-node visibility")
     for budget_index in range(3):
         selected = budget_nodes[budget_index]
         for node_index in torch.nonzero(selected, as_tuple=False).flatten().tolist():
@@ -182,6 +198,17 @@ def validate_node_counterfactual_tensors(
         )
         if not torch.isclose(target_path[index], expected_path, rtol=0.0, atol=2e-5):
             raise ValueError("target edge/path probabilities are inconsistent")
+
+    if not target_next_valid[mask].all() or target_next_valid[~mask].any():
+        raise ValueError("target-greedy diagnostic validity disagrees with node mask")
+    if (target_next_ids[mask] < 0).any() or (target_next_ids[~mask] != -1).any():
+        raise ValueError("target-greedy next-token IDs are invalid")
+    if not torch.isfinite(target_next_logp[mask]).all():
+        raise ValueError("target-greedy next-token log probabilities are missing")
+    if torch.isfinite(target_next_logp[~mask]).any():
+        raise ValueError("target-greedy next-token log probabilities populate padding")
+    if (target_next_logp[mask] > 1e-6).any():
+        raise ValueError("target-greedy next-token log probability is positive")
 
     active_ids = tensors["selected_ids"][valid]
     if active_ids.numel() and ((active_ids < 0) | (active_ids >= experts)).any():
@@ -271,10 +298,16 @@ def load_node_counterfactual_companion(
         contract.get("layout") != "unique_parent_before_child_nodes"
         or contract.get("h1_masked") is not True
         or contract.get("target_path_probability_condition") != "exact_committed_h1"
+        or contract.get("target_greedy_runtime_available") is not False
     ):
         raise ValueError("node counterfactual tensor contract is invalid")
     bindings = manifest.get("bindings")
-    if not isinstance(bindings, Mapping) or bindings.get("selector_sha256") != b15_selector_sha256():
+    if (
+        not isinstance(bindings, Mapping)
+        or bindings.get("selector_sha256") != b15_selector_sha256()
+        or bindings.get("candidate_union_algorithm_sha256")
+        != b15_candidate_union_sha256()
+    ):
         raise ValueError("node counterfactual selector binding mismatch")
     if expected_bindings is not None:
         for name, expected in expected_bindings.items():

@@ -28,7 +28,8 @@ from .exact_k import exact_set_nll
 from .model.heads import exact_projected_marginals
 
 
-B15_SELECTOR_SCHEMA = "harp_rtt_b15_causal_path_budget_selector_v1"
+B15_SELECTOR_SCHEMA = "harp_rtt_b15_causal_path_budget_selector_v2_nested"
+B15_CANDIDATE_UNION_SCHEMA = "harp_rtt_b15_positive_branch_candidate_union_v1"
 B15_ORACLE_SCHEMA = "harp_rtt_b15_exact_selected_set_oracle_v1"
 PATH_BUDGETS = (4, 8, 16)
 PATH_QUOTAS = {
@@ -36,6 +37,12 @@ PATH_QUOTAS = {
     16: (1, 3, 5, 7),
 }
 H1_C64_GATE = 0.98
+
+
+def required_b15_free_bytes(estimated_total_bytes: int) -> int:
+    if estimated_total_bytes < 0:
+        raise ValueError("estimated B1.5 storage must be non-negative")
+    return max(100 * (1 << 30), (5 * int(estimated_total_bytes) + 3) // 4)
 
 
 @dataclass(frozen=True)
@@ -67,10 +74,13 @@ def b15_selector_manifest() -> dict[str, Any]:
         },
         "categories": ["greedy", "first_divergence_h2", "first_divergence_h3", "first_divergence_h4"],
         "underfill": (
-            "pool unfilled quota slots; require one new H2-H4 node; then order "
+            "seed each larger budget from the previous budget; pool unfilled quota "
+            "slots; require one new H2-H4 node; then order "
             "by deeper endpoint, descending cumulative MTP probability, "
             "lexicographic token path, local index"
         ),
+        "nested_endpoints": "E4 subset E8 subset E16 subset all H2-H4 nodes",
+        "nested_nodes": "N4 subset N8 subset N16 subset all nodes",
         "uses_target_labels": False,
         "uses_target_probabilities": False,
         "uses_acceptance": False,
@@ -81,6 +91,33 @@ def b15_selector_manifest() -> dict[str, Any]:
 def b15_selector_sha256() -> str:
     payload = json.dumps(
         b15_selector_manifest(), sort_keys=True, separators=(",", ":")
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def b15_candidate_union_manifest() -> dict[str, Any]:
+    return {
+        "schema": B15_CANDIDATE_UNION_SCHEMA,
+        "steps": [
+            "insert stable anchor top-K_A",
+            (
+                "insert distinct strictly-positive branch-mass experts in stable "
+                "descending order"
+            ),
+            "fill unoccupied positions from the next stable anchor experts",
+        ],
+        "zero_branch_invariant": (
+            "all-zero branch mass exactly reproduces anchor top-width"
+        ),
+        "ties": (
+            "descending stable argsort; lower expert ID wins exact input-order ties"
+        ),
+    }
+
+
+def b15_candidate_union_sha256() -> str:
+    payload = json.dumps(
+        b15_candidate_union_manifest(), sort_keys=True, separators=(",", ":")
     ).encode()
     return hashlib.sha256(payload).hexdigest()
 
@@ -165,7 +202,6 @@ def select_path_budget(
             int(node.local_index)
             for node in nodes
             if int(node.depth) >= 2
-            and not any(other.parent_local_index == node.local_index for other in nodes)
         )
         counts = [0, 0, 0, 0]
         for endpoint in endpoints:
@@ -218,9 +254,12 @@ def select_path_budget(
     for values in categorized.values():
         values.sort(key=_endpoint_key)
 
-    endpoints: list[int] = []
-    selected_nodes: set[int] = set()
-    counts = [0, 0, 0, 0]
+    seed = select_path_budget(nodes, 4 if budget == 8 else 8)
+    endpoints = list(seed.endpoint_local_indices)
+    selected_nodes = {
+        index for index, selected in enumerate(seed.node_mask) if selected
+    }
+    counts = list(seed.category_counts)
 
     def add(node: TreeNodeLike) -> bool:
         endpoint = int(node.local_index)
@@ -237,12 +276,14 @@ def select_path_budget(
         counts[0 if divergence is None else divergence - 1] += 1
         return True
 
-    for category, required in zip(categories, quota, strict=True):
-        filled = 0
+    for category_index, (category, required) in enumerate(
+        zip(categories, quota, strict=True)
+    ):
+        if counts[category_index] >= required:
+            continue
         for node in categorized[category]:
-            if add(node):
-                filled += 1
-            if filled == required:
+            add(node)
+            if counts[category_index] >= required:
                 break
 
     remaining = sorted(
@@ -254,7 +295,7 @@ def select_path_budget(
             break
         add(node)
 
-    return BudgetSelection(
+    result = BudgetSelection(
         requested_budget=budget,
         endpoint_local_indices=tuple(endpoints),
         node_mask=tuple(index in selected_nodes for index in range(len(nodes))),
@@ -262,6 +303,16 @@ def select_path_budget(
         realized_budget=len(endpoints),
         unique_node_count=len(selected_nodes),
     )
+    if not set(seed.endpoint_local_indices).issubset(result.endpoint_local_indices):
+        raise AssertionError("nested endpoint budget invariant failed")
+    if any(
+        previous and not current
+        for previous, current in zip(seed.node_mask, result.node_mask, strict=True)
+    ):
+        raise AssertionError(
+            "nested ancestor-closed node budget invariant failed"
+        )
+    return result
 
 
 def selected_set_inclusion_mass(
@@ -347,6 +398,9 @@ def candidate_union(
     branch_order = torch.argsort(
         branch_mass.float(), dim=-1, descending=True, stable=True
     ).reshape(rows, experts)
+    branch_values = branch_mass.float().reshape(rows, experts)
+    if not torch.isfinite(branch_values).all() or (branch_values < 0).any():
+        raise ValueError("branch candidate mass must be finite and non-negative")
     result = torch.full((rows, width), -1, dtype=torch.long, device=anchor_scores.device)
     selected = torch.zeros((rows, experts), dtype=torch.bool, device=anchor_scores.device)
     result[:, :anchor_quota] = anchor_order[:, :anchor_quota]
@@ -356,6 +410,22 @@ def candidate_union(
     row_ids = torch.arange(rows, device=anchor_scores.device)
     for rank in range(experts):
         ids = branch_order[:, rank]
+        positive = branch_values.gather(1, ids[:, None]).squeeze(1) > 0
+        keep = (
+            positive
+            & ~selected.gather(1, ids[:, None]).squeeze(1)
+            & (counts < width)
+        )
+        if keep.any():
+            active_rows = row_ids[keep]
+            active_ids = ids[keep]
+            result[active_rows, counts[keep]] = active_ids
+            selected[active_rows, active_ids] = True
+            counts[keep] += 1
+        if bool((counts == width).all()):
+            break
+    for rank in range(experts):
+        ids = anchor_order[:, rank]
         keep = ~selected.gather(1, ids[:, None]).squeeze(1) & (counts < width)
         if keep.any():
             active_rows = row_ids[keep]
@@ -459,18 +529,22 @@ def h1_root_supervision_loss(
 
 
 __all__ = [
+    "B15_CANDIDATE_UNION_SCHEMA",
     "B15_ORACLE_SCHEMA",
     "B15_SELECTOR_SCHEMA",
     "BudgetSelection",
     "H1_C64_GATE",
     "H1RootLoss",
     "add_other_anchor_mass",
+    "b15_candidate_union_manifest",
+    "b15_candidate_union_sha256",
     "b15_selector_manifest",
     "b15_selector_sha256",
     "candidate_union",
     "factual_branch_candidates",
     "global_candidates",
     "h1_root_supervision_loss",
+    "required_b15_free_bytes",
     "select_path_budget",
     "selected_set_inclusion_mass",
 ]

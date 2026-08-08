@@ -2,7 +2,14 @@
 
 **Source commit:** `b1ce3c41c114b12db88c102d5d0cd18e22b99632`
 **Branch:** `agent/harp-rtt-b1.5-exact-set-oracle`
-**Status:** B1.1 complete; Stage A/B1.5 target replay pending an RTX PRO 6000; no optimizer started
+**Status:** original B1.1 preserved but quota metrics superseded pending corrected rerun; Stage A/B1.5 target replay pending an RTX PRO 6000; no optimizer started
+
+> Supersession note (2026-08-08): the report below used a quota policy that
+> filled unused branch quota with zero-inclusion-mass expert IDs. It remains
+> valid evidence for global inclusion mass, path mass, factual occurrence, and
+> prefix strata, but quota-policy values and the policy decision must be rerun
+> with positive-mass-only branch insertion plus anchor fallback before target
+> replay. The immutable artifact is retained; no recapture is required.
 
 ## B1.1 corrected four-path oracle
 

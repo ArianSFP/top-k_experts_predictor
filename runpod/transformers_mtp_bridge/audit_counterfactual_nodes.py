@@ -18,7 +18,10 @@ REPO_ROOT = SCRIPT_DIR.parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from harp_rtt.b15 import b15_selector_sha256  # noqa: E402
+from harp_rtt.b15 import (  # noqa: E402
+    b15_candidate_union_sha256,
+    b15_selector_sha256,
+)
 from harp_rtt.node_counterfactual import (  # noqa: E402
     NODE_COUNTERFACTUAL_RECORD_SCHEMA,
     NODE_COUNTERFACTUAL_SCHEMA,
@@ -79,10 +82,16 @@ def main() -> None:
         contract.get("layout") != "unique_parent_before_child_nodes"
         or contract.get("h1_masked") is not True
         or contract.get("target_path_probability_condition") != "exact_committed_h1"
+        or contract.get("target_greedy_runtime_available") is not False
     ):
         raise ValueError("node tensor contract is invalid")
     bindings = manifest.get("bindings")
-    if not isinstance(bindings, dict) or bindings.get("selector_sha256") != b15_selector_sha256():
+    if (
+        not isinstance(bindings, dict)
+        or bindings.get("selector_sha256") != b15_selector_sha256()
+        or bindings.get("candidate_union_algorithm_sha256")
+        != b15_candidate_union_sha256()
+    ):
         raise ValueError("node selector binding mismatch")
     if bindings.get("router_geometry_sha256") != sha256_file(
         args.static_dir / "router_geometry.safetensors"
