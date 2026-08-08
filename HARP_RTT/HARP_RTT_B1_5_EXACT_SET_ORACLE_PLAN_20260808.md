@@ -4,6 +4,10 @@
 **Lineage:** `agent/harp-rtt-b1.5-exact-set-oracle` from `ac7cd5e18a5fb5bd9468440da03281e2ce863320`
 **Scope:** optimizer-free B1.1/B1.5 information experiment; no B2/B3 or H1 training
 
+**Execution status:** B1.1 is complete and failed all three gates under the
+corrected exact selected-set oracle. See
+[HARP_RTT_B1_5_RESULTS_20260808.md](HARP_RTT_B1_5_RESULTS_20260808.md).
+
 ## Decision
 
 PR #3 established that adaptive causal capture and target-label replay work, but its four-path oracle missed every promotion gate. Before training a translator, determine whether the failure is the old router-softmax metric, the four-path label budget, the candidate quota, or adaptive-32 itself.
