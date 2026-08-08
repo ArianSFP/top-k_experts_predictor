@@ -48,3 +48,13 @@ def test_h4_partition_rejects_eos_before_generated_continuation() -> None:
             eos_position=480,
             horizon=4,
         )
+
+
+def test_b15_confirmation_uses_only_the_64_unselected_outer_train_requests() -> None:
+    from prepare_b15_confirmation_partition import select_confirmation_requests
+
+    rows = [{"request_id": f"request-{index:03d}"} for index in range(452)]
+    from prepare_causal_pilot_partitions import request_order
+
+    ordered = sorted(rows, key=lambda row: request_order(row["request_id"], 42))
+    assert select_confirmation_requests(rows, seed=42) == ordered[388:452]

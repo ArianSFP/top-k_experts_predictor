@@ -1,5 +1,11 @@
 # HARP-RTT-90 v1.0
 
+> **Active information gate (2026-08-08):** the four-path v2 B1 result failed
+> all promotion gates. The active plan is
+> [HARP_RTT_B1_5_EXACT_SET_ORACLE_PLAN_20260808.md](HARP_RTT_B1_5_EXACT_SET_ORACLE_PLAN_20260808.md):
+> correct the selected-set oracle, measure the all-node adaptive-32 ceiling, and
+> confirm the minimum sufficient path budget before any translator or ranker training.
+>
 > **Superseded execution instruction (2026-08-07):** the later pause evidence
 > and the v2 causal-information pilot supersede Phase 1's instruction to resume
 > the existing C64 run. That run is a frozen measurement baseline. Its same-input
