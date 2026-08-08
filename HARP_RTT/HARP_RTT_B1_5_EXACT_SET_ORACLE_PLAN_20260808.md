@@ -3,6 +3,7 @@
 **Decision date:** 2026-08-08
 **Lineage:** `agent/harp-rtt-b1.5-exact-set-oracle` from `ac7cd5e18a5fb5bd9468440da03281e2ce863320`
 **Scope:** optimizer-free B1.1/B1.5 information experiment; no B2/B3 or H1 training
+**Frozen GPU execution commit:** `127558a1511c5d3c03cfdba4e1abfdf84d8fa90a`
 
 **Execution status:** the first exact-set B1.1 report is preserved but its
 quota-policy result is superseded pending a zero-capture rerun with strict

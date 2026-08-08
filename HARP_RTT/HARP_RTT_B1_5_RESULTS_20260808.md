@@ -1,6 +1,7 @@
 # HARP-RTT B1.5 execution results
 
-**Source commit:** `b1ce3c41c114b12db88c102d5d0cd18e22b99632`
+**Superseded B1.1 source commit:** `b1ce3c41c114b12db88c102d5d0cd18e22b99632`
+**Frozen all-node capture implementation:** `127558a1511c5d3c03cfdba4e1abfdf84d8fa90a`
 **Branch:** `agent/harp-rtt-b1.5-exact-set-oracle`
 **Status:** original B1.1 preserved but quota metrics superseded pending corrected rerun; Stage A/B1.5 target replay pending an RTX PRO 6000; no optimizer started
 
