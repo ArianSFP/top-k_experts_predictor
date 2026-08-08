@@ -16,8 +16,14 @@ from evaluate_harp_rtt_b1_oracle import (  # noqa: E402
     _anchor_branch_union,
     _bootstrap_delta,
     _first_divergence,
+    _finite_mean_or_none,
     _oracle_branch_scores,
 )
+
+
+def test_finite_mean_serializes_empty_mask_as_null() -> None:
+    assert _finite_mean_or_none(np.asarray([np.nan, np.nan])) is None
+    assert _finite_mean_or_none(np.asarray([1.0, np.nan, 3.0])) == 2.0
 
 
 def test_oracle_union_preserves_anchor48_and_fills_from_branch() -> None:
@@ -54,7 +60,11 @@ def test_oracle_branch_scores_deduplicate_shared_prefix_nodes() -> None:
 
 def test_prefix_divergence_requires_nested_matches() -> None:
     values = np.asarray(
-        [[True, True, True, True], [True, False, False, False], [True, True, False, False]]
+        [
+            [True, True, True, True],
+            [True, False, False, False],
+            [True, True, False, False],
+        ]
     )
     divergence, report = _first_divergence(values)
     assert divergence.tolist() == [0, 2, 3]

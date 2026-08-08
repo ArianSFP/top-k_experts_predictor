@@ -154,6 +154,13 @@ def _coverage(ids: Tensor, target: Tensor) -> Tensor:
     return (ids.unsqueeze(-1) == target.unsqueeze(-2)).any(dim=-2).float().mean(dim=-1)
 
 
+def _finite_mean_or_none(values: np.ndarray) -> float | None:
+    finite = np.isfinite(values)
+    if not finite.any():
+        return None
+    return float(values[finite].mean())
+
+
 def _anchor_branch_union(anchor: Tensor, branch: Tensor) -> Tensor:
     """Anchor top-48 plus the best 16 distinct oracle-branch experts."""
 
@@ -670,15 +677,15 @@ def main() -> None:
     cf_summary: dict[str, Any] = {}
     for name, values in cf_metrics.items():
         cf_summary[name] = {
-            "mean": float(np.nanmean(values)),
+            "mean": _finite_mean_or_none(values),
             "by_horizon": [
-                float(np.nanmean(values[:, horizon])) for horizon in range(HORIZONS)
+                _finite_mean_or_none(values[:, horizon]) for horizon in range(HORIZONS)
             ],
             "by_layer": [
-                float(np.nanmean(values[:, :, layer])) for layer in range(LAYERS)
+                _finite_mean_or_none(values[:, :, layer]) for layer in range(LAYERS)
             ],
             "by_block_phase_layer_mod_4": [
-                float(np.nanmean(values[:, :, phase::4])) for phase in range(4)
+                _finite_mean_or_none(values[:, :, phase::4]) for phase in range(4)
             ],
         }
 
