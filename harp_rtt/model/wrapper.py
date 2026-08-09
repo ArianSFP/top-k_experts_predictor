@@ -642,6 +642,7 @@ class HARPRTTTeacher(nn.Module):
         candidate_anchor_quota_override: int | None = None,
         tree_visibility_budget: int | None = None,
         random_anytime_truncation: bool = False,
+        branch_semantic_only: bool = False,
     ) -> dict[str, Any]:
         if batch is not None:
             adapted = self._adapt_rich_batch(batch)
@@ -688,6 +689,7 @@ class HARPRTTTeacher(nn.Module):
                 "candidate_training_progress": candidate_training_progress,
                 "tree_visibility_budget": tree_visibility_budget,
                 "random_anytime_truncation": random_anytime_truncation,
+                "branch_semantic_only": branch_semantic_only,
                 "candidate_active_sources": candidate_active_sources,
                 "candidate_anchor_quota_override": candidate_anchor_quota_override,
             }
@@ -836,6 +838,24 @@ class HARPRTTTeacher(nn.Module):
             active_anchor,
             transition_scores=transition,
         )
+        if branch_semantic_only:
+            outputs: dict[str, Any] = dict(anchor)
+            outputs.update(
+                {
+                    "branch_posterior_logits": hybrid.branch_logits,
+                    "branch_geometry_scores": hybrid.geometry_scores,
+                    "branch_free_scores": hybrid.free_scores,
+                    "branch_semantic_scores": (
+                        hybrid.geometry_scores + hybrid.free_scores.float()
+                    ),
+                    "branch_mask": tree.horizon_mask,
+                    "branch_acceptance_logits": tree.acceptance_logits,
+                    "router_queries": hybrid.predicted_queries,
+                    "other_branch_index": config.max_tree_nodes,
+                    "tree_visibility_budget": applied_tree_budget,
+                }
+            )
+            return outputs
         mixture = self.branch_mixture(
             hybrid.branch_scores,
             hybrid.branch_logits,

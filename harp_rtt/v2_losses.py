@@ -407,8 +407,78 @@ __all__ = [
     "SwapLoss",
     "counterfactual_posterior_loss",
     "counterfactual_semantic_loss",
+    "node_counterfactual_posterior_loss",
     "node_counterfactual_semantic_loss",
     "node_target_branch_distribution",
     "swap_loss",
     "target_branch_distribution",
 ]
+
+
+def node_counterfactual_posterior_loss(
+    posterior_logits: Tensor,
+    counterfactual: Mapping[str, Tensor],
+    *,
+    branch_mask: Tensor,
+    selection_mask: Tensor | None = None,
+) -> Tensor:
+    """Cross-entropy to selected unique nodes plus aggregated OTHER mass.
+
+    Runtime may encode more causal tree nodes than the offline replay budget
+    labels. Unselected nodes are folded into the model's OTHER probability
+    instead of being treated as known-negative branches.
+    """
+
+    if posterior_logits.ndim != 3 or posterior_logits.shape[1] != 4:
+        raise ValueError("branch posterior logits must be [B,4,N+1]")
+    if branch_mask.shape != posterior_logits.shape:
+        raise ValueError("branch visibility mask disagrees with posterior logits")
+    visible = branch_mask.bool()
+    if not bool(visible[..., -1].all()):
+        raise ValueError("OTHER must remain visible for every anytime forecast")
+    captured_nodes = posterior_logits.shape[-1] - 1
+    target, valid = node_target_branch_distribution(
+        counterfactual,
+        captured_nodes=captured_nodes,
+        selection_mask=selection_mask,
+    )
+    if target.shape != posterior_logits.shape:
+        raise ValueError("node counterfactual target posterior disagrees with model")
+
+    selected = _required(counterfactual, "node_mask").bool()
+    if selection_mask is not None:
+        if selection_mask.shape != selected.shape:
+            raise ValueError("node posterior selection mask has the wrong shape")
+        selected &= selection_mask.bool()
+    depth = _required(counterfactual, "depth").long()
+
+    losses: list[Tensor] = []
+    for horizon in range(1, 4):
+        labelled = selected & (depth == horizon + 1) & visible[:, horizon, :-1]
+        logits = posterior_logits[:, horizon].float()
+        other_members = torch.cat(
+            [~labelled & visible[:, horizon, :-1], visible[:, horizon, -1:]],
+            dim=-1,
+        )
+        other_logit = logits.masked_fill(~other_members, -torch.inf).logsumexp(-1)
+        labelled_logits = logits[..., :-1].masked_fill(~labelled, -torch.inf)
+        collapsed_logits = torch.cat([labelled_logits, other_logit[:, None]], dim=-1)
+
+        collapsed_target = target[:, horizon].clone()
+        collapsed_target[..., -1] += (
+            collapsed_target[..., :-1] * ~labelled
+        ).sum(-1)
+        collapsed_target[..., :-1] *= labelled
+        active_classes = torch.cat(
+            [labelled, torch.ones_like(labelled[:, :1])], dim=-1
+        )
+        log_probability = torch.log_softmax(collapsed_logits, dim=-1).masked_fill(
+            ~active_classes, 0.0
+        )
+        per_endpoint = -(collapsed_target * log_probability).sum(-1)
+        active = valid[:, horizon]
+        if bool(active.any()):
+            losses.append(per_endpoint[active].mean())
+    if not losses:
+        return posterior_logits.sum() * 0.0
+    return torch.stack(losses).mean()

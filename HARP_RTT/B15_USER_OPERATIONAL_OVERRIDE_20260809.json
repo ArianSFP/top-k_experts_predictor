@@ -1,0 +1,34 @@
+{
+  "schema": "harp_rtt_b15_user_operational_override_v1",
+  "created_utc": "2026-08-09T00:03:47Z",
+  "user_authorized": true,
+  "authorization": "Treat the request-disjoint confirmation as an operational gate pass and continue with the original B2 plan.",
+  "operational_pass": true,
+  "measured_threshold_pass": false,
+  "thresholds_changed": false,
+  "fallback_policy_selected": false,
+  "frozen_path_budget": 16,
+  "frozen_candidate_policy": "anchor40_branch24",
+  "measured_confirmation": {
+    "mean_h2_h4_c64": 0.9828948974609375,
+    "mean_h2_h4_threshold": 0.985,
+    "mean_h2_h4_passed": false,
+    "h4_c64": 0.9790298461914063,
+    "h4_threshold": 0.97,
+    "h4_passed": true,
+    "h4_prefix_mismatch_c64": 0.9621174046080245,
+    "h4_prefix_mismatch_threshold": 0.93,
+    "h4_prefix_mismatch_passed": true
+  },
+  "measured_report": {
+    "path": "/workspace/LLM_prefetch_study/artifacts/harp_rtt/b15_all_node_20260808_127558a/confirmation/oracle_budget16_frozen40_24_b4da92c/B15_ORACLE_GATE_REPORT.json",
+    "sha256": "95dfc4fbb1f87fff25b4b21cd0db7094f93e5f61e8ae7ba3c16d9bfc2ea507fd"
+  },
+  "scientific_interpretation": "The original threshold result remains a numerical fail by 0.0021051025390625. The user accepts that miss for operational promotion because both targeted H4 gates passed strongly. This record authorizes B2 only and does not rewrite the pre-registered result.",
+  "authorized_next_stage": "B2_branch_semantic_translator_three_seed_gate",
+  "h1_training_authorized": false,
+  "b3_training_authorized": false,
+  "formal_validation_opened": false,
+  "calibration_opened": false,
+  "sealed_test_opened": false
+}

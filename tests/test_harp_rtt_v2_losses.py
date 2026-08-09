@@ -7,6 +7,7 @@ from harp_rtt.node_counterfactual import empty_node_counterfactual_tensors
 from harp_rtt.v2_losses import (
     counterfactual_posterior_loss,
     counterfactual_semantic_loss,
+    node_counterfactual_posterior_loss,
     node_counterfactual_semantic_loss,
     node_target_branch_distribution,
     swap_loss,
@@ -161,3 +162,36 @@ def test_node_target_posterior_adds_other_without_path_duplicates() -> None:
     assert torch.allclose(
         target.sum(-1)[valid], torch.ones_like(target.sum(-1)[valid])
     )
+
+
+def test_node_posterior_folds_unselected_runtime_nodes_into_other() -> None:
+    labels = synthetic_node_counterfactual()
+    selection = labels["node_mask"].clone()
+    selection[:, 3] = False
+    logits = torch.zeros(1, 4, 5, requires_grad=True)
+    visible = torch.ones_like(logits, dtype=torch.bool)
+    loss = node_counterfactual_posterior_loss(
+        logits,
+        labels,
+        branch_mask=visible,
+        selection_mask=selection,
+    )
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert logits.grad is not None
+    # The unselected H4 runtime node is aggregated with explicit OTHER rather
+    # than receiving an independent known-negative gradient.
+    assert logits.grad[0, 3, 3] == logits.grad[0, 3, 4]
+
+
+def test_node_posterior_rejects_hidden_other() -> None:
+    labels = synthetic_node_counterfactual()
+    logits = torch.zeros(1, 4, 5)
+    visible = torch.ones_like(logits, dtype=torch.bool)
+    visible[..., -1] = False
+    try:
+        node_counterfactual_posterior_loss(logits, labels, branch_mask=visible)
+    except ValueError as error:
+        assert "OTHER" in str(error)
+    else:
+        raise AssertionError("hidden OTHER must fail closed")
