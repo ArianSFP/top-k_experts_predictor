@@ -132,7 +132,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--microbatch-size", type=int, choices=(1, 2, 4), default=1)
+    parser.add_argument(
+        "--microbatch-size",
+        type=int,
+        choices=(1, 2, 4, 8),
+        default=1,
+        help="formal fixed candidates; effective batch remains exactly 32",
+    )
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--patience", type=int, default=5)
     parser.add_argument("--learning-rate", type=float)
