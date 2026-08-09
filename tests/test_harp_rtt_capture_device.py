@@ -159,4 +159,9 @@ def test_pilot_launcher_forwards_selected_device(
     capture_call = calls[0]
     assert Path(capture_call[0]).name == "capture_transformers_adaptive_segment.py"
     assert capture_call[capture_call.index("--device") + 1] == expected_device
-    assert Path(calls[1][0]).name == "audit_adaptive_tree_capture.py"
+    audit_call = calls[1]
+    assert Path(audit_call[0]).name == "audit_adaptive_tree_capture.py"
+    assert (
+        audit_call[audit_call.index("--authoritative-native-weight-device") + 1]
+        == expected_device
+    )

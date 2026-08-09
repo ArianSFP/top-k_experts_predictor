@@ -396,3 +396,29 @@ def test_anchor_manifest_is_hashed_and_counted(
     corrupt["legacy_harp_anchor_spine_manifest_hash"] = "0" * 64
     with pytest.raises(auditor.AuditError, match="manifest hash mismatch"):
         auditor._audit_anchor_manifest(corrupt, report)
+
+
+def test_native_bf16_weights_replay_declared_arithmetic_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auditor = _load_auditor(monkeypatch)
+    probabilities = np.asarray(
+        [
+            0.07177980989217758,
+            0.03235369548201561,
+            0.02767358161509037,
+            0.02024642378091812,
+            0.01814877800643444,
+            0.017590397968888283,
+            0.015045864507555962,
+            0.008984297513961792,
+        ],
+        dtype=np.float32,
+    )
+    actual = auditor._native_bf16_execution_weights(
+        probabilities,
+        np.arange(8, dtype=np.int64),
+        device=auditor.torch.device("cpu"),
+    )
+    assert actual[0] == np.float32(0.337890625)
+    assert actual.dtype == np.float32

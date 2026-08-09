@@ -81,6 +81,57 @@ def _canonical_hash(value: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _native_bf16_execution_weights(
+    probabilities: np.ndarray,
+    selected_ids: np.ndarray,
+    *,
+    device: torch.device,
+) -> np.ndarray:
+    """Replay the capture device's FP32 reduction and native BF16 cast."""
+
+    selected = torch.from_numpy(
+        probabilities[selected_ids].astype(np.float32, copy=True)
+    ).to(device)
+    return (
+        (selected / selected.sum())
+        .to(torch.bfloat16)
+        .float()
+        .cpu()
+        .numpy()
+    )
+
+
+def _verify_native_weight_device(
+    manifest: dict[str, Any], device: torch.device
+) -> dict[str, Any]:
+    hardware = manifest.get("hardware_topology_manifest", {})
+    captured_type = str(hardware.get("device_type", ""))
+    if device.type != captured_type:
+        raise AuditError(
+            "native-weight audit device type differs from capture device"
+        )
+    report = {
+        "requested_device": str(device),
+        "capture_device_type": captured_type,
+        "capture_accelerator": hardware.get("accelerator"),
+    }
+    if device.type == "cuda":
+        if not torch.cuda.is_available():
+            raise AuditError("CUDA native-weight audit requested but unavailable")
+        index = torch.cuda.current_device() if device.index is None else device.index
+        actual = torch.cuda.get_device_name(index)
+        if actual != hardware.get("accelerator"):
+            raise AuditError(
+                "native-weight audit accelerator differs from capture accelerator"
+            )
+        report["audit_accelerator"] = actual
+        report["cuda_index"] = int(index)
+    elif device.type != "cpu":
+        raise AuditError("native-weight audit supports only CPU or CUDA")
+    report["exact_native_bf16_required"] = True
+    return report
+
+
 def _check_anchor_checksum_inventory(root: Path) -> int:
     listed = {
         line.split("  ", 1)[1]
@@ -616,7 +667,11 @@ def _audit_anchor_spines(
 
 
 def audit_adaptive_mtp(
-    store: Store, *, maximum_node_budget: int, exact_node_budget: bool = False
+    store: Store,
+    *,
+    maximum_node_budget: int,
+    native_weight_device: torch.device,
+    exact_node_budget: bool = False,
 ) -> dict[str, Any]:
     nodes = [row for row in store.rows if row.get("event") == "mtp_node"]
     if not nodes:
@@ -692,12 +747,11 @@ def audit_adaptive_mtp(
         stored_weights = store.tensor(
             event_id, "mtp_selected_execution_weights"
         ).astype(np.float32)
-        expected_native_weights = torch.from_numpy(
-            probabilities[selected_ids].copy()
+        expected_native_weights = _native_bf16_execution_weights(
+            probabilities,
+            selected_ids,
+            device=native_weight_device,
         )
-        expected_native_weights = (
-            expected_native_weights / expected_native_weights.sum()
-        ).to(torch.bfloat16).float().numpy()
         native_selected_weight_errors.append(
             float(np.max(np.abs(expected_native_weights - stored_weights)))
         )
@@ -880,8 +934,10 @@ def audit_adaptive_mtp(
         raise AuditError("adaptive capture contains no full-vocabulary audit node")
     if max(probability_errors) > 2e-6 or max(selected_weight_errors) > 0.002:
         raise AuditError("adaptive MTP router reconstruction tolerance failed")
-    if max(native_selected_weight_errors) > 0.001:
-        raise AuditError("adaptive MTP native BF16 execution-weight audit failed")
+    if max(native_selected_weight_errors) != 0.0:
+        raise AuditError(
+            "adaptive MTP exact native BF16 execution-weight audit failed"
+        )
     anchor_spine = _audit_anchor_spines(
         store,
         adaptive_trees=trees,
@@ -900,15 +956,23 @@ def audit_adaptive_mtp(
         "router_probability_abs_max": max(probability_errors),
         "selected_weight_abs_max": max(selected_weight_errors),
         "native_bf16_selected_weight_abs_max": max(native_selected_weight_errors),
+        "native_bf16_verification_device": str(native_weight_device),
+        "native_bf16_exact_match": True,
         "maximum_nodes_per_tree": max(len(rows) for rows in trees.values()),
         "anchor_spine": anchor_spine,
     }
 
 
-def audit(root: Path) -> dict[str, Any]:
+def audit(
+    root: Path, *, authoritative_native_weight_device: str
+) -> dict[str, Any]:
     store = Store(root)
     try:
         manifest = store.manifest
+        native_weight_device = torch.device(authoritative_native_weight_device)
+        native_weight_device_report = _verify_native_weight_device(
+            manifest, native_weight_device
+        )
         if manifest.get("training_started") is not False:
             raise AuditError("training flag is not false")
         if manifest.get("sealed_test_opened") is not False:
@@ -941,11 +1005,13 @@ def audit(root: Path) -> dict[str, Any]:
         mtp = audit_adaptive_mtp(
             store,
             maximum_node_budget=maximum_node_budget,
+            native_weight_device=native_weight_device,
             exact_node_budget=(
                 manifest.get("capture_policy", {}).get("exact_tree_node_budget")
                 is True
             ),
         )
+        mtp["native_weight_device"] = native_weight_device_report
         anchor_provenance = _audit_anchor_manifest(
             manifest, mtp["anchor_spine"]
         )
@@ -986,10 +1052,20 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--capture", type=Path, required=True)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--authoritative-native-weight-device",
+        required=True,
+        help="capture device used to replay FP32 top-k normalization",
+    )
     args = parser.parse_args()
     output = args.output or args.capture / "CAPTURE_AUDIT_ADAPTIVE.json"
     try:
-        report = audit(args.capture)
+        report = audit(
+            args.capture,
+            authoritative_native_weight_device=(
+                args.authoritative_native_weight_device
+            ),
+        )
     except Exception as exc:
         report = {
             "schema": "gcrp2r_transformers_adaptive_mtp_tree_audit_v2",

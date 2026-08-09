@@ -68,6 +68,7 @@ fi
 
 "${command[@]}"
 "$PYTHON_BIN" "$SCRIPT_DIR/audit_adaptive_tree_capture.py" \
-    --capture "$OUTPUT_DIR"
+    --capture "$OUTPUT_DIR" \
+    --authoritative-native-weight-device "$CAPTURE_DEVICE"
 
 echo "adaptive capture pilot audited; training remains stopped: $OUTPUT_DIR"
