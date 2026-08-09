@@ -1,0 +1,48 @@
+{
+  "schema": "harp_rtt_b2_user_operational_override_v1",
+  "date_utc": "2026-08-09",
+  "branch": "agent/harp-rtt-b1.5-exact-set-oracle",
+  "frozen_training_commit": "f61230d53f5f78992d86113f1e47241ce6c0b112",
+  "recovery_commit": "c6f41475d1d1b2e70c9968fda2ed9f2f539924eb",
+  "user_authorized": true,
+  "user_instruction": "Since the learning curves closely follow seed 42, can we skip the other seeds and move to B3?",
+  "operational_pass": true,
+  "move_to_b3_authorized": true,
+  "thresholds_changed": false,
+  "preregistered_three_seed_gate_completed": false,
+  "preregistered_three_seed_gate_passed": null,
+  "paired_request_bootstrap_completed": false,
+  "single_seed_statistical_claim": false,
+  "completed_seed": {
+    "seed": 42,
+    "epochs_completed": 30,
+    "best_epoch": 29,
+    "best_tuning_total": 16.187107600271702,
+    "checkpoint_sha256": "fad0da794ba229be80e5cb05e6cb69f135b765f1339acdc74be6e0b52431c1c6",
+    "probe_metrics_sha256": "610801ce410d30c8181e72abd6f7fb2c44b26e48f9aad7c84e8f04376d4dfde9",
+    "recovery_g": {
+      "H2_prefix_mismatch": 0.6100532492130767,
+      "H3_prefix_mismatch": 0.6209450424791515,
+      "H4_prefix_mismatch": 0.6379524229066902
+    }
+  },
+  "partial_seeds": [
+    {
+      "seed": 43,
+      "epochs_completed": 3,
+      "latest_tuning_total": 20.16853392124176,
+      "checkpoint_written": false,
+      "probe_opened": false,
+      "stop_reason": "user-authorized early transition to B3"
+    },
+    {
+      "seed": 44,
+      "epochs_completed": 2,
+      "latest_tuning_total": 21.54252591729164,
+      "checkpoint_written": false,
+      "probe_opened": false,
+      "stop_reason": "user-authorized early transition to B3"
+    }
+  ],
+  "interpretation": "This is an operational promotion based on one completed held-out seed and corroborating partial learning curves. It is not evidence that the preregistered three-seed B2 promotion gate passed."
+}

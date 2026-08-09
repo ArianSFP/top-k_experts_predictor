@@ -1,0 +1,19 @@
+{
+  "schema": "harp_rtt_b2_partial_seed_stop_v1",
+  "seed": 44,
+  "frozen_training_commit": "f61230d53f5f78992d86113f1e47241ce6c0b112",
+  "intentionally_stopped": true,
+  "stop_signal": "SIGINT",
+  "stop_reason": "user-authorized early transition to B3",
+  "epochs_completed": 2,
+  "best_epoch_so_far": 2,
+  "latest_tuning_total": 21.54252591729164,
+  "checkpoint_written": false,
+  "probe_opened": false,
+  "formal_validation_opened": false,
+  "calibration_opened": false,
+  "sealed_test_opened": false,
+  "metrics_sha256": "4495b26c440ff7640e4f50a4297e29e49bfe365b384d9431f9ec34fe9a9abbda",
+  "run_manifest_sha256": "9536ac16436b89008095a132e2409909f19eefaafdd7e2e5cf75aa8694986783",
+  "log_sha256": "050c6768061e32ab9e942b4c53762b148cdc4e35c2c83883d79b8cac8aea07c6"
+}

@@ -44,10 +44,16 @@ class CandidateUnion(nn.Module):
 
     @staticmethod
     def scheduled_anchor_quota(width: int, progress: float) -> int:
-        """Anchor top-width through 10%, annealing to top-48 by 50%."""
+        """Anchor top-width through 10%, annealing to frozen top-40 by 50%.
+
+        B1.5 selected the request-disjoint 40/24 contract before B2 began.
+        The earlier top-48 target remains historical documentation; B3 must
+        train and evaluate the exact policy accepted by the user rather than
+        silently reverting to the development default.
+        """
         if not 0.0 <= float(progress) <= 1.0:
             raise ValueError("candidate curriculum progress must lie in [0,1]")
-        target = min(width, 48)
+        target = min(width, 40)
         if progress <= 0.10:
             return width
         if progress >= 0.50:

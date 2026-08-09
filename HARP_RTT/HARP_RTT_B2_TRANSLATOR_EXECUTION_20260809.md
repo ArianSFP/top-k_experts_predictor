@@ -76,7 +76,82 @@ blocked until the three-seed B2 gate is evaluated.
 8. Start neither H1 nor B3 unless the B2 gate passes.
 9. Document and publish all outcomes, then stop (not terminate) the supplied pod.
 
-## B2 promotion gate
+## Execution evidence
+
+The frozen training implementation is
+`f61230d53f5f78992d86113f1e47241ce6c0b112`. Capture and fitting used local
+NVMe first and were mirrored only after audit.
+
+- The fitting partition contains 256 outer-train requests and 4,096 positions:
+  eight uniform and eight causal entropy/margin-stratified positions per
+  request. Its selector SHA-256 is
+  `0a6deca40720c8e6c385469f7b92859ed0d8b485fa77bb8cb3169d2530a846f3`.
+- The adaptive-32 base capture contains 131,072 parent-before-child nodes.
+  Exact capture-device BF16 replay matches all 131,072 native MTP weight rows.
+  The earlier CPU-arithmetic failure is preserved separately; it consisted of
+  seven nonzero rows and one BF16 ULP boundary rather than a capture mismatch.
+- The all-node companion contains 4,096 label-only records and 5,079,040 valid
+  layer rows. Native selected IDs match every authoritative row. The maximum
+  centered-logit error is 0.0341653 (tolerance 0.0625), and the maximum router
+  coordinate error is 1.049e-5.
+- Writer, auditor, index, dataset, and privacy checks pass. Counterfactual
+  labels remain reachable only under `targets.counterfactual`; validation,
+  calibration, test, and inference access are rejected.
+
+Seed 42 ran all 30 fixed epochs on an RTX PRO 6000. Its best fitting-tuning
+checkpoint was epoch 29 with total loss 16.1871076003. The original automatic
+probe evaluation failed before scoring because the relocated probe corpus
+still contained an ephemeral
+`/root/harp-rtt-v2-runs/.../adaptive32_controls_probe_v3_7a5b456` symlink.
+The checkpoint had already been written and remained unchanged.
+
+Recovery commit `c6f41475d1d1b2e70c9968fda2ed9f2f539924eb` adds:
+
+- a pre-training corpus relocation check bound to the companion's base
+  manifest, checksum-ledger, and capture-audit hashes;
+- an evaluation-only command that verifies the checkpoint/run-manifest
+  binding, constructs no optimizer, and refuses to overwrite any result;
+- regression coverage for valid and broken relocation links.
+
+The three recovered base hashes exactly equal the companion bindings:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Base run manifest | `4050dad290d784804437bc334efe7a1814cd0ba28762b6997166d602b13a048d` |
+| Base checksum ledger | `08410efb49a44b5473422579fa11b9b1fd6949d539bb23e366c1f6cf99d46157` |
+| Base adaptive audit | `7f1896de00079c50be70ed6dba7e7a7352dc006a46d95efca58c67a972e13391` |
+
+The recovered seed-42 diagnostic result is:
+
+| Stratum | Anchor C64 | Learned C64 | Oracle C64 | Recovery G |
+| --- | ---: | ---: | ---: | ---: |
+| H2 prefix mismatch | 0.756136 | 0.884167 | 0.966004 | 0.610053 |
+| H3 prefix mismatch | 0.734171 | 0.880402 | 0.969669 | 0.620945 |
+| H4 prefix mismatch | 0.701704 | 0.869463 | 0.964669 | 0.637952 |
+| Mean H2-H4, all rows | 0.823061 | 0.889922 | 0.985477 | n/a |
+
+Seed 42 is checksum-complete both on local NVMe and at
+`artifacts/harp_rtt/b2_translator_20260809_f61230d/training/seed42`.
+The RTX PRO 6000 pod was stopped, not terminated, after mirror verification.
+Seeds 43 and 44 were then started independently on the supplied RTX 4090 from
+the unchanged training commit and the hash-verified repaired probe view.
+
+## User-authorized operational promotion
+
+After seed 42 completed and the early seed-43/44 learning curves tracked the
+same direction, the user authorized stopping the remaining seeds and moving to
+B3. Seed 43 was stopped after three complete epochs and seed 44 after two. Both
+were interrupted with `SIGINT` at an epoch boundary; neither wrote a checkpoint
+or opened the diagnostic probe. Their metrics, run manifests, logs, stop
+records, and checksums are retained as partial evidence.
+
+The machine-readable decision is
+`B2_USER_OPERATIONAL_OVERRIDE_20260809.json`. This decision does not change the
+thresholds below and does not convert a one-seed result into a three-seed
+statistical claim. The preregistered aggregate and paired bootstrap are marked
+not completed. B3 inherits the unchanged seed-42 checkpoint and its exact hash.
+
+## Original B2 promotion gate (not completed)
 
 For both H3 and H4 greedy-prefix-mismatch rows:
 
@@ -85,5 +160,7 @@ For both H3 and H4 greedy-prefix-mismatch rows:
   candidate coverage is above zero;
 - no seed has negative recovery.
 
-A failure stops before B3. A noisy positive result expands fitting data to 8k
-and then 20k positions before any 250k-position capture.
+A failure would have stopped before B3. A noisy positive result would have
+expanded fitting data to 8k and then 20k positions before any 250k-position
+capture. The user-authorized operational promotion supersedes the execution
+block, but not the recorded scientific status of this gate.
