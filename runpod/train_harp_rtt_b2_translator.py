@@ -138,6 +138,69 @@ def verify_operational_override(path: Path) -> dict[str, Any]:
     return value
 
 
+def verify_probe_corpus_binding(
+    corpus_root: Path,
+    companion_manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Fail closed when a relocated probe corpus is missing or misbound."""
+
+    segment_link = corpus_root.expanduser().resolve() / "segments" / "stage_a"
+    try:
+        segment = segment_link.resolve(strict=True)
+    except FileNotFoundError as error:
+        raise FileNotFoundError(
+            f"probe corpus segment is missing or has a broken relocation link: {segment_link}"
+        ) from error
+    if not segment.is_dir():
+        raise NotADirectoryError(f"probe corpus segment is not a directory: {segment}")
+
+    bindings = companion_manifest.get("bindings")
+    if not isinstance(bindings, Mapping):
+        raise ValueError("probe companion lacks immutable base-capture bindings")
+    bound_files = {
+        "base_capture_manifest_sha256": segment / "run_manifest.json",
+        "base_capture_checksums_sha256": segment / "SHA256SUMS",
+        "base_capture_audit_sha256": segment / "CAPTURE_AUDIT_ADAPTIVE.json",
+    }
+    verified: dict[str, str] = {}
+    for binding, path in bound_files.items():
+        expected = bindings.get(binding)
+        if not isinstance(expected, str) or len(expected) != 64:
+            raise ValueError(f"probe companion lacks valid {binding}")
+        if not path.is_file():
+            raise FileNotFoundError(f"bound probe artifact is missing: {path}")
+        actual = sha256_file(path)
+        if actual != expected:
+            raise ValueError(f"probe corpus disagrees with companion {binding}")
+        verified[binding] = actual
+
+    ledger = bound_files["base_capture_checksums_sha256"]
+    listed = 0
+    for line in ledger.read_text().splitlines():
+        if not line.strip():
+            continue
+        parts = line.split(maxsplit=1)
+        if len(parts) != 2:
+            raise ValueError(f"malformed probe checksum ledger line: {line!r}")
+        relative = Path(parts[1].lstrip("*"))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("probe checksum ledger contains an unsafe relative path")
+        if not (segment / relative).is_file():
+            raise FileNotFoundError(
+                f"probe checksum ledger references a missing artifact: {relative}"
+            )
+        listed += 1
+    if listed == 0:
+        raise ValueError("probe checksum ledger is empty")
+    return {
+        "corpus_root": str(corpus_root.expanduser().resolve()),
+        "segment_link": str(segment_link),
+        "resolved_segment": str(segment),
+        "listed_artifacts_present": listed,
+        "bindings": verified,
+    }
+
+
 def configure_b2_parameters(model: nn.Module) -> dict[str, Any]:
     trainable, frozen = [], []
     for name, parameter in model.named_parameters():
@@ -607,6 +670,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     probe_labels, probe_companion_manifest = load_node_counterfactual_companion(
         args.probe_companion, split="train", training=True
     )
+    probe_corpus_binding = verify_probe_corpus_binding(
+        args.probe_corpus, probe_companion_manifest
+    )
     probe_base = HarpRTTDataset(
         args.probe_index,
         "train",
@@ -662,6 +728,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "probe_companion_manifest_sha256": sha256_file(
             args.probe_companion / "manifest.json"
         ),
+        "probe_corpus_binding": probe_corpus_binding,
         "probe_oracle_metrics_sha256": sha256_file(args.probe_oracle_metrics),
         "anchor": anchor_provenance,
         "router_numerics": router_audit,

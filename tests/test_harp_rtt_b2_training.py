@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 
@@ -66,6 +67,50 @@ def test_operational_override_preserves_measured_failure(tmp_path: Path) -> None
         pass
     else:
         raise AssertionError("changed thresholds must fail closed")
+
+
+def test_probe_corpus_binding_is_hash_bound_and_rejects_broken_link(
+    tmp_path: Path,
+) -> None:
+    segment = tmp_path / "capture"
+    sidecars = segment / "sidecars"
+    sidecars.mkdir(parents=True)
+    (sidecars / "target_states.bin").write_bytes(b"target-state")
+    (segment / "run_manifest.json").write_text("{}\n")
+    (segment / "CAPTURE_AUDIT_ADAPTIVE.json").write_text("{}\n")
+    payload_sha = hashlib.sha256((sidecars / "target_states.bin").read_bytes()).hexdigest()
+    (segment / "SHA256SUMS").write_text(
+        f"{payload_sha}  sidecars/target_states.bin\n"
+    )
+    bindings = {
+        "bindings": {
+            "base_capture_manifest_sha256": MODULE.sha256_file(
+                segment / "run_manifest.json"
+            ),
+            "base_capture_checksums_sha256": MODULE.sha256_file(
+                segment / "SHA256SUMS"
+            ),
+            "base_capture_audit_sha256": MODULE.sha256_file(
+                segment / "CAPTURE_AUDIT_ADAPTIVE.json"
+            ),
+        }
+    }
+    corpus = tmp_path / "corpus"
+    (corpus / "segments").mkdir(parents=True)
+    (corpus / "segments" / "stage_a").symlink_to(segment, target_is_directory=True)
+    report = MODULE.verify_probe_corpus_binding(corpus, bindings)
+    assert report["listed_artifacts_present"] == 1
+    assert Path(report["resolved_segment"]) == segment
+
+    broken = tmp_path / "broken" / "segments"
+    broken.mkdir(parents=True)
+    (broken / "stage_a").symlink_to(tmp_path / "missing", target_is_directory=True)
+    try:
+        MODULE.verify_probe_corpus_binding(broken.parent, bindings)
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError("a broken relocated probe corpus must fail closed")
 
 
 def test_learned_branch_mass_uses_budget16_nodes_and_other() -> None:
