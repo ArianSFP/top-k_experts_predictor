@@ -54,8 +54,8 @@ It then trains all non-anchor, non-token-embedding, non-reranker modules with:
 - factual exact-set and formal auxiliary objectives;
 - 0.1 counterfactual semantic-retention weight, including the declared 0.1
   target posterior term inside that retention objective;
-- effective batch 32, AdamW, learning rate 2e-4, weight decay 0.01 and clipping
-  1.0;
+- effective batch 32, AdamW, peak learning rate 2e-4, 5% linear warmup then
+  cosine decay, weight decay 0.01 and clipping 1.0;
 - random ancestor-closed anytime budgets during generator training;
 - tuning selection led first by mean H2-H4 C64 coverage.
 

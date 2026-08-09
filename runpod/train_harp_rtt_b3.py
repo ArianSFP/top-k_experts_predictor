@@ -56,6 +56,7 @@ from harp_rtt.train import (
 from harp_rtt.training import (
     PhaseSpec,
     configure_training_phase,
+    cosine_warmup_multiplier,
     move_to_device,
     seed_everything,
     sha256_file,
@@ -493,6 +494,9 @@ def train_epoch(
     epoch: int,
     epochs: int,
     global_step: int,
+    total_optimizer_steps: int,
+    warmup_steps: int,
+    base_learning_rates: Sequence[float],
     microbatch: int,
     device: torch.device,
     static: Any,
@@ -517,7 +521,6 @@ def train_epoch(
         workers=workers,
         device=device,
     )
-    total_optimizer_steps = max(1, math.ceil(len(batches) / accumulation) * epochs)
     optimizer.zero_grad(set_to_none=True)
     totals: dict[str, float] = defaultdict(float)
     examples = 0
@@ -566,13 +569,22 @@ def train_epoch(
         )
         if not torch.isfinite(norm):
             raise FloatingPointError("B3 gradient norm became non-finite")
+        multiplier = cosine_warmup_multiplier(
+            global_step, total_optimizer_steps, warmup_steps
+        )
+        for group, base_learning_rate in zip(
+            optimizer.param_groups, base_learning_rates, strict=True
+        ):
+            group["lr"] = float(base_learning_rate) * multiplier
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         window_examples = 0
         global_step += 1
     if not examples:
         raise ValueError("B3 training loader is empty")
-    return {name: value / examples for name, value in totals.items()}, global_step
+    result = {name: value / examples for name, value in totals.items()}
+    result["ending_learning_rate"] = float(optimizer.param_groups[0]["lr"])
+    return result, global_step
 
 
 def evaluation_report(
@@ -856,6 +868,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         betas=(0.9, 0.95),
         eps=1e-8,
     )
+    base_learning_rates = [float(group["lr"]) for group in optimizer.param_groups]
+    accumulation = EFFECTIVE_BATCH // args.microbatch_size
+    microbatches_per_epoch = math.ceil(len(train_data) / args.microbatch_size)
+    optimizer_steps_per_epoch = math.ceil(microbatches_per_epoch / accumulation)
+    total_optimizer_steps = optimizer_steps_per_epoch * epochs
+    warmup_steps = min(
+        int(total_optimizer_steps * 0.05), max(0, total_optimizer_steps - 1)
+    )
     schema = GENERATOR_SCHEMA if args.stage == "generator" else RANKER_SCHEMA
     run_manifest = {
         "schema": schema,
@@ -908,6 +928,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "learning_rate": learning_rate,
             "weight_decay": args.weight_decay,
             "gradient_clip": args.gradient_clip,
+            "scheduler": "linear_warmup_then_cosine",
+            "optimizer_steps_per_epoch": optimizer_steps_per_epoch,
+            "total_optimizer_steps": total_optimizer_steps,
+            "warmup_steps": warmup_steps,
             "counterfactual_retention_weight": (
                 args.counterfactual_retention_weight if args.stage == "generator" else 0.0
             ),
@@ -939,6 +963,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             epoch=epoch,
             epochs=epochs,
             global_step=global_step,
+            total_optimizer_steps=total_optimizer_steps,
+            warmup_steps=warmup_steps,
+            base_learning_rates=base_learning_rates,
             microbatch=args.microbatch_size,
             device=device,
             static=runtime_static,
