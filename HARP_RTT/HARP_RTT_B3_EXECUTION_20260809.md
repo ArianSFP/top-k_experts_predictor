@@ -173,3 +173,11 @@ fix the semantic route head. If global top-64 passes while 40/24 fails, fix the
 candidate union. Only after the learned source recovers a material fraction of
 the accepted oracle coverage should the rich ranker or the independent H1 root
 predictor be trained.
+
+## Pod lifecycle
+
+After the final persistent-artifact checksum verification, no HARP capture or
+training process remained active. RunPod `bcktp0cn82xnja`
+(`gross_lime_primate`, RTX 4090) was stopped with `runpodctl pod stop` at
+`2026-08-10T04:51:43Z`. The API returned `desiredStatus=EXITED`; the pod was not
+terminated.
