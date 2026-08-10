@@ -1,0 +1,65 @@
+{
+  "schema": "harp_rtt_b3_generator_terminal_v1",
+  "date": "2026-08-10",
+  "branch": "agent/harp-rtt-b1.5-exact-set-oracle",
+  "source_commit": "6a350f99ab1d946fcf9b279d060614280fcf6452",
+  "capture_source_commit": "f61230d53f5f78992d86113f1e47241ce6c0b112",
+  "stage": "generator",
+  "seed": 42,
+  "epochs_completed": 12,
+  "best_epoch": 10,
+  "best_tuning_selection": [
+    0.9050537109375,
+    0.8813537597656249,
+    0.5295654296874999,
+    -17.883872457640244
+  ],
+  "probe": {
+    "requests": 128,
+    "positions": 2048,
+    "partition": "outer_train_diagnostic_probe",
+    "per_horizon_c64": [
+      0.9385696649551392,
+      0.9239394664764404,
+      0.9068222045898438,
+      0.8855789303779602
+    ],
+    "per_horizon_recall_at_8": [
+      0.5852234363555908,
+      0.5480071902275085,
+      0.5218841433525085,
+      0.49049070477485657
+    ],
+    "mean_h2_h4_c64": 0.9054468274116516,
+    "h4_c64": 0.8855789303779602,
+    "h4_prefix_mismatch_c64": 0.823855996131897,
+    "h4_prefix_mismatch_rows": 631,
+    "mean_h1_h4_recall_at_8": 0.5364013314247131
+  },
+  "gates": {
+    "mean_h2_h4_c64_threshold": 0.985,
+    "h4_c64_threshold": 0.97,
+    "h4_prefix_mismatch_c64_threshold": 0.93,
+    "passed": false
+  },
+  "decision": {
+    "ranker_training_authorized": false,
+    "ranker_optimizer_constructed": false,
+    "formal_validation_opened": false,
+    "calibration_opened": false,
+    "sealed_test_opened": false,
+    "next_experiment": "B3.1 no-recapture oracle-route versus posterior versus candidate-union factorial"
+  },
+  "checkpoint": {
+    "name": "best_generator.pt",
+    "sha256": "064e3207b724e47a8a77c7d44a0c4d7169df2c5184078760e2354a5e053637c2"
+  },
+  "artifacts": {
+    "persistent_root": "/workspace/LLM_prefetch_study/artifacts/harp_rtt/b3_generator_20260810_6a350f9",
+    "probe_report_sha256": "e1ec360a2a09553bfaebdc9cb742277e3249f9095f0d06ce892895101abad08c",
+    "probe_position_metrics_sha256": "5bbf4c0ab55fa3b910d595f9f28090ded89b0d8668c8063a6bfec39d1661a33c",
+    "terminal_result_sha256": "36f3cab128cbb4594c802ffe6490981dbd3887b54536ceeb099ccbeb17d81668",
+    "sha256sum_verified": true,
+    "mirror_byte_identical": true
+  }
+}
