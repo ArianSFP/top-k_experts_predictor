@@ -19,9 +19,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from harp_rtt.anchor import LegacyHARPAnchorBridge  # noqa: E402
-from harp_rtt.b31 import exact_root_greedy_spine_indices  # noqa: E402
+from harp_rtt.b31 import anchor_spine_prefix_matches  # noqa: E402
 from harp_rtt.dataset import HarpRTTDataset  # noqa: E402
-from harp_rtt.delta_batch import factual_branch_indices  # noqa: E402
 from harp_rtt.exact_k import stable_topk  # noqa: E402
 from harp_rtt.model import HARPRTTTeacher  # noqa: E402
 from harp_rtt.model.heads import exact_projected_marginals  # noqa: E402
@@ -212,15 +211,10 @@ def main() -> None:
             dense, "target_ids", prepared["targets"]["future_selected_ids"], torch.int16
         )
         _append(dense, "branch_mask", branch_mask, torch.bool)
-        factual = factual_branch_indices(
-            exact_prefix_hashes=prepared["inputs"]["tree"]["exact_prefix_hashes"],
-            node_depths=prepared["inputs"]["tree"]["depth"],
-            node_available=prepared["inputs"]["tree"]["mask"],
-            future_prefix_hashes=prepared["targets"]["future_prefix_hashes"],
+        greedy_match = anchor_spine_prefix_matches(
+            prepared["anchor_inputs"]["mtp_spine"]["exact_prefix_hashes"],
+            prepared["targets"]["future_prefix_hashes"],
         )
-        tree = prepared["inputs"]["tree"]
-        greedy = exact_root_greedy_spine_indices(tree)
-        greedy_match = factual == greedy
         first_h2 = ~greedy_match[:, 1]
         first_h3 = greedy_match[:, 1] & ~greedy_match[:, 2]
         first_h4 = greedy_match[:, 1] & greedy_match[:, 2] & ~greedy_match[:, 3]

@@ -101,6 +101,35 @@ def _zeros(shape: Sequence[int], dtype_name: str) -> Tensor:
     return torch.zeros(tuple(shape), dtype=torch.from_numpy(np.empty((), NP_DTYPES[dtype_name])).dtype)
 
 
+def _structural_first_divergence_depths(
+    horizons: Tensor,
+    child_ranks: Tensor,
+    parents: Tensor,
+) -> Tensor:
+    """Derive branch divergence below the observed exact-H1 root.
+
+    Adaptive capture fixes H1 to the target's already committed token.  Its
+    rank under an earlier MTP distribution is descriptive evidence only; it
+    is not a branch choice in the H2--H4 causal tree.
+    """
+
+    if any(value.ndim != 1 for value in (horizons, child_ranks, parents)):
+        raise ValueError("tree divergence inputs must be vectors")
+    if not (horizons.shape == child_ranks.shape == parents.shape):
+        raise ValueError("tree divergence inputs must share geometry")
+    divergence = torch.zeros_like(horizons, dtype=torch.int64)
+    for local in range(int(horizons.numel())):
+        current = local
+        first = 0
+        while current >= 0:
+            horizon = int(horizons[current])
+            if horizon > 1 and int(child_ranks[current]) > 0:
+                first = horizon
+            current = int(parents[current])
+        divergence[local] = first
+    return divergence
+
+
 @dataclass(frozen=True)
 class RichTokenRecord:
     """Resolved source, history, future, and tree rows for one sample."""
@@ -717,15 +746,9 @@ class HarpRTTDataset(Dataset[dict[str, Any]]):
             if rows.numel():
                 order = torch.argsort(scalars[rows, 1], descending=True, stable=True)
                 path_ranks[rows[order]] = torch.arange(1, rows.numel() + 1)
-        divergence = torch.zeros(count, dtype=torch.int64)
-        for local in range(count):
-            current = local
-            first = 0
-            while current >= 0:
-                if int(child_ranks[current]) > 0:
-                    first = int(horizons[current])
-                current = local_parents[current]
-            divergence[local] = first
+        divergence = _structural_first_divergence_depths(
+            horizons, child_ranks, parents
+        )
         tree["child_ranks"][:count] = child_ranks
         tree["first_divergence_depths"][:count] = divergence
         tree["cumulative_path_ranks"][:count] = path_ranks

@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from harp_rtt.b31 import (
+    anchor_spine_prefix_matches,
     complete_other_mass,
     evaluate_factorial,
     evaluate_selected_factorial,
@@ -28,6 +29,18 @@ def test_greedy_spine_ignores_nonzero_rank_of_exact_h1_root() -> None:
         ),
     }
     assert exact_root_greedy_spine_indices(tree).tolist() == [[0, 1, 3, 4]]
+
+
+def test_anchor_spine_prefix_match_continues_through_tree_eos() -> None:
+    spine = torch.zeros(1, 6, 32, dtype=torch.uint8)
+    for depth in range(6):
+        spine[:, depth] = depth + 1
+    factual = spine[:, :4].clone()
+    factual[:, 2] = 99
+    factual[:, 3] = 100
+    assert anchor_spine_prefix_matches(spine, factual).tolist() == [
+        [True, True, False, False]
+    ]
 
 
 def test_selected_set_mass_uses_membership_not_router_softmax() -> None:

@@ -90,6 +90,30 @@ def exact_root_greedy_spine_indices(tree: Mapping[str, Tensor]) -> Tensor:
     return result
 
 
+def anchor_spine_prefix_matches(
+    exact_prefix_hashes: Tensor,
+    future_prefix_hashes: Tensor,
+) -> Tensor:
+    """Match factual H1--H4 prefixes to the complete causal MTP spine."""
+
+    if (
+        exact_prefix_hashes.ndim != 3
+        or exact_prefix_hashes.shape[1] < 4
+        or exact_prefix_hashes.shape[2] != 32
+    ):
+        raise ValueError("anchor spine exact prefix hashes must be [B,D>=4,32]")
+    expected = (exact_prefix_hashes.shape[0], 4, 32)
+    if future_prefix_hashes.shape != expected:
+        raise ValueError("future factual prefix hashes must be [B,4,32]")
+    matches = (
+        exact_prefix_hashes[:, :4].to(torch.uint8)
+        == future_prefix_hashes.to(torch.uint8)
+    ).all(-1)
+    if not bool(matches[:, 0].all()):
+        raise ValueError("complete MTP spine does not begin at the exact factual H1 root")
+    return matches
+
+
 def selected_set_inclusion_mass(
     branch_scores: Tensor,
     posterior_weights: Tensor,
