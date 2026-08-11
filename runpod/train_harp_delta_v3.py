@@ -78,6 +78,7 @@ DEFAULT_EPOCHS = {"semantic": 30, "candidate": 15, "ranker": 15, "calibration": 
 DEFAULT_LR = {"semantic": 3e-4, "candidate": 1e-3, "ranker": 3e-4, "calibration": 5e-5}
 EFFECTIVE_BATCH = 32
 MICROBATCH_CHOICES = (1, 2, 4, 8, 16, 32)
+COUNTERFACTUAL_BUDGET_INDEX = {"4": 0, "8": 1, "16": 2, "all": 3}
 
 
 def write_json_exclusive(path: Path, value: Mapping[str, Any]) -> None:
@@ -115,6 +116,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-preprocessing", type=Path, required=True)
     parser.add_argument("--mtp-preprocessing", type=Path, required=True)
     parser.add_argument("--initialize-from", type=Path)
+    parser.add_argument(
+        "--resume-same-stage",
+        action="store_true",
+        help=(
+            "Resume a semantic checkpoint into another immutable semantic run. "
+            "This is reserved for a declared supervision-budget refinement."
+        ),
+    )
+    parser.add_argument(
+        "--counterfactual-budget",
+        choices=tuple(COUNTERFACTUAL_BUDGET_INDEX),
+        default="16",
+        help="Counterfactual node mask used by semantic set/posterior supervision.",
+    )
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=42)
@@ -301,11 +316,12 @@ def load_initializer(
     *,
     data_profile: str,
     partition_manifest_sha256: str,
+    resume_same_stage: bool = False,
 ) -> dict[str, Any]:
     value = torch.load(path, map_location="cpu", weights_only=True)
     if not isinstance(value, dict) or value.get("schema") != SCHEMA:
         raise ValueError("Delta initializer schema mismatch")
-    expected = PREDECESSOR[stage]
+    expected = stage if resume_same_stage else PREDECESSOR[stage]
     if value.get("stage") != expected:
         raise ValueError(f"Delta {stage} requires a completed {expected} checkpoint")
     if value.get("config") != model.config.to_dict():
@@ -319,14 +335,16 @@ def load_initializer(
 
 
 def _counterfactual_with_posterior(
-    counterfactual: Mapping[str, Tensor], nodes: int
+    counterfactual: Mapping[str, Tensor], nodes: int, *, budget_index: int
 ) -> dict[str, Tensor]:
     result = dict(counterfactual)
     masks = result["budget_node_masks"].bool()
-    if masks.ndim != 3 or masks.shape[1] < 3:
+    if masks.ndim != 3 or masks.shape[1] != len(COUNTERFACTUAL_BUDGET_INDEX):
         raise ValueError("Delta semantic stage requires nested 4/8/16/all masks")
+    if not 0 <= budget_index < masks.shape[1]:
+        raise ValueError("declared counterfactual budget is unavailable")
     posterior, _ = node_target_branch_distribution(
-        result, captured_nodes=nodes, selection_mask=masks[:, 2]
+        result, captured_nodes=nodes, selection_mask=masks[:, budget_index]
     )
     result["target_path_distribution"] = posterior
     return result
@@ -337,6 +355,7 @@ def forward_batch(
     host: Mapping[str, Any], runtime_static: Any, token_embedding: Tensor,
     input_basis: Tensor, rank_mask: Tensor, device: torch.device,
     semantic_only: bool = False,
+    counterfactual_budget_index: int = 2,
 ) -> tuple[Any, dict[str, Any], dict[str, Tensor], Tensor]:
     batch = move_to_device(host, device)
     prepared = prepare_model_batch(batch, runtime_static)
@@ -361,7 +380,8 @@ def forward_batch(
             ) * rank_mask[None, None].float()
         )[:, 0]
     counterfactual = _counterfactual_with_posterior(
-        targets["counterfactual"], model.config.max_tree_nodes
+        targets["counterfactual"], model.config.max_tree_nodes,
+        budget_index=counterfactual_budget_index,
     )
     with torch.autocast(
         device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"
@@ -374,9 +394,13 @@ def objective(
     stage: DeltaStage, model: HARPDeltaTeacher, output: Any,
     anchor_scores: Tensor, targets: Mapping[str, Tensor],
     counterfactual: Mapping[str, Tensor],
+    *, counterfactual_budget_index: int = 2,
 ) -> DeltaLoss:
     if stage == "semantic":
-        return semantic_loss(output, targets, counterfactual, budget_index=2)
+        return semantic_loss(
+            output, targets, counterfactual,
+            budget_index=counterfactual_budget_index,
+        )
     if stage == "candidate":
         return candidate_loss(model.core, output, anchor_scores, targets)
     if stage == "ranker":
@@ -397,16 +421,15 @@ def evaluate(
     anchor: LegacyHARPAnchorBridge, dataset: Dataset[Any], runtime_static: Any,
     token_embedding: Tensor, input_basis: Tensor, rank_mask: Tensor,
     device: torch.device, microbatch: int, workers: int,
+    counterfactual_budget_index: int = 2,
 ) -> dict[str, float | int]:
     model.eval(); anchor.eval()
     totals = {"loss": 0.0, "recall": 0.0, "coverage": 0.0}
     semantic_hits = [0.0, 0.0, 0.0, 0.0]
     semantic_slots = [0, 0, 0, 0]
+    semantic_candidate_hits = [0.0, 0.0, 0.0, 0.0]
+    semantic_candidate_slots = [0, 0, 0, 0]
     path_correct = path_rows = 0
-    semantic_anchor: list[Tensor] = []
-    semantic_branch: list[Tensor] = []
-    semantic_labels: list[Tensor] = []
-    semantic_valid: list[Tensor] = []
     rows = outside = 0
     for host in loader(
         dataset, batch=microbatch, shuffle=False, seed=0,
@@ -416,8 +439,12 @@ def evaluate(
             model=model, anchor=anchor, host=host, runtime_static=runtime_static,
             token_embedding=token_embedding, input_basis=input_basis,
             rank_mask=rank_mask, device=device,
+            counterfactual_budget_index=counterfactual_budget_index,
         )
-        loss = objective(stage, model, output, anchor_logits, targets, counterfactual)
+        loss = objective(
+            stage, model, output, anchor_logits, targets, counterfactual,
+            counterfactual_budget_index=counterfactual_budget_index,
+        )
         labels = targets["future_selected_ids"].long()
         valid = targets["future_available"].bool()
         recall = (labels[..., :, None] == output.final_ids[..., None, :]).any(-1).float()
@@ -441,7 +468,9 @@ def evaluate(
         node_ids = counterfactual["selected_ids"].long()
         node_valid = counterfactual["valid"].bool()
         node_depth = counterfactual["depth"].long()
-        budget = counterfactual["budget_node_masks"][:, 2].bool()
+        budget = counterfactual["budget_node_masks"][
+            :, counterfactual_budget_index
+        ].bool()
         for horizon in range(1, 4):
             predicted = stable_topk(
                 output.node_scores[:, horizon].float(), model.config.exact_k
@@ -464,37 +493,31 @@ def evaluate(
             ((output.factual_path_logits.argmax(-1) == factual) & path_valid).sum()
         )
         path_rows += int(path_valid.sum())
-        semantic_anchor.append(anchor_logits.detach().cpu().to(torch.bfloat16))
-        semantic_branch.append(
-            output.branch_marginals.detach().cpu().to(torch.bfloat16)
-        )
-        semantic_labels.append(labels.detach().cpu().to(torch.int16))
-        semantic_valid.append(valid.detach().cpu())
-    slots = rows * model.config.exact_k
-    anchor_all = torch.cat(semantic_anchor).float()
-    branch_all = torch.cat(semantic_branch).float()
-    labels_all = torch.cat(semantic_labels).long()
-    valid_all = torch.cat(semantic_valid).bool()
-    semantic_candidates = quota_candidate_union(
-        anchor_all, branch_all, anchor_quota=32,
-        width=model.config.candidate_width,
-    ).expert_ids
-    semantic_membership = (
-        labels_all[..., :, None] == semantic_candidates[..., None, :]
-    ).any(-1)
-    semantic_coverage_h: list[float] = []
-    for horizon in range(4):
-        active_h = valid_all[:, horizon]
-        denominator = int(active_h.sum()) * model.config.exact_k
-        semantic_coverage_h.append(
-            float(
+        semantic_candidates = quota_candidate_union(
+            anchor_logits.float(), output.branch_marginals.float(),
+            anchor_quota=32, width=model.config.candidate_width,
+        ).expert_ids
+        semantic_membership = (
+            labels[..., :, None] == semantic_candidates[..., None, :]
+        ).any(-1)
+        for horizon in range(4):
+            active_h = valid[:, horizon]
+            semantic_candidate_hits[horizon] += float(
                 (
                     semantic_membership[:, horizon].float()
                     * active_h[..., None]
                 ).sum()
             )
-            / max(1, denominator)
+            semantic_candidate_slots[horizon] += (
+                int(active_h.sum()) * model.config.exact_k
+            )
+    slots = rows * model.config.exact_k
+    semantic_coverage_h = [
+        hits / max(1, denominator)
+        for hits, denominator in zip(
+            semantic_candidate_hits, semantic_candidate_slots, strict=True
         )
+    ]
     result: dict[str, float | int] = {
         "loss": totals["loss"] / max(1, rows),
         "recall_at_8": totals["recall"] / max(1, slots),
@@ -535,8 +558,20 @@ def main() -> None:
     stage: DeltaStage = args.stage
     if args.output.exists():
         raise FileExistsError(f"refusing to overwrite Delta run {args.output}")
-    if (PREDECESSOR[stage] is None) != (args.initialize_from is None):
+    if args.resume_same_stage:
+        if stage != "semantic" or args.initialize_from is None:
+            raise ValueError(
+                "same-stage resume requires semantic stage and --initialize-from"
+            )
+        if args.counterfactual_budget != "all":
+            raise ValueError("semantic same-stage resume is reserved for all-node refinement")
+    elif (PREDECESSOR[stage] is None) != (args.initialize_from is None):
         raise ValueError("Delta initializer presence disagrees with stage lineage")
+    if stage != "semantic" and args.counterfactual_budget != "16":
+        raise ValueError("counterfactual budget applies only to semantic training")
+    counterfactual_budget_index = COUNTERFACTUAL_BUDGET_INDEX[
+        args.counterfactual_budget
+    ]
     if args.microbatch_size > EFFECTIVE_BATCH or EFFECTIVE_BATCH % args.microbatch_size:
         raise ValueError("microbatch must divide effective batch 32")
     partition = _manifest(args.partition_manifest, args.data_profile)
@@ -601,6 +636,7 @@ def main() -> None:
             stage,
             data_profile=args.data_profile,
             partition_manifest_sha256=sha256_file(args.partition_manifest),
+            resume_same_stage=args.resume_same_stage,
         )
     ownership = configure_delta_stage(model, stage)
     if sum(parameter.numel() for parameter in model.parameters()) > 25_000_000:
@@ -645,7 +681,9 @@ def main() -> None:
         "initializer_sha256": None if args.initialize_from is None else sha256_file(args.initialize_from),
         "effective_batch": EFFECTIVE_BATCH,
         "microbatch": args.microbatch_size,
-        "counterfactual_budget": 16,
+        "counterfactual_budget": args.counterfactual_budget,
+        "counterfactual_budget_index": counterfactual_budget_index,
+        "resume_same_stage": args.resume_same_stage,
         "counterfactual_model_input": False,
         "formal_validation_opened": False,
         "calibration_opened": False,
@@ -663,6 +701,7 @@ def main() -> None:
         model=model, anchor=anchor, host=host, runtime_static=runtime_static,
         token_embedding=token_embedding, input_basis=input_basis,
         rank_mask=rank_mask, device=device,
+        counterfactual_budget_index=counterfactual_budget_index,
     )
     epoch_zero = {
         "final_top8_equals_anchor": bool(torch.equal(output.final_ids, stable_topk(anchor_scores, 8))),
@@ -712,8 +751,12 @@ def main() -> None:
                 token_embedding=token_embedding, input_basis=input_basis,
                 rank_mask=rank_mask, device=device,
                 semantic_only=stage == "semantic",
+                counterfactual_budget_index=counterfactual_budget_index,
             )
-            loss = objective(stage, model, output, anchor_scores, targets, counterfactual)
+            loss = objective(
+                stage, model, output, anchor_scores, targets, counterfactual,
+                counterfactual_budget_index=counterfactual_budget_index,
+            )
             (loss.total / accumulation).backward()
             if step % accumulation == 0 or step == len(train_loader):
                 nn.utils.clip_grad_norm_(parameters, args.gradient_clip)
@@ -724,6 +767,7 @@ def main() -> None:
             runtime_static=runtime_static, token_embedding=token_embedding,
             input_basis=input_basis, rank_mask=rank_mask, device=device,
             microbatch=args.microbatch_size, workers=args.num_workers,
+            counterfactual_budget_index=counterfactual_budget_index,
         )
         record = {"epoch": epoch, "train_loss": total / max(1, batches), "tune": tune}
         append_jsonl(metrics_path, record)
@@ -743,6 +787,7 @@ def main() -> None:
         runtime_static=runtime_static, token_embedding=token_embedding,
         input_basis=input_basis, rank_mask=rank_mask, device=device,
         microbatch=args.microbatch_size, workers=args.num_workers,
+        counterfactual_budget_index=counterfactual_budget_index,
     )
     checkpoint = {
         "schema": SCHEMA,
@@ -754,6 +799,14 @@ def main() -> None:
         "best_epoch": best_epoch,
         "best_tune_value": best_value,
         "development": development,
+        "counterfactual_budget": args.counterfactual_budget,
+        "counterfactual_budget_index": counterfactual_budget_index,
+        "resume_same_stage": args.resume_same_stage,
+        "initializer_sha256": (
+            None
+            if args.initialize_from is None
+            else sha256_file(args.initialize_from)
+        ),
         "model_state_dict": best_state,
         "partition_manifest_sha256": sha256_file(args.partition_manifest),
         "reuse_split_manifest_sha256": (
@@ -775,6 +828,9 @@ def main() -> None:
         "best_epoch": best_epoch,
         "best_tune_value": best_value,
         "development": development,
+        "counterfactual_budget": args.counterfactual_budget,
+        "resume_same_stage": args.resume_same_stage,
+        "initializer_sha256": checkpoint["initializer_sha256"],
         "checkpoint_sha256": sha256_file(checkpoint_path),
         "training_started": True,
         "formal_validation_opened": False,

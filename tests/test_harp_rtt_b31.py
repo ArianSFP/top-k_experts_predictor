@@ -133,6 +133,45 @@ def test_quota_union_uses_only_positive_branch_evidence_then_anchor_fallback() -
     assert len(set(result.expert_ids.flatten().tolist())) == 6
 
 
+def test_vectorized_quota_union_matches_audited_insertion_policy() -> None:
+    generator = torch.Generator().manual_seed(42)
+    anchor = torch.randint(
+        -3, 4, (3, 4, 5, 80), generator=generator
+    ).float()
+    branch = torch.randint(
+        -1, 3, anchor.shape, generator=generator
+    ).float()
+    result = quota_candidate_union(
+        anchor, branch, anchor_quota=40, width=64
+    ).expert_ids.reshape(-1, 64)
+    anchor_flat = anchor.reshape(-1, 80)
+    branch_flat = branch.reshape(-1, 80)
+    expected: list[list[int]] = []
+    for anchor_row, branch_row in zip(anchor_flat, branch_flat, strict=True):
+        anchor_order = torch.argsort(
+            anchor_row, descending=True, stable=True
+        ).tolist()
+        branch_order = torch.argsort(
+            branch_row, descending=True, stable=True
+        ).tolist()
+        chosen = [int(expert) for expert in anchor_order[:40]]
+        selected = set(chosen)
+        for expert in branch_order:
+            if len(chosen) == 64:
+                break
+            if float(branch_row[expert]) > 0 and expert not in selected:
+                chosen.append(int(expert))
+                selected.add(int(expert))
+        for expert in anchor_order:
+            if len(chosen) == 64:
+                break
+            if expert not in selected:
+                chosen.append(int(expert))
+                selected.add(int(expert))
+        expected.append(chosen)
+    assert torch.equal(result, torch.tensor(expected))
+
+
 def test_factorial_reports_route_posterior_and_policy_axes() -> None:
     anchor = torch.zeros(1, 1, 1, 80)
     anchor[..., :8] = 2.0

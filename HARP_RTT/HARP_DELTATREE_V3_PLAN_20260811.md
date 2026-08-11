@@ -190,6 +190,93 @@ loss values and gradients, including zero gradients for inactive rows. The
 stopped attempt produced no selectable checkpoint and is not an experimental
 result.
 
+A subsequent full-supervision microbatch-8 throughput trial at source revision
+`d8b58f473aa7a88433008ab339841b2762f93686` completed one train/tune epoch on
+the same frozen split before being stopped at the start of epoch 2. Its tuning
+result was semantic quota-32 C64 `0.828005` over H2--H4 (H2 `0.853412`, H3
+`0.829761`, H4 `0.800842`), counterfactual route Recall@8 `0.238343`, and
+factual path accuracy `0.265137`. This is an initialization/learning-curve
+diagnostic, not a selectable checkpoint. The epoch required about 55 minutes
+of training plus 8 minutes of tuning because the audited exact-cardinality
+dynamic program launches sequential expert/order kernels for every
+microbatch. The immutable artifact is
+`/root/harp_delta_v3/reuse/runs/semantic_seed42_d8b58f4_mb8` on the execution
+pod and contains its epoch-zero audit, run manifest, and one metrics row.
+
+Revision `681642d5cb247373ba84422d57782a19dc784051` therefore permits microbatches
+16 and 32, both exact divisors of the unchanged effective batch 32. The
+microbatch-32 retry changes neither examples, objective, optimizer step batch,
+nor promotion metric; it only batches the exact-set dynamic program more
+efficiently. It produced a directly comparable epoch-1 H2--H4 semantic C64 of
+`0.827842`, route Recall@8 `0.238371`, and path accuracy `0.264648`. Those
+values match the microbatch-8 diagnostic closely, but training still required
+about 48 minutes because the larger tensors did not remove the nested
+expert/order launch sequence. The run was stopped at the start of epoch 2 and
+is retained at
+`/root/harp_delta_v3/reuse/runs/semantic_seed42_681642d_mb32` without a
+selectable checkpoint.
+
+Revision `e97e7e100adb32f6bd30bcce9e71eedffc28e876` removes that launch
+bottleneck without changing the objective: within each expert recurrence, all
+eight independent cardinality orders are updated in one tensor operation.
+Strict tests show bit-identical log partitions and inclusion marginals against
+both scalar audited references on FP32 and BF16 inputs. Its epoch-1 training
+loss and every tune metric were bit-identical to the old-kernel microbatch-32
+run, including H2--H4 C64 `0.827842` and route Recall@8 `0.238371`. Training
+fell to about 45 minutes, showing that frozen downstream inference had become
+the dominant cost. It was stopped at epoch 2 and retained at
+`/root/harp_delta_v3/reuse/runs/semantic_seed42_e97e7e1_mb32` without a
+selectable checkpoint.
+
+Revision `cb7963a67e77dcefff42e637d5dad0f9e46a7cef` adds a semantic-only
+training forward. It shares the exact adapter/tree/root/node/path computation
+with full inference but skips frozen exact marginals, candidate construction,
+and C64 ranker execution. Tuning, development, epoch-zero protection, and all
+later stages still use the complete model. Strict tests assert equality of all
+shared semantic tensors, and the complete repository suite passes. This is
+the first retry authorized to train through patience and emit a selectable
+checkpoint; it uses the same microbatch/effective-batch 32, split, optimizer,
+seed, labels, and metric-aligned full-model tune evaluation.
+
+The completed source audit also makes the boundary between semantic and
+candidate learning explicit. The candidate subsystem contains only a scalar
+marginal-lift calibration and a four-way anchor-quota policy. It cannot alter
+the ordering of experts within a predicted branch route, and therefore cannot
+repair an underfit branch translator. Candidate optimization is not a valid
+substitute for passing the semantic information test.
+
+The immutable all-node companions already contain supervised target routes for
+every adaptive-32 node, but the first semantic run uses only the nested
+budget-16 mask for both route loss and target-posterior distillation. The
+remaining nodes are runtime inputs, not negative examples; folding them into
+`OTHER` during distillation can teach a posterior inconsistent with the
+all-node runtime mixture. A no-recapture refinement is therefore predeclared:
+
+1. allow the budget-16 semantic run to finish and select on its request-grouped
+   tuning set;
+2. evaluate its selected checkpoint once on the untouched diagnostic
+   development requests;
+3. if semantic translation remains the limiting factor, initialize a new,
+   immutable semantic run from that checkpoint;
+4. supervise exact sets and the target posterior with the nested `all` mask;
+5. compare budget-16 and all-node checkpoints on exactly the same development
+   data before constructing any candidate optimizer.
+
+`--resume-same-stage --counterfactual-budget all` implements this refinement.
+It accepts only a completed semantic checkpoint with the identical
+architecture, profile, and partition hash. The original default remains
+budget 16. Unit tests bind the `4/8/16/all` mask indices and verify that
+all-node probability mass is no longer incorrectly assigned to `OTHER`.
+
+The same revision removes an evaluation-only throughput artifact. Quota C64
+previously accumulated every dense score tensor on the CPU and replayed the
+candidate insertion policy rank by rank after each tune pass. The policy is
+now expressed as three exact lexicographic groups—guaranteed anchor prefix,
+strictly positive non-anchor branch evidence, then unused-anchor fallback—and
+semantic membership is counted per GPU microbatch. Randomized parity tests
+cover stable ties, zero/negative evidence, overlap, fallback, uniqueness, and
+ordering. This changes neither checkpoint selection nor candidate IDs.
+
 ## 6. Conditional new 20k pilot
 
 `prepare_harp_delta_20k_partition.py` freezes 1,250 group-disjoint outer-train requests with 16 complete pre-EOS H1--H4 positions each:

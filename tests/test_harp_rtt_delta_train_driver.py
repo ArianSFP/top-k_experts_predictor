@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+import torch
 
 
 SCRIPT = Path(__file__).parents[1] / "runpod" / "train_harp_delta_v3.py"
@@ -99,3 +100,38 @@ def test_microbatch_choices_cover_every_supported_effective_batch_divisor() -> N
         MODULE.EFFECTIVE_BATCH % microbatch == 0
         for microbatch in MODULE.MICROBATCH_CHOICES
     )
+
+
+def test_counterfactual_budget_indices_cover_nested_companion_masks() -> None:
+    assert MODULE.COUNTERFACTUAL_BUDGET_INDEX == {
+        "4": 0,
+        "8": 1,
+        "16": 2,
+        "all": 3,
+    }
+    counterfactual = {
+        "node_local_indices": torch.tensor([[0, 1, 2, 3]]),
+        "node_mask": torch.ones(1, 4, dtype=torch.bool),
+        "depth": torch.tensor([[2, 2, 2, 2]]),
+        "target_path_logp": torch.log(torch.tensor([[0.4, 0.3, 0.2, 0.1]])),
+        "valid": torch.ones(1, 4, 1, dtype=torch.bool),
+        "budget_node_masks": torch.tensor(
+            [[[1, 0, 0, 0], [1, 1, 0, 0], [1, 1, 1, 0], [1, 1, 1, 1]]],
+            dtype=torch.bool,
+        ),
+    }
+    budget16 = MODULE._counterfactual_with_posterior(
+        counterfactual, 4, budget_index=2
+    )["target_path_distribution"]
+    all_nodes = MODULE._counterfactual_with_posterior(
+        counterfactual, 4, budget_index=3
+    )["target_path_distribution"]
+    assert budget16[0, 1, -1] == pytest.approx(0.1)
+    assert all_nodes[0, 1, -1] == pytest.approx(0.0)
+
+
+def test_counterfactual_budget_rejects_missing_all_node_mask() -> None:
+    with pytest.raises(ValueError, match="nested 4/8/16/all"):
+        MODULE._counterfactual_with_posterior(
+            {"budget_node_masks": torch.ones(1, 3, 4)}, 4, budget_index=2
+        )

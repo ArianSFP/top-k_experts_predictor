@@ -291,40 +291,30 @@ def quota_candidate_union(
     branch_order = torch.argsort(
         branch_flat, dim=-1, descending=True, stable=True
     )
-    selected = torch.zeros(rows, experts, dtype=torch.bool, device=anchor_scores.device)
-    ids = torch.full(
-        (rows, width), -1, dtype=torch.long, device=anchor_scores.device
+    # The policy is three lexicographic groups: the guaranteed anchor prefix,
+    # positive non-anchor branch evidence, then unused anchor fallback.  Dense
+    # integer ranks implement the old row/rank insertion loop exactly while
+    # avoiding hundreds of device synchronizations during evaluation.
+    anchor_rank = torch.argsort(anchor_order, dim=-1, stable=True)
+    branch_rank = torch.argsort(branch_order, dim=-1, stable=True)
+    guaranteed = anchor_rank < anchor_quota
+    positive_branch = (branch_flat > 0) & ~guaranteed
+    group = torch.where(
+        guaranteed,
+        torch.zeros_like(anchor_rank),
+        torch.where(
+            positive_branch,
+            torch.ones_like(anchor_rank),
+            torch.full_like(anchor_rank, 2),
+        ),
     )
-    counts = torch.zeros(rows, dtype=torch.long, device=anchor_scores.device)
-    row_ids = torch.arange(rows, device=anchor_scores.device)
-
-    def add(values: Tensor, *, positive: Tensor | None = None) -> None:
-        is_new = ~selected.gather(1, values[:, None]).squeeze(1)
-        keep = is_new & (counts < width)
-        if positive is not None:
-            keep &= positive
-        if bool(keep.any()):
-            active_rows = row_ids[keep]
-            active_ids = values[keep]
-            slots = counts[keep]
-            ids[active_rows, slots] = active_ids
-            selected[active_rows, active_ids] = True
-            counts[keep] += 1
-
-    for rank in range(anchor_quota):
-        add(anchor_order[:, rank])
-    for rank in range(experts):
-        if bool((counts >= width).all()):
-            break
-        candidate = branch_order[:, rank]
-        positive = branch_flat.gather(1, candidate[:, None]).squeeze(1) > 0
-        add(candidate, positive=positive)
-    for rank in range(experts):
-        if bool((counts >= width).all()):
-            break
-        add(anchor_order[:, rank])
-    if bool((ids < 0).any()):
-        raise RuntimeError("candidate union did not produce the configured width")
+    within_group = torch.where(positive_branch, branch_rank, anchor_rank)
+    policy_key = group * experts + within_group
+    ids = torch.argsort(policy_key, dim=-1, stable=True)[:, :width]
+    selected = torch.zeros(
+        rows, experts, dtype=torch.bool, device=anchor_scores.device
+    )
+    selected.scatter_(1, ids, True)
     leading = anchor_scores.shape[:-1]
     return CandidatePolicyResult(
         expert_ids=ids.reshape(*leading, width),
