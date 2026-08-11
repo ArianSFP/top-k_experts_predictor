@@ -83,12 +83,12 @@ def test_vocab_pool_is_order_invariant_and_branch_hash_ids_are_not_semantic() ->
     assert torch.allclose(first.posterior_logits, second.posterior_logits, atol=2e-6)
 
 
-def test_candidate_curriculum_preserves_anchor_then_opens_sixteen_slots() -> None:
+def test_candidate_curriculum_preserves_anchor_then_opens_twenty_four_slots() -> None:
     config = HARPRTTConfig(experts=80, layers=1, candidate_width=64)
     union = CandidateUnion(config)
     anchor = torch.arange(80, dtype=torch.float32).view(1, 1, 1, 80)
     branch = torch.zeros_like(anchor)
-    branch[..., :16] = torch.arange(100, 84, -1, dtype=torch.float32)
+    branch[..., :24] = torch.arange(100, 76, -1, dtype=torch.float32)
     sources = [anchor, branch] + [torch.randn_like(anchor) for _ in range(4)]
     active = [True, True, False, False, False, False]
 
@@ -100,9 +100,9 @@ def test_candidate_curriculum_preserves_anchor_then_opens_sixteen_slots() -> Non
     assert torch.equal(initial.expert_ids, expected_anchor)
 
     opened = union(sources, training_progress=1.0, active_sources=active)
-    assert opened.anchor_quota == 48
+    assert opened.anchor_quota == 40
     assert set(opened.expert_ids.flatten().tolist()) == (
-        set(range(32, 80)) | set(range(16))
+        set(range(40, 80)) | set(range(24))
     )
 
     union.eval()

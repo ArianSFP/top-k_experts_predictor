@@ -16,6 +16,7 @@ Transformers API and cannot contaminate siblings through cache mutation.
 from __future__ import annotations
 
 import argparse
+import gc
 from collections import Counter
 from datetime import datetime, timezone
 import hashlib
@@ -1313,6 +1314,9 @@ def main() -> None:
                     source_positions=args.source_positions,
                     label_lookahead=args.label_lookahead,
                 )
+                gc.collect()
+                if args.device.startswith("cuda"):
+                    torch.cuda.empty_cache()
     finally:
         run.close()
 

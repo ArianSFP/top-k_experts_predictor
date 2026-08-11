@@ -5,6 +5,8 @@
 **Final evaluated source commit:** `869024e278daaf55af9fd12cb7a5e45d7fe351c7`  
 **Status:** Stage A passed; Stage B1 completed and failed all promotion gates; B2/B3 were not run.
 
+> **Superseded metric protocol:** B1.5 retains these values as the legacy router-softmax baseline. Promotion now uses native selected-set inclusion mass, explicit OTHER anchor marginals, H2--H4-only branch gates, and an all-node adaptive-32 ceiling. See [the B1.5 plan](HARP_RTT_B1_5_EXACT_SET_ORACLE_PLAN_20260808.md).
+
 ## Outcome
 
 The branch-rich capture stack is working and the counterfactual target records are numerically and causally auditable. Adaptive branching substantially improves the target-route oracle over the frozen anchor, but the four-path adaptive-32 information source is not sufficient for promotion.

@@ -1,5 +1,20 @@
 # HARP-RTT-90 v1.0
 
+> **Terminal B3 generator result (2026-08-10):** the seed-42 factual generator
+> completed 12 epochs but failed every learned candidate gate on the
+> request-disjoint probe: mean H2-H4 C64 `0.905447`, H4 C64 `0.885579`, and H4
+> prefix-mismatch C64 `0.823856`. The B1.5 oracle had already shown materially
+> higher coverage on the same branch-rich source, so the active next step is a
+> no-recapture oracle-substitution/source-calibration factorial. The rich ranker
+> remains blocked. See
+> [HARP_RTT_B3_EXECUTION_20260809.md](HARP_RTT_B3_EXECUTION_20260809.md).
+>
+> **Active information gate (2026-08-08):** the four-path v2 B1 result failed
+> all promotion gates. The active plan is
+> [HARP_RTT_B1_5_EXACT_SET_ORACLE_PLAN_20260808.md](HARP_RTT_B1_5_EXACT_SET_ORACLE_PLAN_20260808.md):
+> correct the selected-set oracle, measure the all-node adaptive-32 ceiling, and
+> confirm the minimum sufficient path budget before any translator or ranker training.
+>
 > **Superseded execution instruction (2026-08-07):** the later pause evidence
 > and the v2 causal-information pilot supersede Phase 1's instruction to resume
 > the existing C64 run. That run is a frozen measurement baseline. Its same-input
