@@ -8,7 +8,9 @@ import torch
 from harp_rtt.exact_k import (
     cardinality_project_marginals,
     exact_k_logz_marginals_fast,
+    exact_k_marginals,
     exact_set_nll,
+    log_esp_k,
     soft_cardinality_topk,
     soft_recall_loss,
     stable_topk,
@@ -35,6 +37,17 @@ def test_exact_k_wrapper_matches_brute_force_and_repairs_mass() -> None:
     assert torch.allclose(marginals, expected_marginals, atol=1e-6, rtol=1e-6)
     assert torch.allclose(marginals.sum(), torch.tensor(3.0), atol=1e-7, rtol=0)
     assert pre_error < 2e-6
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_vectorized_order_recurrence_is_bit_exact_to_scalar_references(
+    dtype: torch.dtype,
+) -> None:
+    generator = torch.Generator().manual_seed(681642)
+    scores = (100 * torch.randn(2, 3, 17, generator=generator)).to(dtype)
+    log_z, marginals = exact_k_logz_marginals_fast(scores, 4)
+    assert torch.equal(log_z, log_esp_k(scores, 4))
+    assert torch.equal(marginals, exact_k_marginals(scores, 4))
 
 
 def test_exact_set_nll_rejects_malformed_active_labels() -> None:

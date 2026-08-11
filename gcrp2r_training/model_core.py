@@ -135,7 +135,13 @@ def exact_k_marginals(scores: Tensor, k: int) -> Tensor:
 
 @torch.no_grad()
 def exact_k_logz_marginals_fast(scores: Tensor, k: int) -> tuple[Tensor, Tensor]:
-    """Exact FP32 prefix/suffix evaluation without an autograd graph."""
+    """Exact FP32 prefix/suffix evaluation without an autograd graph.
+
+    Cardinality orders are independent within each expert recurrence.  Update
+    them in one tensor operation so CUDA performs one launch per expert rather
+    than one launch per expert/order pair.  The recurrence and operation order
+    within every scalar cell are unchanged.
+    """
     original_shape = scores.shape[:-1]
     experts = scores.shape[-1]
     flat = scores.float().reshape(-1, experts)
@@ -151,28 +157,19 @@ def exact_k_logz_marginals_fast(scores: Tensor, k: int) -> tuple[Tensor, Tensor]
     prefix[:, 0, 0] = 0.0
     suffix[:, experts, 0] = 0.0
     for expert in range(experts):
+        previous = prefix[:, expert]
         prefix[:, expert + 1, 0] = 0.0
-        upper = min(k, expert + 1)
-        for order in range(1, upper + 1):
-            include = prefix[:, expert, order - 1] + x[:, expert]
-            if order == expert + 1:
-                prefix[:, expert + 1, order] = include
-            else:
-                prefix[:, expert + 1, order] = torch.logaddexp(
-                    prefix[:, expert, order], include
-                )
+        prefix[:, expert + 1, 1:] = torch.logaddexp(
+            previous[:, 1:],
+            previous[:, :-1] + x[:, expert, None],
+        )
     for expert in range(experts - 1, -1, -1):
+        following = suffix[:, expert + 1]
         suffix[:, expert, 0] = 0.0
-        processed = experts - expert
-        upper = min(k, processed)
-        for order in range(1, upper + 1):
-            include = suffix[:, expert + 1, order - 1] + x[:, expert]
-            if order == processed:
-                suffix[:, expert, order] = include
-            else:
-                suffix[:, expert, order] = torch.logaddexp(
-                    suffix[:, expert + 1, order], include
-                )
+        suffix[:, expert, 1:] = torch.logaddexp(
+            following[:, 1:],
+            following[:, :-1] + x[:, expert, None],
+        )
     log_z_shifted = prefix[:, experts, k]
     terms = torch.stack(
         [
