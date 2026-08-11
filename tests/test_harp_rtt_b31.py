@@ -9,6 +9,7 @@ from harp_rtt.b31 import (
     evaluate_factorial,
     evaluate_selected_factorial,
     exact_root_greedy_spine_indices,
+    legacy_b3_divergence_depths,
     quota_candidate_union,
     selected_set_inclusion_mass,
     selected_ids_inclusion_mass,
@@ -41,6 +42,16 @@ def test_anchor_spine_prefix_match_continues_through_tree_eos() -> None:
     assert anchor_spine_prefix_matches(spine, factual).tolist() == [
         [True, True, False, False]
     ]
+
+
+def test_legacy_b3_compatibility_reconstructs_root_rank_divergence() -> None:
+    tree = {
+        "mask": torch.tensor([[True, True, True, True]]),
+        "depth": torch.tensor([[1, 2, 3, 4]]),
+        "parent": torch.tensor([[-1, 0, 1, 2]]),
+        "child_ranks": torch.tensor([[7, 0, 1, 0]]),
+    }
+    assert legacy_b3_divergence_depths(tree).tolist() == [[1, 1, 1, 1]]
 
 
 def test_selected_set_mass_uses_membership_not_router_softmax() -> None:

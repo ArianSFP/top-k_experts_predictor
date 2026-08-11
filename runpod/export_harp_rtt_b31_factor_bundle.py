@@ -19,7 +19,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from harp_rtt.anchor import LegacyHARPAnchorBridge  # noqa: E402
-from harp_rtt.b31 import anchor_spine_prefix_matches  # noqa: E402
+from harp_rtt.b31 import (  # noqa: E402
+    anchor_spine_prefix_matches,
+    legacy_b3_divergence_depths,
+)
 from harp_rtt.dataset import HarpRTTDataset  # noqa: E402
 from harp_rtt.exact_k import stable_topk  # noqa: E402
 from harp_rtt.model import HARPRTTTeacher  # noqa: E402
@@ -122,6 +125,20 @@ def _frozen_b3_forward(
     return anchor_output, outputs
 
 
+def _restore_frozen_b3_input_semantics(
+    prepared: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Keep B3.1 faithful after correcting future-training divergence input."""
+
+    result = dict(prepared)
+    inputs = dict(prepared["inputs"])
+    tree = dict(inputs["tree"])
+    tree["first_divergence_depths"] = legacy_b3_divergence_depths(tree)
+    inputs["tree"] = tree
+    result["inputs"] = inputs
+    return result
+
+
 @torch.no_grad()
 def main() -> None:
     args = parse_args()
@@ -182,6 +199,7 @@ def main() -> None:
     ):
         batch = move_to_device(host, device)
         prepared = prepare_model_batch(batch, runtime_static)
+        prepared = _restore_frozen_b3_input_semantics(prepared)
         anchor_output, outputs = _frozen_b3_forward(
             model, prepared, device=device
         )
@@ -275,6 +293,10 @@ def main() -> None:
             "router_audit_schema": router_audit.get("schema"),
             "probe_binding": binding,
             "anchor_provenance": anchor_provenance,
+            "frozen_b3_input_compatibility": {
+                "legacy_exact_h1_rank_counted_as_divergence": True,
+                "future_training_uses_corrected_exact_root_semantics": True,
+            },
             "formal_validation_opened": False,
             "calibration_opened": False,
             "sealed_test_opened": False,

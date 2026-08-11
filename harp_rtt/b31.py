@@ -114,6 +114,39 @@ def anchor_spine_prefix_matches(
     return matches
 
 
+def legacy_b3_divergence_depths(tree: Mapping[str, Tensor]) -> Tensor:
+    """Reconstruct the exact legacy B3 feature, including H1 root rank.
+
+    This exists only to evaluate the frozen B3 checkpoint on the feature
+    semantics it was trained with.  New training uses the corrected dataset
+    feature, which excludes the observed H1 root from branch divergence.
+    """
+
+    for name in ("mask", "depth", "parent", "child_ranks"):
+        value = tree.get(name)
+        if not isinstance(value, Tensor) or value.ndim != 2:
+            raise ValueError(f"tree.{name} must be [B,N]")
+    mask = tree["mask"].bool()
+    depth = tree["depth"].long()
+    parent = tree["parent"].long()
+    child_ranks = tree["child_ranks"].long()
+    if not (mask.shape == depth.shape == parent.shape == child_ranks.shape):
+        raise ValueError("legacy B3 divergence tensors must share [B,N] geometry")
+    result = torch.zeros_like(depth)
+    for local in range(depth.shape[1]):
+        parent_index = parent[:, local]
+        inherited = result.gather(1, parent_index.clamp_min(0)[:, None]).squeeze(1)
+        local_divergence = torch.where(
+            mask[:, local] & (child_ranks[:, local] > 0),
+            depth[:, local],
+            torch.zeros_like(depth[:, local]),
+        )
+        result[:, local] = torch.where(
+            (parent_index >= 0) & (inherited > 0), inherited, local_divergence
+        )
+    return result
+
+
 def selected_set_inclusion_mass(
     branch_scores: Tensor,
     posterior_weights: Tensor,
