@@ -360,6 +360,7 @@ def _counterfactual_with_posterior(
 ) -> dict[str, Tensor]:
     result = dict(counterfactual)
     selection = _counterfactual_selection_mask(result, budget_index)
+    result["semantic_selection_mask"] = selection
     posterior, _ = node_target_branch_distribution(
         result, captured_nodes=nodes, selection_mask=selection
     )

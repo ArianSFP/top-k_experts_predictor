@@ -170,11 +170,14 @@ def test_all_delta_stage_losses_have_a_gradient_path() -> None:
         "budget_node_masks": torch.ones(
             labels.shape[0], 4, 4, dtype=torch.bool
         ),
+        "semantic_selection_mask": torch.ones(
+            labels.shape[0], 4, dtype=torch.bool
+        ),
         "query_coordinates": output.node_queries.detach()[:, 0].permute(0, 2, 1, 3),
         "target_path_distribution": output.factual_path_posterior.detach(),
     }
     configure_delta_stage(delta, "semantic")
-    semantic = semantic_loss(output, targets, counterfactual)
+    semantic = semantic_loss(output, targets, counterfactual, budget_index=99)
     semantic.total.backward(retain_graph=True)
     assert delta.set_head.free_basis.grad is not None
 

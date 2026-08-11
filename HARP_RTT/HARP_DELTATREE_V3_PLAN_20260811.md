@@ -305,6 +305,35 @@ tune loss, route recall, and path accuracy bit-for-bit. FP32 C64 was
 `4.6e-6`; this confirms training reproduction while making the reporting
 precision change explicit.
 
+The corrected budget-16 recovery completed under source
+`474b649460688f65cc99552e1df44aa434c8b1ed`. Patience selected epoch 20 after
+25 epochs. Tune semantic C64 was `0.918044` overall, `0.909875` over H2--H4,
+and `0.889032` at H4, with route Recall@8 `0.542063`. On the untouched
+128-request/2,048-position diagnostic development set, it achieved:
+
+- semantic C64 `0.919536` overall;
+- H2--H4 semantic C64 `0.914467`;
+- H2 `0.927499`, H3 `0.917424`, H4 `0.898477`;
+- direct counterfactual route Recall@8 `0.557170`;
+- H1 root semantic C64 `0.934743`.
+
+The checkpoint SHA-256 is
+`218a26d9bac6e598ca4fa1640a2d3efb17ecd0f18e282f47e001fabce5e34d77`.
+This is a valid selectable semantic checkpoint, but it retains far too little
+of the native-route `0.985307` H2--H4 / `0.982077` H4 ceiling to justify the
+30-parameter candidate calibrator. It therefore initializes the predeclared
+all-node semantic refinement; candidate and ranker optimizers remain unopened.
+
+The first `5cca992` all-node launch stopped before its first backward or
+optimizer step. The driver resolved `all` correctly for target-posterior and
+evaluation code, but `semantic_loss()` independently attempted to index the
+stored three-mask tensor at index three. The successor contract passes one
+authoritative `semantic_selection_mask` from the adapter into the loss; the
+loss no longer reinterprets companion schema when that resolved mask exists.
+Regression tests verify that `node_mask` reaches semantic loss and overrides
+any stored budget index. This is a pre-optimization schema failure, not an
+experimental result.
+
 The next immutable refinement source also uses a semantic-evaluation forward.
 It materializes the same anchor, H1-root, node, and posterior-mixture exact-k
 marginals as the production forward, but does not execute the frozen candidate

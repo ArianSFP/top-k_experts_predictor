@@ -165,13 +165,21 @@ def semantic_loss(
     node_ids = counterfactual["selected_ids"].long()
     node_valid = counterfactual["valid"].bool()
     node_depth = counterfactual["depth"].long()
-    selection = counterfactual["budget_node_masks"].bool()
-    if selection.ndim == 3:
-        if not 0 <= budget_index < selection.shape[1]:
-            raise ValueError("counterfactual budget index is unavailable")
-        selection = selection[:, budget_index]
-    elif selection.ndim != 2:
-        raise ValueError("counterfactual budget masks must be [B,N] or [B,P,N]")
+    resolved_selection = counterfactual.get("semantic_selection_mask")
+    if resolved_selection is not None:
+        selection = resolved_selection.bool()
+        if selection.shape != node_ids.shape[:2]:
+            raise ValueError("resolved semantic selection mask must be [B,N]")
+    else:
+        selection = counterfactual["budget_node_masks"].bool()
+        if selection.ndim == 3:
+            if not 0 <= budget_index < selection.shape[1]:
+                raise ValueError("counterfactual budget index is unavailable")
+            selection = selection[:, budget_index]
+        elif selection.ndim != 2:
+            raise ValueError(
+                "counterfactual budget masks must be [B,N] or [B,P,N]"
+            )
     node_losses: list[Tensor] = []
     query_losses: list[Tensor] = []
     query_targets = counterfactual["query_coordinates"].float()

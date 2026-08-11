@@ -131,11 +131,15 @@ def test_counterfactual_budget_indices_cover_nested_companion_masks() -> None:
     budget16 = MODULE._counterfactual_with_posterior(
         counterfactual, 4, budget_index=2
     )["target_path_distribution"]
-    all_nodes = MODULE._counterfactual_with_posterior(
+    all_result = MODULE._counterfactual_with_posterior(
         counterfactual, 4, budget_index=3
-    )["target_path_distribution"]
+    )
+    all_nodes = all_result["target_path_distribution"]
     assert budget16[0, 1, -1] == pytest.approx(0.1)
     assert all_nodes[0, 1, -1] == pytest.approx(0.0)
+    assert torch.equal(
+        all_result["semantic_selection_mask"], counterfactual["node_mask"]
+    )
 
 
 def test_counterfactual_budget_rejects_invalid_stored_mask_axis() -> None:
