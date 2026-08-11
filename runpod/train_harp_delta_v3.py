@@ -457,6 +457,7 @@ def evaluate(
             token_embedding=token_embedding, input_basis=input_basis,
             rank_mask=rank_mask, device=device,
             counterfactual_budget_index=counterfactual_budget_index,
+            semantic_only=stage == "semantic",
         )
         loss = objective(
             stage, model, output, anchor_logits, targets, counterfactual,
@@ -464,8 +465,20 @@ def evaluate(
         )
         labels = targets["future_selected_ids"].long()
         valid = targets["future_available"].bool()
-        recall = (labels[..., :, None] == output.final_ids[..., None, :]).any(-1).float()
-        coverage = (labels[..., :, None] == output.candidate_ids[..., None, :]).any(-1).float()
+        if stage == "semantic":
+            _, _, _, branch_marginals = model.core.semantic_marginals(
+                output, anchor_logits
+            )
+            final_ids = stable_topk(anchor_logits, model.config.exact_k)
+            candidate_ids = stable_topk(
+                anchor_logits, model.config.candidate_width
+            )
+        else:
+            branch_marginals = output.branch_marginals
+            final_ids = output.final_ids
+            candidate_ids = output.candidate_ids
+        recall = (labels[..., :, None] == final_ids[..., None, :]).any(-1).float()
+        coverage = (labels[..., :, None] == candidate_ids[..., None, :]).any(-1).float()
         active = int(valid.sum().item())
         totals["loss"] += float(loss.total) * active
         totals["recall"] += float((recall * valid[..., None]).sum())
@@ -511,7 +524,7 @@ def evaluate(
         )
         path_rows += int(path_valid.sum())
         semantic_candidates = quota_candidate_union(
-            anchor_logits.float(), output.branch_marginals.float(),
+            anchor_logits.float(), branch_marginals.float(),
             anchor_quota=32, width=model.config.candidate_width,
         ).expert_ids
         semantic_membership = (

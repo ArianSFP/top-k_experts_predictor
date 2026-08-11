@@ -277,7 +277,11 @@ now expressed as three exact lexicographic groups—guaranteed anchor prefix,
 strictly positive non-anchor branch evidence, then unused-anchor fallback—and
 semantic membership is counted per GPU microbatch. Randomized parity tests
 cover stable ties, zero/negative evidence, overlap, fallback, uniqueness, and
-ordering. This changes neither checkpoint selection nor candidate IDs.
+ordering for identical inputs. Unlike the old reporting path, the new path no
+longer rounds dense branch and anchor evidence through CPU BF16 before applying
+the policy; it retains FP32 evidence. Candidate IDs may therefore differ only
+at BF16 rounding boundaries, and this metric-precision boundary is recorded in
+the source lineage.
 
 The first `cb7963a` train-through attempt completed 16 logged epochs before an
 operational loader-lifecycle fault. Its best tune point was epoch 15: semantic
@@ -295,8 +299,20 @@ epoch-scoped loader and adds a regression test for that lifecycle. The complete
 CPU suite passes 271 tests (three CUDA-only skips), and all 40 focused tests,
 including the CUDA precision cases, pass on the execution pod. A deterministic
 budget-16 recovery uses a fresh output directory, the same seed/data/order,
-and unchanged model/optimizer math. The first logged epoch must reproduce the
-prior curve before the run is allowed to continue.
+and unchanged model/optimizer math. Its first epoch reproduced train loss,
+tune loss, route recall, and path accuracy bit-for-bit. FP32 C64 was
+`0.84613495` versus the old BF16-staged `0.84613953`, an absolute difference of
+`4.6e-6`; this confirms training reproduction while making the reporting
+precision change explicit.
+
+The next immutable refinement source also uses a semantic-evaluation forward.
+It materializes the same anchor, H1-root, node, and posterior-mixture exact-k
+marginals as the production forward, but does not execute the frozen candidate
+calibrator or C64 ranker. During a semantic stage those downstream modules are
+still at their epoch-zero identity, so ordinary candidate Recall/Coverage is
+computed directly from stable anchor top-8/top-64. Strict tests show every
+shared marginal tensor is bit-identical to the full forward. Full inference is
+still required for epoch-zero protection and for candidate/ranker stages.
 
 ## 6. Conditional new 20k pilot
 

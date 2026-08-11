@@ -732,6 +732,48 @@ class HARPDeltaTree(nn.Module):
             context_states=context,
         )
 
+    def semantic_marginals(
+        self,
+        semantic: HARPDeltaSemanticOutput,
+        anchor_scores: Tensor,
+        *,
+        anchor_marginals: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        """Materialize only the exact marginals needed for semantic C64."""
+
+        config = self.config
+        if anchor_marginals is None:
+            with torch.no_grad():
+                _, anchor_marginals, _ = exact_projected_marginals(
+                    anchor_scores.float(), config.exact_k
+                )
+        elif anchor_marginals.shape != anchor_scores.shape:
+            raise ValueError("anchor marginal geometry differs from scores")
+        anchor_marginals = anchor_marginals.detach().float()
+        node_marginals = _straight_through_exact_marginals(
+            semantic.node_scores, config.exact_k
+        )
+        root_marginals = _straight_through_exact_marginals(
+            semantic.root_scores, config.exact_k
+        )
+        with torch.autocast(
+            device_type=semantic.node_scores.device.type, enabled=False
+        ):
+            captured = torch.einsum(
+                "bhn,bhlne->bhle",
+                semantic.factual_path_posterior[..., :-1].float(),
+                node_marginals.float(),
+            )
+        branch = (
+            captured
+            + semantic.factual_path_posterior[..., -1][:, :, None, None]
+            * anchor_marginals
+        )
+        branch = branch.clone()
+        branch[:, 0] = root_marginals
+        branch, _ = cardinality_project_marginals(branch, config.exact_k)
+        return anchor_marginals, root_marginals, node_marginals, branch
+
     def forward(
         self, *, anchor_scores: Tensor, context_features: Tensor,
         root_features: Tensor, node_features: Tensor, node_parent_ids: Tensor,
@@ -755,14 +797,6 @@ class HARPDeltaTree(nn.Module):
         )
         if semantic_only:
             return semantic
-        if anchor_marginals is None:
-            with torch.no_grad():
-                _, anchor_marginals, _ = exact_projected_marginals(
-                    anchor_scores.float(), config.exact_k
-                )
-        elif anchor_marginals.shape != anchor_scores.shape:
-            raise ValueError("anchor marginal geometry differs from scores")
-        anchor_marginals = anchor_marginals.detach().float()
         root_scores = semantic.root_scores
         root_queries = semantic.root_queries
         node_scores = semantic.node_scores
@@ -771,24 +805,11 @@ class HARPDeltaTree(nn.Module):
         path_probabilities = semantic.factual_path_posterior
         nodes = semantic.tree_states
         context = semantic.context_states
-        node_marginals = _straight_through_exact_marginals(
-            node_scores, config.exact_k
-        )
-        root_marginals = _straight_through_exact_marginals(
-            root_scores, config.exact_k
-        )
-        with torch.autocast(device_type=node_scores.device.type, enabled=False):
-            captured = torch.einsum(
-                "bhn,bhlne->bhle",
-                path_probabilities[..., :-1].float(),
-                node_marginals.float(),
+        anchor_marginals, root_marginals, node_marginals, branch = (
+            self.semantic_marginals(
+                semantic, anchor_scores, anchor_marginals=anchor_marginals
             )
-        branch = (
-            captured
-            + path_probabilities[..., -1][:, :, None, None] * anchor_marginals
         )
-        branch = branch.clone(); branch[:, 0] = root_marginals
-        branch, _ = cardinality_project_marginals(branch, config.exact_k)
         candidate = self.candidates(
             anchor_scores, anchor_marginals, branch, path_probabilities,
             forced_anchor_quota=forced_anchor_quota,

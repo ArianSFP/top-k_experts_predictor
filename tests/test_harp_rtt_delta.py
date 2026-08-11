@@ -129,6 +129,13 @@ def test_deltatree_epoch_zero_is_anchor_protected() -> None:
         "context_states",
     ):
         assert torch.equal(getattr(semantic, name), getattr(output, name))
+    anchor_marginals, root_marginals, node_marginals, branch_marginals = (
+        model.semantic_marginals(semantic, anchor)
+    )
+    assert torch.equal(anchor_marginals, output.anchor_marginals)
+    assert torch.equal(root_marginals, output.root_marginals)
+    assert torch.equal(node_marginals, output.node_marginals)
+    assert torch.equal(branch_marginals, output.branch_marginals)
     assert torch.equal(output.final_ids, stable_topk(anchor, config.exact_k))
     assert bool((output.anchor_quotas == 64).all())
     assert output.candidate_ids.shape == (
