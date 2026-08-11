@@ -111,6 +111,24 @@ def _valid_mask(targets: Mapping[str, Tensor], scores: Tensor) -> Tensor:
     return valid
 
 
+def _active_exact_set_nll(
+    scores: Tensor,
+    labels: Tensor,
+    active: Tensor,
+    *,
+    k: int,
+) -> Tensor:
+    """Evaluate exact-k only on supervised rows, preserving the masked loss."""
+
+    if active.shape != scores.shape[:-1] or labels.shape != scores.shape[:-1] + (k,):
+        raise ValueError("active exact-set rows disagree with score/label geometry")
+    selected_scores = scores[active.bool()]
+    selected_labels = labels[active.bool()]
+    if selected_scores.numel() == 0:
+        return scores.sum() * 0.0
+    return exact_set_nll(selected_scores, selected_labels, k=k)
+
+
 def semantic_loss(
     output: HARPDeltaOutput,
     targets: Mapping[str, Tensor],
@@ -165,7 +183,9 @@ def semantic_loss(
         predicted = output.node_scores[:, horizon].permute(0, 2, 1, 3)
         queries = output.node_queries[:, horizon].permute(0, 2, 1, 3)
         node_losses.append(
-            exact_set_nll(predicted, node_ids, valid=active, k=node_ids.shape[-1])
+            _active_exact_set_nll(
+                predicted, node_ids, active, k=node_ids.shape[-1]
+            )
         )
         difference = F.smooth_l1_loss(
             queries.float(), query_targets, reduction="none"

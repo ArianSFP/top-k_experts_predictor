@@ -181,6 +181,15 @@ material fraction of the native-route B3.1 ceiling. If it does not, stop and
 redesign the direct route translator; do not capture 20k more examples of an
 architecture that cannot use the existing labels.
 
+The first microbatch-4 attempt was stopped before completing epoch 1 after it
+exposed a mechanical throughput defect: the budget-16 semantic mask was passed
+as zero weights to exact-k, but the dynamic program still evaluated all 32
+nodes independently at H2, H3, and H4. The runner now gathers only active
+supervised node/layer rows before exact-k. A regression test verifies identical
+loss values and gradients, including zero gradients for inactive rows. The
+stopped attempt produced no selectable checkpoint and is not an experimental
+result.
+
 ## 6. Conditional new 20k pilot
 
 `prepare_harp_delta_20k_partition.py` freezes 1,250 group-disjoint outer-train requests with 16 complete pre-EOS H1--H4 positions each:

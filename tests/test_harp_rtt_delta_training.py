@@ -4,13 +4,14 @@ import torch
 
 from harp_rtt.delta import HARPDeltaConfig, HARPDeltaTeacher, HARPDeltaTree
 from harp_rtt.delta_training import (
+    _active_exact_set_nll,
     candidate_loss,
     configure_delta_stage,
     ranker_loss,
     semantic_loss,
     set_delta_stage_mode,
 )
-from harp_rtt.exact_k import stable_topk
+from harp_rtt.exact_k import exact_set_nll, stable_topk
 
 
 def model() -> HARPDeltaTree:
@@ -41,6 +42,30 @@ def model() -> HARPDeltaTree:
         config,
         torch.zeros(config.layers, config.experts, config.router_rank),
         torch.zeros(config.layers, config.experts),
+    )
+
+
+def test_active_exact_set_gather_matches_masked_value_and_gradient() -> None:
+    torch.manual_seed(13)
+    labels = torch.tensor(
+        [[[0, 2], [1, 3], [2, 4]], [[0, 1], [2, 3], [3, 4]]]
+    )
+    active = torch.tensor([[True, False, True], [False, True, False]])
+    dense_scores = torch.randn(2, 3, 5, requires_grad=True)
+    gathered_scores = dense_scores.detach().clone().requires_grad_(True)
+    dense = exact_set_nll(dense_scores, labels, valid=active, k=2)
+    gathered = _active_exact_set_nll(
+        gathered_scores, labels, active, k=2
+    )
+    assert torch.allclose(dense, gathered, atol=1e-6, rtol=1e-6)
+    dense.backward()
+    gathered.backward()
+    assert torch.allclose(
+        dense_scores.grad, gathered_scores.grad, atol=1e-6, rtol=1e-6
+    )
+    assert torch.equal(
+        gathered_scores.grad[~active],
+        torch.zeros_like(gathered_scores.grad[~active]),
     )
 
 
