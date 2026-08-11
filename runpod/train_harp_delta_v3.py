@@ -304,7 +304,10 @@ def loader(
     return DataLoader(
         dataset, batch_size=batch, shuffle=shuffle,
         generator=torch.Generator().manual_seed(seed), num_workers=workers,
-        pin_memory=device.type == "cuda", persistent_workers=workers > 0,
+        # Loaders are intentionally short-lived (one train epoch or one
+        # evaluation). Persistent workers would retain their queues and file
+        # descriptors every time a new loader is constructed.
+        pin_memory=device.type == "cuda", persistent_workers=False,
         collate_fn=collate_harp_rtt, drop_last=False,
     )
 

@@ -102,6 +102,14 @@ def test_microbatch_choices_cover_every_supported_effective_batch_divisor() -> N
     )
 
 
+def test_epoch_scoped_loader_does_not_persist_worker_queues() -> None:
+    data = MODULE.loader(
+        [{}], batch=1, shuffle=False, seed=42, workers=2,
+        device=torch.device("cpu"),
+    )
+    assert data.persistent_workers is False
+
+
 def test_counterfactual_budget_indices_cover_nested_companion_masks() -> None:
     assert MODULE.COUNTERFACTUAL_BUDGET_INDEX == {
         "4": 0,
