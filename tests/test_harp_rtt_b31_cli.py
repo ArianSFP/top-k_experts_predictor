@@ -8,6 +8,9 @@ import torch
 
 
 SCRIPT = Path(__file__).parents[1] / "runpod" / "evaluate_harp_rtt_b31_factorial.py"
+EXPORT_SCRIPT = (
+    Path(__file__).parents[1] / "runpod" / "export_harp_rtt_b31_factor_bundle.py"
+)
 SPEC = importlib.util.spec_from_file_location("evaluate_harp_rtt_b31_factorial", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -75,3 +78,10 @@ def test_b31_bundle_accepts_compact_selected_ids(tmp_path: Path) -> None:
     report = MODULE.evaluate_bundle(MODULE.load_bundle(path))
     assert report["route_sources"] == ["semantic"]
     assert report["conditions"] == 4
+
+
+def test_b31_export_preserves_b3_bf16_autocast_contract() -> None:
+    source = EXPORT_SCRIPT.read_text(encoding="utf-8")
+    assert "def _frozen_b3_forward(" in source
+    assert "dtype=torch.bfloat16" in source
+    assert 'enabled=device.type == "cuda"' in source

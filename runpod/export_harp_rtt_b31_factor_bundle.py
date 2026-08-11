@@ -98,6 +98,30 @@ def _append(storage: dict[str, list[Tensor]], name: str, value: Tensor, dtype: t
     storage.setdefault(name, []).append(value.detach().to(device="cpu", dtype=dtype))
 
 
+def _frozen_b3_forward(
+    model: HARPRTTTeacher,
+    prepared: Mapping[str, Any],
+    *,
+    device: torch.device,
+) -> tuple[Mapping[str, Tensor], Mapping[str, Tensor]]:
+    """Reproduce the BF16-transform execution contract used by B3."""
+
+    with torch.autocast(
+        device_type=device.type,
+        dtype=torch.bfloat16,
+        enabled=device.type == "cuda",
+    ):
+        anchor_output = model.anchor(batch=prepared)
+        outputs = model(
+            batch=prepared,
+            anchor_inputs={"batch": prepared},
+            candidate_training_progress=1.0,
+            candidate_active_sources=ACTIVE_CANDIDATE_SOURCES,
+            random_anytime_truncation=False,
+        )
+    return anchor_output, outputs
+
+
 @torch.no_grad()
 def main() -> None:
     args = parse_args()
@@ -158,15 +182,10 @@ def main() -> None:
     ):
         batch = move_to_device(host, device)
         prepared = prepare_model_batch(batch, runtime_static)
-        anchor_output = model.anchor(batch=prepared)
-        anchor_scores = anchor_output["future_router_scores"][:, :4].float()
-        outputs = model(
-            batch=prepared,
-            anchor_inputs={"batch": prepared},
-            candidate_training_progress=1.0,
-            candidate_active_sources=ACTIVE_CANDIDATE_SOURCES,
-            random_anytime_truncation=False,
+        anchor_output, outputs = _frozen_b3_forward(
+            model, prepared, device=device
         )
+        anchor_scores = anchor_output["future_router_scores"][:, :4].float()
         _, anchor_marginals, _ = exact_projected_marginals(anchor_scores, 8)
         counterfactual = prepared["targets"]["counterfactual"]
         selection = counterfactual["budget_node_masks"][:, BUDGET_INDEX].bool()
