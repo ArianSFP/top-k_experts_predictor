@@ -33,6 +33,63 @@ def _validate_dense_scores(scores: Tensor, *, name: str) -> None:
         raise ValueError(f"{name} must be finite floating point")
 
 
+def exact_root_greedy_spine_indices(tree: Mapping[str, Tensor]) -> Tensor:
+    """Return the structural greedy spine below the exact committed H1 root.
+
+    The H1 root is observed target state, not an MTP branch decision.  Its
+    token rank under the pre-root MTP parent may therefore be nonzero and must
+    not turn every descendant into a false prefix divergence.
+    """
+
+    required = (
+        "mask",
+        "depth",
+        "parent",
+        "child_ranks",
+        "exact_committed_h1_root",
+    )
+    values: dict[str, Tensor] = {}
+    for name in required:
+        value = tree.get(name)
+        if not isinstance(value, Tensor) or value.ndim != 2:
+            raise ValueError(f"tree.{name} must be [B,N]")
+        values[name] = value
+    shape = values["mask"].shape
+    if any(value.shape != shape for value in values.values()):
+        raise ValueError("greedy-spine tree tensors must share [B,N] geometry")
+
+    mask = values["mask"].bool()
+    depth = values["depth"].long()
+    parent = values["parent"].long()
+    child_ranks = values["child_ranks"].long()
+    exact_root = values["exact_committed_h1_root"].bool()
+    batch, _ = shape
+    rows = torch.arange(batch, device=mask.device)
+    result = torch.empty(batch, 4, dtype=torch.long, device=mask.device)
+
+    active = mask & exact_root & (depth == 1)
+    if bool((active.sum(-1) != 1).any()):
+        raise ValueError("adaptive tree does not contain one exact committed H1 root")
+    previous = active.long().argmax(-1)
+    result[:, 0] = previous
+    for horizon in range(2, 5):
+        active = (
+            mask
+            & (depth == horizon)
+            & (parent == previous[:, None])
+            & (child_ranks == 0)
+        )
+        if bool((active.sum(-1) != 1).any()):
+            bad = rows[active.sum(-1) != 1]
+            raise ValueError(
+                "adaptive tree does not contain one structural greedy child "
+                f"at H{horizon}; first bad batch row {int(bad[0])}"
+            )
+        previous = active.long().argmax(-1)
+        result[:, horizon - 1] = previous
+    return result
+
+
 def selected_set_inclusion_mass(
     branch_scores: Tensor,
     posterior_weights: Tensor,

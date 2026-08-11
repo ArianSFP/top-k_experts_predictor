@@ -7,11 +7,27 @@ from harp_rtt.b31 import (
     complete_other_mass,
     evaluate_factorial,
     evaluate_selected_factorial,
+    exact_root_greedy_spine_indices,
     quota_candidate_union,
     selected_set_inclusion_mass,
     selected_ids_inclusion_mass,
     slot_coverage_at_k,
 )
+
+
+def test_greedy_spine_ignores_nonzero_rank_of_exact_h1_root() -> None:
+    tree = {
+        "mask": torch.tensor([[True, True, True, True, True, True]]),
+        "depth": torch.tensor([[1, 2, 2, 3, 4, 3]]),
+        "parent": torch.tensor([[-1, 0, 0, 1, 3, 2]]),
+        # The forced exact H1 token was not MTP top-1.  Greedy branching for
+        # this experiment begins below that observed root.
+        "child_ranks": torch.tensor([[7, 0, 1, 0, 0, 0]]),
+        "exact_committed_h1_root": torch.tensor(
+            [[True, False, False, False, False, False]]
+        ),
+    }
+    assert exact_root_greedy_spine_indices(tree).tolist() == [[0, 1, 3, 4]]
 
 
 def test_selected_set_mass_uses_membership_not_router_softmax() -> None:

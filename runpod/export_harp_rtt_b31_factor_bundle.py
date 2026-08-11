@@ -19,6 +19,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from harp_rtt.anchor import LegacyHARPAnchorBridge  # noqa: E402
+from harp_rtt.b31 import exact_root_greedy_spine_indices  # noqa: E402
 from harp_rtt.dataset import HarpRTTDataset  # noqa: E402
 from harp_rtt.delta_batch import factual_branch_indices  # noqa: E402
 from harp_rtt.exact_k import stable_topk  # noqa: E402
@@ -218,19 +219,8 @@ def main() -> None:
             future_prefix_hashes=prepared["targets"]["future_prefix_hashes"],
         )
         tree = prepared["inputs"]["tree"]
-        greedy_nodes = (
-            tree["mask"].bool()
-            & (tree["first_divergence_depths"].long() == 0)
-        )
-        greedy_match = torch.zeros(
-            factual.shape, dtype=torch.bool, device=factual.device
-        )
-        for horizon in range(4):
-            active = greedy_nodes & (tree["depth"].long() == horizon + 1)
-            if bool((active.sum(-1) != 1).any()):
-                raise ValueError("adaptive tree does not contain one greedy node per horizon")
-            greedy = active.long().argmax(-1)
-            greedy_match[:, horizon] = factual[:, horizon] == greedy
+        greedy = exact_root_greedy_spine_indices(tree)
+        greedy_match = factual == greedy
         first_h2 = ~greedy_match[:, 1]
         first_h3 = greedy_match[:, 1] & ~greedy_match[:, 2]
         first_h4 = greedy_match[:, 1] & greedy_match[:, 2] & ~greedy_match[:, 3]
