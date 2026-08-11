@@ -1,8 +1,12 @@
 # HARP-DeltaTree v3: anchor-protected direct-set architecture
 
-**Status:** implemented locally; real B3.1 replay, 20k capture, and optimization have not started because no running GPU pod was supplied for this stage.
+**Status:** B3.1 completed on the frozen 2,048-row probe. A no-recapture
+DeltaTree semantic pilot on the existing B2 fitting/tuning artifacts is the
+next execution stage; the 20k capture remains conditional on that pilot.
 
-**Lineage:** branch `agent/harp-deltatree-v3`, based on `cdb403dd858faa35981f2c088718abbfcea3a577`.
+**Lineage:** branch `agent/harp-deltatree-v3`, current diagnostic/training
+contract commit `6b7ed83c4770d36c65b436af2f868b854b2d09f7` plus the documented
+no-recapture reuse runner changes.
 
 **Primary objective:** maximize request-macro SlotRecall@8 for H1--H4, with long-generation positions as the primary development protocol and source positions 0--32 as a no-regression guard.
 
@@ -117,7 +121,67 @@ not router softmax. Captured weights remain absolute when `OTHER` is explicit. I
 
 The evaluator refuses non-outer-train provenance and any bundle that does not explicitly keep validation, calibration, and test sealed. It does not train.
 
-## 5. New 20k pilot
+### 4.1 Completed result
+
+The completed bundle contains 2,048 rows and seven route sources and is bound
+by SHA-256 `a361fa6683c4fa249793d07ade9e0c6b6ac5954aff2967421cb8e4767662fc55`.
+The decisive conditions were:
+
+| Route sets | Posterior | C64 policy | Mean H2--H4 | H4 | Aggregate prefix-mismatch |
+| --- | --- | --- | ---: | ---: | ---: |
+| Native target IDs | learned | 32/32 | 0.985307 | 0.982077 | 0.965950 |
+| Native target IDs | target | 32/32 | 0.985615 | 0.982959 | 0.967397 |
+| Learned semantic | learned | 32/32 | 0.890235 | 0.878183 | 0.874615 |
+| Learned semantic | target | 40/24 | 0.890557 | 0.879042 | 0.874613 |
+| Learned geometry | learned | 40/24 | 0.878359 | 0.861150 | 0.858158 |
+| B3 learned branch | learned | 32/32 | 0.828879 | 0.792990 | 0.730067 |
+
+The learned posterior loses only `0.000308` mean H2--H4 versus the target
+posterior when both receive authoritative native route sets. Therefore the
+captured tree, the learned posterior, and the quota union are sufficient. The
+dominant failure is translating causal branch state into the target selected
+set, followed by B3 exposing an even weaker learned-branch interface to its
+candidate generator. New training must promote on direct selected-set
+translation and metric-aligned C64, not posterior loss or raw score loss.
+
+The replay also exposed and fixed two input-contract bugs before new training:
+
+- frozen B3 diagnostics now execute under the same BF16 autocast contract as
+  training;
+- adaptive dataset reconstruction no longer counts the observed exact H1
+  root's historical MTP rank as a branch divergence. Frozen B3 evaluation
+  explicitly reconstructs the old feature so its diagnostic remains faithful.
+
+## 5. No-recapture semantic pilot
+
+Before authorizing the 20k capture, reuse the already audited outer-train
+artifacts:
+
+- 224 requests / 3,584 positions for fitting;
+- 32 request-disjoint requests / 512 positions for tuning;
+- 128 request-disjoint requests / 2,048 positions for diagnostic development.
+
+This profile is named `b2_reuse_4096`. It is diagnostic reuse, not a fresh
+promotion holdout. The runner requires the original B2 fitting partition and
+seed-42 request split, verifies all three request sets are disjoint, requires
+the completed B3.1 native-route information gate, and records every binding.
+No new target or MTP execution is performed.
+
+Semantic checkpoint selection uses factual quota-32 C64 computed from direct
+exact-set branch marginals, not total training loss. Reports additionally
+include:
+
+- direct counterfactual route Recall@8 for H2--H4;
+- direct factual H1 root Recall@8;
+- learned factual branch/`OTHER` accuracy;
+- semantic quota-32 C64 for each horizon and mean H2--H4.
+
+Proceed to candidate training only if the learned semantic path retains a
+material fraction of the native-route B3.1 ceiling. If it does not, stop and
+redesign the direct route translator; do not capture 20k more examples of an
+architecture that cannot use the existing labels.
+
+## 6. Conditional new 20k pilot
 
 `prepare_harp_delta_20k_partition.py` freezes 1,250 group-disjoint outer-train requests with 16 complete pre-EOS H1--H4 positions each:
 
@@ -135,7 +199,7 @@ Each request selects a deterministic mixture of:
 
 The partition builder requires a declared split-manifest SHA, prior request/group exclusions, complete sequence start/end metadata, and a causal scout. It fails if fewer than 1,250 disjoint eligible outer-train requests exist. This means the old 452-request pilot split cannot silently be reused as the new 20k corpus.
 
-## 6. Training ladder
+## 7. Training ladder
 
 `runpod/train_harp_delta_v3.py` executes exactly one immutable stage per output directory.
 
@@ -156,7 +220,7 @@ Before the semantic optimizer can be constructed, the runner requires:
 - train/tune/development contain exactly 16,000/2,000/2,000 rows and 16 rows per request;
 - every companion joins one-to-one and reports sealed-test access false.
 
-## 7. Evaluation and promotion
+## 8. Evaluation and promotion
 
 Two evaluation columns are mandatory.
 
@@ -174,20 +238,21 @@ Candidate promotion uses the user-accepted B1.5 operating point rather than retr
 
 Ranker promotion additionally requires a positive request-bootstrap improvement over the learned generator, bounded swap behavior, and no negative short-position interval. Formal validation remains unopened until the architecture, data selector, checkpoint, and thresholds are frozen. Calibration and sealed test remain closed.
 
-## 8. Execution order
+## 9. Execution order
 
 1. Freeze and publish this source lineage.
-2. On a user-supplied running pod, restore the existing B3 epoch-10 artifact and export/run B3.1; do not recapture for this diagnostic.
-3. Build the new outer-train candidate manifest and causal scout, then freeze the 20k partition.
-4. Capture adaptive-32 base data and node-indexed counterfactual labels to local NVMe first; audit and checksum before immutable network mirroring.
-5. Run the staged trainer in semantic, candidate, ranker, calibration order. Never skip an initializer boundary.
-6. Evaluate the frozen development set and then the matched legacy guard.
-7. Scale only if learned semantic and candidate paths retain the accepted branch-information lift.
-8. When experimentation and artifact mirroring finish, stop—not terminate—the supplied pod with `runpodctl pod stop` and record the returned desired status.
+2. Restore the existing B3 epoch-10 artifact and complete B3.1 without recapture. **Done.**
+3. Run only the DeltaTree semantic stage on `b2_reuse_4096`; no candidate or ranker optimizer exists yet.
+4. If semantic translation passes, run the candidate stage on the same reuse profile and assess retained native-route lift.
+5. Only if reuse is information-limited rather than architecture-limited, build the new outer-train manifest and authorize the 20k capture.
+6. Capture to local NVMe first, then audit/checksum and mirror immutably.
+7. Run semantic, candidate, ranker, and calibration without skipping initializer boundaries.
+8. Evaluate the frozen development set and matched legacy guard.
+9. When experimentation and artifact mirroring finish, stop—not terminate—the supplied pod with `runpodctl pod stop` and record the returned desired status.
 
 No pod is started by repository code or by this plan.
 
-## 9. Implemented files
+## 10. Implemented files
 
 - `harp_rtt/delta.py`: production architecture.
 - `harp_rtt/delta_batch.py`: rich-capture adapter and factual prefix/`OTHER` labels.
