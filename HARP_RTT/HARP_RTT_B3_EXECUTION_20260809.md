@@ -1,5 +1,12 @@
 # HARP-RTT B3 Factual Generator and Rich C64 Ranker
 
+> **Superseded on 2026-08-11:** B3 remains a valid terminal measurement, but
+> its next architecture is now implemented as
+> [HARP_DELTATREE_V3_PLAN_20260811.md](HARP_DELTATREE_V3_PLAN_20260811.md).
+> The matched long-generation frozen anchor was approximately 0.470 Recall@8,
+> so the 0.536 B3 result was a modest matched gain; the decisive failure was
+> learned candidate coverage relative to the accepted B1.5 oracle.
+
 Date: 2026-08-09  
 Branch: `agent/harp-rtt-b1.5-exact-set-oracle`
 

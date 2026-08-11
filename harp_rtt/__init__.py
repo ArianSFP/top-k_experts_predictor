@@ -21,6 +21,8 @@ from .geometry import (
     audit_centered_router_geometry,
     build_centered_router_geometry,
 )
+from .delta import HARPDeltaConfig, HARPDeltaOutput, HARPDeltaTeacher, HARPDeltaTree
+from .delta_batch import DeltaPreparedBatch, factual_branch_indices, prepare_delta_batch
 from .schema import (
     CandidateBatch,
     CandidateDiagnostics,
@@ -38,6 +40,13 @@ __all__ = [
     "HARPRTTBatch",
     "HARPRTTDimensions",
     "HARPRTTOutput",
+    "HARPDeltaConfig",
+    "HARPDeltaOutput",
+    "HARPDeltaTeacher",
+    "HARPDeltaTree",
+    "DeltaPreparedBatch",
+    "factual_branch_indices",
+    "prepare_delta_batch",
     "RouterGeometryAudit",
     "ROUTER_GEOMETRY_SCHEMA",
     "TreeBatch",

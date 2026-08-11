@@ -39,7 +39,7 @@ pytest -q tests/test_harp8.py tests/test_harp8_reranker.py
 pytest -q tests/test_harp_rtt_*.py
 ~~~
 
-The HARP-RTT snapshot was verified with 146 passing tests and three CUDA-only
+The HARP-RTT snapshot was verified with 254 passing tests and three CUDA-only
 skips. GPU training is not required for the CPU contract suite.
 
 ## HARP-RTT status
@@ -55,12 +55,15 @@ prefetcher. It includes:
 - request/lineage-safe data handling and fail-closed sealed-test controls;
 - function-preserving initialization from the published HARP8 checkpoint.
 
-The latest same-input C64 baseline was paused after epoch 8 at validation mean
-H1--H4 Recall@8 `0.7948381`, while its fixed candidate pool had `0.9740958`
-oracle coverage. Prefix-stratified audits show that the remaining bottleneck is
-branch-rich causal information, particularly when the single greedy MTP prefix
-is wrong. Training is therefore paused pending a newly planned adaptive data
-capture. See `HARP_RTT/HARP_RTT_PAUSE_CAUSAL_RECAPTURE_HANDOFF_20260807.md`.
+The active successor is HARP-DeltaTree v3: a roughly 4.4M-parameter,
+anchor-protected direct-set proposer with adaptive marginal-lift C64 selection
+and at most four confidence-gated swaps. The apparent fall from the historical
+approximately `0.795` result to B3's `0.536401` was a protocol mismatch: on the
+same long-generation probe the frozen anchor was approximately `0.470046`.
+B3 improved that matched baseline but retained too little of the accepted
+B1.5 branch oracle. The implementation and staged 20k-position plan are in
+`HARP_RTT/HARP_DELTATREE_V3_PLAN_20260811.md`; capture and training have not
+started on a new pod.
 
 The existing legacy single-chain index is deliberately rejected by formal
 HARP-RTT Phase 2--5 training. No test partition was opened to make these

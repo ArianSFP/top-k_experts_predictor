@@ -165,6 +165,10 @@ class RichSegmentIndex:
         self.target_offsets = np.load(self.root / "target_offsets.npy", mmap_mode="r")
         self.target_available = np.load(self.root / "target_available.npy", mmap_mode="r")
         self.target_scalars = np.load(self.root / "target_scalars.npy", mmap_mode="r")
+        target_prefix_path = self.root / "target_prefix_sha256.npy"
+        if not target_prefix_path.is_file():
+            raise ValueError(f"rich index lacks target prefix hashes in {self.root}")
+        self.target_prefix = np.load(target_prefix_path, mmap_mode="r")
         self.prompt_meta = np.load(self.root / "prompt_meta.npy", mmap_mode="r")
         self.prompt_offsets = np.load(self.root / "prompt_offsets.npy", mmap_mode="r")
         self.mtp_meta = np.load(self.root / "mtp_meta.npy", mmap_mode="r")
@@ -998,6 +1002,13 @@ class HarpRTTDataset(Dataset[dict[str, Any]]):
                     (HORIZONS, TARGET_LAYERS), dtype=torch.bool
                 ),
                 "future_meta": torch.from_numpy(future_meta.copy()),
+                # Label-only: used to identify the factual adaptive-tree node.
+                # This hash is never copied into model inputs.
+                "future_prefix_hashes": torch.from_numpy(
+                    np.asarray(segment.target_prefix[list(record.future_rows)]).copy().view(
+                        np.uint8
+                    ).reshape(HORIZONS, 32)
+                ),
                 "tree_acceptance": tree_labels["acceptance"],
                 "tree_acceptance_valid": tree_labels["acceptance_valid"],
             },
