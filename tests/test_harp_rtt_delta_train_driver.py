@@ -91,3 +91,11 @@ def test_semantic_checkpoint_selection_uses_metric_aligned_c64() -> None:
         "semantic_candidate_coverage_at_64_quota32": 0.91,
     }
     assert MODULE.selection_value("semantic", metrics) == pytest.approx(0.91)
+
+
+def test_microbatch_choices_cover_every_supported_effective_batch_divisor() -> None:
+    assert MODULE.MICROBATCH_CHOICES == (1, 2, 4, 8, 16, 32)
+    assert all(
+        MODULE.EFFECTIVE_BATCH % microbatch == 0
+        for microbatch in MODULE.MICROBATCH_CHOICES
+    )

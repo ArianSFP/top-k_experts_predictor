@@ -77,6 +77,7 @@ PREDECESSOR: dict[str, str | None] = {
 DEFAULT_EPOCHS = {"semantic": 30, "candidate": 15, "ranker": 15, "calibration": 5}
 DEFAULT_LR = {"semantic": 3e-4, "candidate": 1e-3, "ranker": 3e-4, "calibration": 5e-5}
 EFFECTIVE_BATCH = 32
+MICROBATCH_CHOICES = (1, 2, 4, 8, 16, 32)
 
 
 def write_json_exclusive(path: Path, value: Mapping[str, Any]) -> None:
@@ -117,7 +118,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--microbatch-size", type=int, choices=(1, 2, 4, 8), default=2)
+    parser.add_argument(
+        "--microbatch-size",
+        type=int,
+        choices=MICROBATCH_CHOICES,
+        default=2,
+    )
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--patience", type=int, default=5)
     parser.add_argument("--learning-rate", type=float)
