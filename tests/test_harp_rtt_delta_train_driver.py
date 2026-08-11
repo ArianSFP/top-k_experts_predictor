@@ -124,7 +124,7 @@ def test_counterfactual_budget_indices_cover_nested_companion_masks() -> None:
         "target_path_logp": torch.log(torch.tensor([[0.4, 0.3, 0.2, 0.1]])),
         "valid": torch.ones(1, 4, 1, dtype=torch.bool),
         "budget_node_masks": torch.tensor(
-            [[[1, 0, 0, 0], [1, 1, 0, 0], [1, 1, 1, 0], [1, 1, 1, 1]]],
+            [[[1, 0, 0, 0], [1, 1, 0, 0], [1, 1, 1, 0]]],
             dtype=torch.bool,
         ),
     }
@@ -138,8 +138,8 @@ def test_counterfactual_budget_indices_cover_nested_companion_masks() -> None:
     assert all_nodes[0, 1, -1] == pytest.approx(0.0)
 
 
-def test_counterfactual_budget_rejects_missing_all_node_mask() -> None:
-    with pytest.raises(ValueError, match="nested 4/8/16/all"):
+def test_counterfactual_budget_rejects_invalid_stored_mask_axis() -> None:
+    with pytest.raises(ValueError, match="nested 4/8/16 masks"):
         MODULE._counterfactual_with_posterior(
-            {"budget_node_masks": torch.ones(1, 3, 4)}, 4, budget_index=2
+            {"budget_node_masks": torch.ones(1, 4, 4)}, 4, budget_index=2
         )

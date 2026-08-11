@@ -265,8 +265,10 @@ all-node runtime mixture. A no-recapture refinement is therefore predeclared:
 `--resume-same-stage --counterfactual-budget all` implements this refinement.
 It accepts only a completed semantic checkpoint with the identical
 architecture, profile, and partition hash. The original default remains
-budget 16. Unit tests bind the `4/8/16/all` mask indices and verify that
-all-node probability mass is no longer incorrectly assigned to `OTHER`.
+budget 16. The companion stores nested `4/8/16` masks and represents `all`
+with its authoritative `node_mask`; the adapter rejects any other geometry.
+Unit tests bind that mapping and verify that all-node probability mass is no
+longer incorrectly assigned to `OTHER`.
 
 The same revision removes an evaluation-only throughput artifact. Quota C64
 previously accumulated every dense score tensor on the CPU and replayed the
@@ -276,6 +278,25 @@ strictly positive non-anchor branch evidence, then unused-anchor fallback—and
 semantic membership is counted per GPU microbatch. Randomized parity tests
 cover stable ties, zero/negative evidence, overlap, fallback, uniqueness, and
 ordering. This changes neither checkpoint selection nor candidate IDs.
+
+The first `cb7963a` train-through attempt completed 16 logged epochs before an
+operational loader-lifecycle fault. Its best tune point was epoch 15: semantic
+quota-32 C64 `0.915445` overall, `0.906771` over H2--H4, H4 `0.886487`, and
+direct counterfactual route Recall@8 `0.526960`. Epoch 16 was lower on the
+selection metric (`0.914032`). Because the driver created a new
+`persistent_workers=True` loader for every train and tune pass, abandoned
+worker queues accumulated 701 file descriptors; the epoch-17 tune pin-memory
+thread hit the soft limit and exited. The driver correctly emitted no
+checkpoint before final development evaluation, so this run is retained as a
+learning-curve diagnostic and must not initialize another stage.
+
+Revision `ad09fe2e14c971da8ddb0c669f10a51a9af0c580` closes workers with every
+epoch-scoped loader and adds a regression test for that lifecycle. The complete
+CPU suite passes 271 tests (three CUDA-only skips), and all 40 focused tests,
+including the CUDA precision cases, pass on the execution pod. A deterministic
+budget-16 recovery uses a fresh output directory, the same seed/data/order,
+and unchanged model/optimizer math. The first logged epoch must reproduce the
+prior curve before the run is allowed to continue.
 
 ## 6. Conditional new 20k pilot
 

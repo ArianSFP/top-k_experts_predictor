@@ -337,17 +337,31 @@ def load_initializer(
     return value
 
 
+def _counterfactual_selection_mask(
+    counterfactual: Mapping[str, Tensor], budget_index: int
+) -> Tensor:
+    """Resolve stored 4/8/16 masks or the authoritative all-node mask."""
+
+    masks = counterfactual["budget_node_masks"].bool()
+    if masks.ndim != 3 or masks.shape[1] != 3:
+        raise ValueError("Delta semantic stage requires nested 4/8/16 masks")
+    if 0 <= budget_index < masks.shape[1]:
+        return masks[:, budget_index]
+    if budget_index == COUNTERFACTUAL_BUDGET_INDEX["all"]:
+        node_mask = counterfactual["node_mask"].bool()
+        if node_mask.shape != masks.shape[::2]:
+            raise ValueError("all-node mask disagrees with stored budget geometry")
+        return node_mask
+    raise ValueError("declared counterfactual budget is unavailable")
+
+
 def _counterfactual_with_posterior(
     counterfactual: Mapping[str, Tensor], nodes: int, *, budget_index: int
 ) -> dict[str, Tensor]:
     result = dict(counterfactual)
-    masks = result["budget_node_masks"].bool()
-    if masks.ndim != 3 or masks.shape[1] != len(COUNTERFACTUAL_BUDGET_INDEX):
-        raise ValueError("Delta semantic stage requires nested 4/8/16/all masks")
-    if not 0 <= budget_index < masks.shape[1]:
-        raise ValueError("declared counterfactual budget is unavailable")
+    selection = _counterfactual_selection_mask(result, budget_index)
     posterior, _ = node_target_branch_distribution(
-        result, captured_nodes=nodes, selection_mask=masks[:, budget_index]
+        result, captured_nodes=nodes, selection_mask=selection
     )
     result["target_path_distribution"] = posterior
     return result
@@ -471,9 +485,9 @@ def evaluate(
         node_ids = counterfactual["selected_ids"].long()
         node_valid = counterfactual["valid"].bool()
         node_depth = counterfactual["depth"].long()
-        budget = counterfactual["budget_node_masks"][
-            :, counterfactual_budget_index
-        ].bool()
+        budget = _counterfactual_selection_mask(
+            counterfactual, counterfactual_budget_index
+        )
         for horizon in range(1, 4):
             predicted = stable_topk(
                 output.node_scores[:, horizon].float(), model.config.exact_k
