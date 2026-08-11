@@ -9,7 +9,7 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from .delta import HARPDeltaOutput, HARPDeltaTree
+from .delta import HARPDeltaOutput, HARPDeltaSemanticOutput, HARPDeltaTree
 from .exact_k import exact_set_nll, stable_topk
 from .v2_losses import swap_loss
 
@@ -130,7 +130,7 @@ def _active_exact_set_nll(
 
 
 def semantic_loss(
-    output: HARPDeltaOutput,
+    output: HARPDeltaOutput | HARPDeltaSemanticOutput,
     targets: Mapping[str, Tensor],
     counterfactual: Mapping[str, Tensor],
     *,

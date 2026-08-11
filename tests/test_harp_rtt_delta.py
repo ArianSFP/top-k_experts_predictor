@@ -6,6 +6,7 @@ from harp_rtt.delta import (
     AdaptiveAnchorCandidateSelector,
     HARPDeltaConfig,
     HARPDeltaInputAdapter,
+    HARPDeltaSemanticOutput,
     HARPDeltaTeacher,
     HARPDeltaTree,
     causal_position_features,
@@ -103,17 +104,31 @@ def test_deltatree_epoch_zero_is_anchor_protected() -> None:
     horizon_mask[:, 1, 0:2] = True
     horizon_mask[:, 2, 0:3] = True
     horizon_mask[:, 3] = True
-    output = model(
-        anchor_scores=anchor,
-        context_features=context,
-        root_features=root,
-        node_features=node,
-        node_parent_ids=parents,
-        node_available=available,
-        node_path_log_probabilities=path_logp,
-        node_horizon_mask=horizon_mask,
-        source_positions=torch.tensor([5, 500]),
-    )
+    model_inputs = {
+        "anchor_scores": anchor,
+        "context_features": context,
+        "root_features": root,
+        "node_features": node,
+        "node_parent_ids": parents,
+        "node_available": available,
+        "node_path_log_probabilities": path_logp,
+        "node_horizon_mask": horizon_mask,
+        "source_positions": torch.tensor([5, 500]),
+    }
+    output = model(**model_inputs)
+    semantic = model(**model_inputs, semantic_only=True)
+    assert isinstance(semantic, HARPDeltaSemanticOutput)
+    for name in (
+        "root_scores",
+        "root_queries",
+        "node_scores",
+        "node_queries",
+        "factual_path_logits",
+        "factual_path_posterior",
+        "tree_states",
+        "context_states",
+    ):
+        assert torch.equal(getattr(semantic, name), getattr(output, name))
     assert torch.equal(output.final_ids, stable_topk(anchor, config.exact_k))
     assert bool((output.anchor_quotas == 64).all())
     assert output.candidate_ids.shape == (

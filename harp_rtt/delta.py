@@ -128,6 +128,21 @@ class HARPDeltaOutput:
 
 
 @dataclass(frozen=True)
+class HARPDeltaSemanticOutput:
+    """Only tensors consumed by the semantic-stage objective."""
+
+    root_scores: Tensor
+    root_queries: Tensor
+    node_scores: Tensor
+    node_queries: Tensor
+    factual_path_logits: Tensor
+    factual_path_posterior: Tensor
+    candidate_scores: Tensor
+    tree_states: Tensor
+    context_states: Tensor
+
+
+@dataclass(frozen=True)
 class DeltaEncodedInputs:
     context_features: Tensor
     root_features: Tensor
@@ -672,14 +687,12 @@ class HARPDeltaTree(nn.Module):
         self.candidates = AdaptiveAnchorCandidateSelector(config)
         self.ranker = SelectiveCandidateRanker(config, expert_keys)
 
-    def forward(
+    def forward_semantic(
         self, *, anchor_scores: Tensor, context_features: Tensor,
         root_features: Tensor, node_features: Tensor, node_parent_ids: Tensor,
         node_available: Tensor, node_path_log_probabilities: Tensor,
         node_horizon_mask: Tensor, source_positions: Tensor,
-        anchor_marginals: Tensor | None = None,
-        forced_anchor_quota: int | None = None,
-    ) -> HARPDeltaOutput:
+    ) -> HARPDeltaSemanticOutput:
         config = self.config
         batch = context_features.shape[0]
         expected_anchor = (batch, config.horizons, config.layers, config.experts)
@@ -695,34 +708,89 @@ class HARPDeltaTree(nn.Module):
             raise ValueError("node horizon mask has invalid geometry")
         if source_positions.shape != (batch,):
             raise ValueError("source positions must be [B]")
-        if anchor_marginals is None:
-            with torch.no_grad():
-                _, anchor_marginals, _ = exact_projected_marginals(anchor_scores.float(), config.exact_k)
-        elif anchor_marginals.shape != anchor_scores.shape:
-            raise ValueError("anchor marginal geometry differs from scores")
-        anchor_marginals = anchor_marginals.detach().float()
 
         positions = causal_position_features(source_positions, config.position_frequencies)
         context = self.context(context_features) + self.position(positions)[:, None, None]
         nodes = self.tree(node_features, node_parent_ids, node_available)
         root = self.root(root_features)
         node_scores, node_queries = self.set_head(context, nodes)
-        node_marginals = _straight_through_exact_marginals(node_scores, config.exact_k)
         root_grid, root_query_grid = self.set_head(context[:, :1], root)
         layer_ids = torch.arange(config.layers, device=anchor_scores.device)
         root_scores = root_grid[:, 0, layer_ids, layer_ids]
         root_queries = root_query_grid[:, 0, layer_ids, layer_ids]
-        root_marginals = _straight_through_exact_marginals(root_scores, config.exact_k)
         path = self.path(nodes, node_path_log_probabilities, node_horizon_mask)
+        return HARPDeltaSemanticOutput(
+            root_scores=root_scores,
+            root_queries=root_queries,
+            node_scores=node_scores,
+            node_queries=node_queries,
+            factual_path_logits=path.logits,
+            factual_path_posterior=path.probabilities,
+            # The semantic loss needs only the future leading geometry here.
+            candidate_scores=anchor_scores[..., :1],
+            tree_states=nodes,
+            context_states=context,
+        )
+
+    def forward(
+        self, *, anchor_scores: Tensor, context_features: Tensor,
+        root_features: Tensor, node_features: Tensor, node_parent_ids: Tensor,
+        node_available: Tensor, node_path_log_probabilities: Tensor,
+        node_horizon_mask: Tensor, source_positions: Tensor,
+        anchor_marginals: Tensor | None = None,
+        forced_anchor_quota: int | None = None,
+        semantic_only: bool = False,
+    ) -> HARPDeltaOutput | HARPDeltaSemanticOutput:
+        config = self.config
+        semantic = self.forward_semantic(
+            anchor_scores=anchor_scores,
+            context_features=context_features,
+            root_features=root_features,
+            node_features=node_features,
+            node_parent_ids=node_parent_ids,
+            node_available=node_available,
+            node_path_log_probabilities=node_path_log_probabilities,
+            node_horizon_mask=node_horizon_mask,
+            source_positions=source_positions,
+        )
+        if semantic_only:
+            return semantic
+        if anchor_marginals is None:
+            with torch.no_grad():
+                _, anchor_marginals, _ = exact_projected_marginals(
+                    anchor_scores.float(), config.exact_k
+                )
+        elif anchor_marginals.shape != anchor_scores.shape:
+            raise ValueError("anchor marginal geometry differs from scores")
+        anchor_marginals = anchor_marginals.detach().float()
+        root_scores = semantic.root_scores
+        root_queries = semantic.root_queries
+        node_scores = semantic.node_scores
+        node_queries = semantic.node_queries
+        path_logits = semantic.factual_path_logits
+        path_probabilities = semantic.factual_path_posterior
+        nodes = semantic.tree_states
+        context = semantic.context_states
+        node_marginals = _straight_through_exact_marginals(
+            node_scores, config.exact_k
+        )
+        root_marginals = _straight_through_exact_marginals(
+            root_scores, config.exact_k
+        )
         with torch.autocast(device_type=node_scores.device.type, enabled=False):
             captured = torch.einsum(
-                "bhn,bhlne->bhle", path.probabilities[..., :-1].float(), node_marginals.float()
+                "bhn,bhlne->bhle",
+                path_probabilities[..., :-1].float(),
+                node_marginals.float(),
             )
-        branch = captured + path.probabilities[..., -1][:, :, None, None] * anchor_marginals
+        branch = (
+            captured
+            + path_probabilities[..., -1][:, :, None, None] * anchor_marginals
+        )
         branch = branch.clone(); branch[:, 0] = root_marginals
         branch, _ = cardinality_project_marginals(branch, config.exact_k)
         candidate = self.candidates(
-            anchor_scores, anchor_marginals, branch, path.probabilities,
+            anchor_scores, anchor_marginals, branch, path_probabilities,
             forced_anchor_quota=forced_anchor_quota,
         )
         ranked = self.ranker(
@@ -733,8 +801,8 @@ class HARPDeltaTree(nn.Module):
             anchor_marginals=anchor_marginals, root_scores=root_scores,
             root_marginals=root_marginals, root_queries=root_queries,
             node_scores=node_scores, node_marginals=node_marginals,
-            node_queries=node_queries, factual_path_logits=path.logits,
-            factual_path_posterior=path.probabilities, branch_marginals=branch,
+            node_queries=node_queries, factual_path_logits=path_logits,
+            factual_path_posterior=path_probabilities, branch_marginals=branch,
             candidate_ids=candidate.expert_ids, candidate_mask=candidate.dense_mask,
             candidate_scores=candidate.fused_scores, quota_logits=candidate.quota_logits,
             anchor_quotas=candidate.anchor_quotas,
@@ -793,7 +861,8 @@ class HARPDeltaTeacher(nn.Module):
         source_positions: Tensor,
         anchor_marginals: Tensor | None = None,
         forced_anchor_quota: int | None = None,
-    ) -> HARPDeltaOutput:
+        semantic_only: bool = False,
+    ) -> HARPDeltaOutput | HARPDeltaSemanticOutput:
         encoded = self.adapter(
             anchor_scores=anchor_scores,
             route_history_logits=route_history_logits,
@@ -821,6 +890,7 @@ class HARPDeltaTeacher(nn.Module):
             source_positions=source_positions,
             anchor_marginals=anchor_marginals,
             forced_anchor_quota=forced_anchor_quota,
+            semantic_only=semantic_only,
         )
 
 
@@ -828,6 +898,6 @@ __all__ = [
     "AdaptiveAnchorCandidateSelector", "DeltaCandidateOutput", "DeltaEncodedInputs", "DeltaPathOutput",
     "DeltaRankerOutput", "DeltaTreeEncoder", "DirectSelectedSetHead",
     "FactualPathSelector", "HARPDeltaConfig", "HARPDeltaInputAdapter",
-    "HARPDeltaOutput", "HARPDeltaTeacher", "HARPDeltaTree",
+    "HARPDeltaOutput", "HARPDeltaSemanticOutput", "HARPDeltaTeacher", "HARPDeltaTree",
     "SelectiveCandidateRanker", "causal_position_features", "selective_swap_decode",
 ]

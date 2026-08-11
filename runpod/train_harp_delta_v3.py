@@ -336,6 +336,7 @@ def forward_batch(
     *, model: HARPDeltaTeacher, anchor: LegacyHARPAnchorBridge,
     host: Mapping[str, Any], runtime_static: Any, token_embedding: Tensor,
     input_basis: Tensor, rank_mask: Tensor, device: torch.device,
+    semantic_only: bool = False,
 ) -> tuple[Any, dict[str, Any], dict[str, Tensor], Tensor]:
     batch = move_to_device(host, device)
     prepared = prepare_model_batch(batch, runtime_static)
@@ -365,7 +366,7 @@ def forward_batch(
     with torch.autocast(
         device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"
     ):
-        output = model(**delta.model_inputs)
+        output = model(**delta.model_inputs, semantic_only=semantic_only)
     return output, targets, counterfactual, anchor_scores
 
 
@@ -710,6 +711,7 @@ def main() -> None:
                 model=model, anchor=anchor, host=host, runtime_static=runtime_static,
                 token_embedding=token_embedding, input_basis=input_basis,
                 rank_mask=rank_mask, device=device,
+                semantic_only=stage == "semantic",
             )
             loss = objective(stage, model, output, anchor_scores, targets, counterfactual)
             (loss.total / accumulation).backward()
