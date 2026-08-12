@@ -301,9 +301,15 @@ def route_forward(
     node_mask = counterfactual["node_mask"].bool()
     depth = counterfactual["depth"].long()
     valid = counterfactual["valid"].bool() & node_mask[..., None]
-    target_queries = counterfactual["query_coordinates"].float()
-    target_ids = counterfactual["selected_ids"].long()
-    target_weights = counterfactual["selected_weights"].float()
+    target_queries = torch.where(
+        valid[..., None], counterfactual["query_coordinates"].float(), 0.0
+    )
+    target_ids = torch.where(
+        valid[..., None], counterfactual["selected_ids"].long(), 0
+    )
+    target_weights = torch.where(
+        valid[..., None], counterfactual["selected_weights"].float(), 0.0
+    )
     label_valid = valid.any(-1)
     horizon_mask = raw["available"][:, None] & host["inputs"]["tree"][
         "horizon_mask"
