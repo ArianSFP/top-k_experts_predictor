@@ -176,6 +176,7 @@ def _aligner_forward(
     anchor_scores: Tensor,
     anchor_marginals: Tensor,
     node_marginals: Tensor,
+    parent_marginals: Tensor,
     host: Mapping[str, Any],
     device: torch.device,
 ) -> Any:
@@ -193,6 +194,7 @@ def _aligner_forward(
             mtp_probabilities=mtp,
             node_mask=node_mask,
             first_divergence_depth=tree["first_divergence_depths"].to(device).long(),
+            parent_marginals=parent_marginals,
         )
     return aligner(
         anchor_scores=anchor_scores,
@@ -202,6 +204,7 @@ def _aligner_forward(
         node_mask=node_mask,
         tree_states=semantic.tree_states.detach(),
         context_states=semantic.context_states.detach(),
+        parent_marginals=parent_marginals,
     )
 
 
@@ -234,7 +237,7 @@ def _forward(
     ):
         aligned = _aligner_forward(
             stage, aligner, semantic, anchor_scores, anchor_marginals,
-            node_marginals, host, device,
+            node_marginals, parent_marginals, host, device,
         )
         # M0/M1 are H2--H4 aligners.  The v3 parent replaces its H1 branch
         # mixture with the dedicated exact-root prediction, while the generic
@@ -560,16 +563,24 @@ def main() -> None:
             anchor_scores, parent_marginals, anchor_quota=32,
             width=parent.config.candidate_width,
         ).expert_ids
+        marginal_delta = (aligned.marginals.float() - parent_marginals.float()).abs()
         epoch_zero = {
             "dense_parent_marginals_bitwise_equal": bool(torch.equal(aligned.marginals, parent_marginals)),
+            "dense_parent_marginals_max_abs_error": float(marginal_delta.max()),
+            "dense_parent_marginal_mismatch_elements": int((marginal_delta > 0).sum()),
+            "dense_parent_marginals_equal_by_horizon": [
+                bool(torch.equal(aligned.marginals[:, horizon], parent_marginals[:, horizon]))
+                for horizon in range(parent.config.horizons)
+            ],
             "parent_c64_bitwise_equal": bool(torch.equal(aligned.candidate_ids, parent_ids)),
+            "parent_c64_mismatch_elements": int((aligned.candidate_ids != parent_ids).sum()),
             "runtime_tree_nodes": 32,
             "supervision_budget": 16,
             "optimizer_constructed": False,
         }
+    write_json_exclusive(args.output / "EPOCH_ZERO_AUDIT.json", epoch_zero)
     if not epoch_zero["dense_parent_marginals_bitwise_equal"] or not epoch_zero["parent_c64_bitwise_equal"]:
         raise RuntimeError("DeltaRoute epoch-zero parent reproduction failed")
-    write_json_exclusive(args.output / "EPOCH_ZERO_AUDIT.json", epoch_zero)
     if args.preflight_only:
         write_json_exclusive(args.output / "PREFLIGHT_RESULT.json", {
             **epoch_zero, "stage": args.stage, "training_started": False,

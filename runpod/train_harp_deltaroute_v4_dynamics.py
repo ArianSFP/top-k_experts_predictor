@@ -45,6 +45,7 @@ from harp_rtt.exact_k import cardinality_project_marginals, stable_topk  # noqa:
 from harp_rtt.factual_branch_attention import (  # noqa: E402
     ExpertConditionedBranchAttention,
     _trainable_exact_marginals,
+    parent_branch_marginals,
 )
 from harp_rtt.route_dynamics import (  # noqa: E402
     DeltaRouteConfig,
@@ -364,16 +365,25 @@ def route_forward(
         )
         if aligner is None:
             raise ValueError("factual_joint requires expert-conditioned alignment")
+        anchor_marginals, _, _, v3_parent_marginals = parent.core.semantic_marginals(
+            semantic, anchor_scores
+        )
+        with torch.autocast(device_type=device.type, enabled=False):
+            factual_parent_marginals = parent_branch_marginals(
+                node_marginals.float(), semantic.factual_path_posterior.detach().float(),
+                branch_mask, anchor_marginals, k=trajectory.config.exact_k,
+            )
+        factual_parent_marginals = factual_parent_marginals.clone()
+        factual_parent_marginals[:, 0] = v3_parent_marginals[:, 0]
         aligned = aligner(
             anchor_scores=anchor_scores,
-            anchor_marginals=parent.core.semantic_marginals(
-                semantic, anchor_scores
-            )[0],
+            anchor_marginals=anchor_marginals,
             node_marginals=node_marginals,
             posterior=semantic.factual_path_posterior.detach(),
             node_mask=branch_mask,
             tree_states=semantic.tree_states.detach(),
             context_states=semantic.context_states.detach(),
+            parent_marginals=factual_parent_marginals,
         )
     return BatchRouteOutput(
         queries, scores, selected_ids, affine, targets, counterfactual,

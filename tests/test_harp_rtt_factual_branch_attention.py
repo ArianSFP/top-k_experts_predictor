@@ -34,15 +34,23 @@ def _inputs() -> dict[str, torch.Tensor]:
     }
 
 
+def _with_parent(values: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    values["parent_marginals"] = parent_branch_marginals(
+        values["node_marginals"], values["posterior"], values["node_mask"],
+        values["anchor_marginals"], k=2,
+    )
+    return values
+
+
 def test_m0_zero_gate_reproduces_parent_candidate_order() -> None:
-    values = _inputs()
+    values = _with_parent(_inputs())
     model = SummaryFactualAligner(
         layers=3, experts=16, exact_k=2, hidden_width=8,
         candidate_width=8, anchor_quota=4,
     )
     output = model(**{key: values[key] for key in (
         "anchor_scores", "anchor_marginals", "node_marginals", "posterior",
-        "mtp_probabilities", "node_mask", "first_divergence_depth",
+        "mtp_probabilities", "node_mask", "first_divergence_depth", "parent_marginals",
     )})
     parent = parent_branch_marginals(
         values["node_marginals"], values["posterior"], values["node_mask"],
@@ -57,14 +65,14 @@ def test_m0_zero_gate_reproduces_parent_candidate_order() -> None:
 
 
 def test_m0_gate_and_expert_head_receive_factual_gradients() -> None:
-    values = _inputs()
+    values = _with_parent(_inputs())
     model = SummaryFactualAligner(
         layers=3, experts=16, exact_k=2, hidden_width=8,
         candidate_width=8, anchor_quota=4,
     )
     output = model(**{key: values[key] for key in (
         "anchor_scores", "anchor_marginals", "node_marginals", "posterior",
-        "mtp_probabilities", "node_mask", "first_divergence_depth",
+        "mtp_probabilities", "node_mask", "first_divergence_depth", "parent_marginals",
     )})
     output.scores.square().mean().backward()
     assert model.gate.grad is not None and model.gate.grad.abs().sum() > 0
@@ -74,7 +82,7 @@ def test_m0_gate_and_expert_head_receive_factual_gradients() -> None:
 
 
 def test_m1_tau_zero_reproduces_posterior_mixture_and_normalizes_other() -> None:
-    values = _inputs()
+    values = _with_parent(_inputs())
     keys = torch.randn(3, 16, 5)
     model = ExpertConditionedBranchAttention(
         keys, horizons=4, exact_k=2, tree_width=8, hidden_width=8,
@@ -82,7 +90,7 @@ def test_m1_tau_zero_reproduces_posterior_mixture_and_normalizes_other() -> None
     )
     output = model(**{key: values[key] for key in (
         "anchor_scores", "anchor_marginals", "node_marginals", "posterior",
-        "node_mask", "tree_states", "context_states",
+        "node_mask", "tree_states", "context_states", "parent_marginals",
     )})
     parent = parent_branch_marginals(
         values["node_marginals"], values["posterior"], values["node_mask"],
@@ -98,10 +106,14 @@ def test_m1_tau_zero_reproduces_posterior_mixture_and_normalizes_other() -> None
 
 
 def test_m1_is_equivariant_to_node_permutation_and_masks_nodes() -> None:
-    values = _inputs()
+    values = _with_parent(_inputs())
     values["node_mask"][:, :, -1] = False
     values["posterior"][:, :, -1] += values["posterior"][:, :, 3]
     values["posterior"][:, :, 3] = 0.0
+    values["parent_marginals"] = parent_branch_marginals(
+        values["node_marginals"], values["posterior"], values["node_mask"],
+        values["anchor_marginals"], k=2,
+    )
     keys = torch.randn(3, 16, 5)
     model = ExpertConditionedBranchAttention(
         keys, horizons=4, exact_k=2, tree_width=8, hidden_width=8,
@@ -111,7 +123,7 @@ def test_m1_is_equivariant_to_node_permutation_and_masks_nodes() -> None:
         model.tau.fill_(0.25)
     original = model(**{key: values[key] for key in (
         "anchor_scores", "anchor_marginals", "node_marginals", "posterior",
-        "node_mask", "tree_states", "context_states",
+        "node_mask", "tree_states", "context_states", "parent_marginals",
     )})
     permutation = torch.tensor([2, 0, 3, 1])
     permuted = dict(values)
@@ -123,7 +135,7 @@ def test_m1_is_equivariant_to_node_permutation_and_masks_nodes() -> None:
     permuted["tree_states"] = values["tree_states"][:, permutation]
     changed = model(**{key: permuted[key] for key in (
         "anchor_scores", "anchor_marginals", "node_marginals", "posterior",
-        "node_mask", "tree_states", "context_states",
+        "node_mask", "tree_states", "context_states", "parent_marginals",
     )})
     assert torch.allclose(original.marginals, changed.marginals, atol=2e-6, rtol=2e-6)
     assert original.expert_branch_weights is not None
@@ -134,7 +146,7 @@ def test_m1_is_equivariant_to_node_permutation_and_masks_nodes() -> None:
 
 
 def test_m1_expert_specific_weights_change_after_tau_opens() -> None:
-    values = _inputs()
+    values = _with_parent(_inputs())
     model = ExpertConditionedBranchAttention(
         torch.randn(3, 16, 5), horizons=4, exact_k=2,
         tree_width=8, hidden_width=8, candidate_width=8, anchor_quota=4,
@@ -143,7 +155,7 @@ def test_m1_expert_specific_weights_change_after_tau_opens() -> None:
         model.tau.fill_(0.5)
     output = model(**{key: values[key] for key in (
         "anchor_scores", "anchor_marginals", "node_marginals", "posterior",
-        "node_mask", "tree_states", "context_states",
+        "node_mask", "tree_states", "context_states", "parent_marginals",
     )})
     assert output.expert_branch_weights is not None
     assert output.expert_branch_weights.var(-1).mean() > 0

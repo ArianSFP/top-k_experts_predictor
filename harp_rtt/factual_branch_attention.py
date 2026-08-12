@@ -128,11 +128,12 @@ class SummaryFactualAligner(nn.Module):
         mtp_probabilities: Tensor,
         node_mask: Tensor,
         first_divergence_depth: Tensor,
+        parent_marginals: Tensor,
     ) -> tuple[Tensor, Tensor]:
         batch, horizons, layers, nodes, experts = node_marginals.shape
-        parent = parent_branch_marginals(
-            node_marginals, posterior, node_mask, anchor_marginals, k=self.exact_k
-        )
+        if parent_marginals.shape != anchor_marginals.shape:
+            raise ValueError("parent marginals must match anchor geometry")
+        parent = parent_marginals.detach().float()
         mtp = mtp_probabilities.float() * node_mask.float()
         mtp_mass = mtp.sum(-1).clamp_max(1.0)
         mtp_mix = torch.einsum("bhn,bhlne->bhle", mtp, node_marginals.float())
@@ -186,6 +187,7 @@ class SummaryFactualAligner(nn.Module):
         mtp_probabilities: Tensor,
         node_mask: Tensor,
         first_divergence_depth: Tensor,
+        parent_marginals: Tensor,
     ) -> FactualAlignmentOutput:
         batch, horizons, layers, _, experts = node_marginals.shape
         if (horizons, layers, experts) != (self.horizons, self.layers, self.experts):
@@ -199,7 +201,7 @@ class SummaryFactualAligner(nn.Module):
             raise ValueError("first-divergence depth must be [B,N]")
         features, parent = self._feature_tensor(
             anchor_scores, anchor_marginals, node_marginals, posterior,
-            mtp_probabilities, node_mask, first_divergence_depth,
+            mtp_probabilities, node_mask, first_divergence_depth, parent_marginals,
         )
         hidden = self.features(features)
         hidden = hidden + self.horizon.weight[None, :, None, None]
@@ -267,6 +269,7 @@ class ExpertConditionedBranchAttention(nn.Module):
         tree_states: Tensor,
         context_states: Tensor,
         query_uncertainty: Tensor | None = None,
+        parent_marginals: Tensor,
     ) -> FactualAlignmentOutput:
         batch, horizons, layers, nodes, experts = node_marginals.shape
         _validated_inputs(
@@ -337,10 +340,9 @@ class ExpertConditionedBranchAttention(nn.Module):
         zero_aligned = cardinality_project_marginals(
             (zero_weights * values).sum(3), self.exact_k
         )[0]
-        parent = parent_branch_marginals(
-            node_marginals, posterior, node_mask, anchor_marginals,
-            k=self.exact_k,
-        )
+        if parent_marginals.shape != anchor_marginals.shape:
+            raise ValueError("parent marginals must match anchor geometry")
+        parent = parent_marginals.detach().float()
         # Subtract the numerically identical tau=0 path.  This makes parent
         # reproduction exact without cancelling the first derivative of the
         # learned expert-specific reliability correction.
