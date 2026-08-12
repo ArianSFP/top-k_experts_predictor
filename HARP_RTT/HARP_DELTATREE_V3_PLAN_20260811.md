@@ -334,6 +334,67 @@ Regression tests verify that `node_mask` reaches semantic loss and overrides
 any stored budget index. This is a pre-optimization schema failure, not an
 experimental result.
 
+The corrected all-node refinement completed under source
+`b0e452491fdbefe3270cacf098db6542bbb3dcd8`. It initialized from the sealed
+budget-16 checkpoint, used LR `1e-4`, and stopped by patience after epoch 9,
+selecting epoch 4. It improved direct route translation but not factual
+candidate coverage:
+
+| Development metric | Budget 16 | All nodes | All - B16 |
+| --- | ---: | ---: | ---: |
+| Route Recall@8 | 0.557170 | 0.565437 | +0.008267 |
+| C64, all H1--H4 | 0.919536 | 0.918769 | -0.000767 |
+| C64, mean H2--H4 | 0.914467 | 0.913429 | -0.001038 |
+| C64, H2 | 0.927499 | 0.928175 | +0.000676 |
+| C64, H3 | 0.917424 | 0.916544 | -0.000880 |
+| C64, H4 | 0.898477 | 0.895567 | -0.002910 |
+
+The all-node checkpoint SHA-256 is
+`06fc7bf22604b93f7338a2a69052572ecc9cb36f602bb12df87783abd2ba3d51`.
+The budget-16 checkpoint remains the selected semantic model.
+
+Using the frozen B3.1 learned-semantic baseline (`0.890235` mean H2--H4),
+native-route ceiling (`0.985307`), and H4 baseline/ceiling
+(`0.878183`/`0.982077`), the learned lift recovery is:
+
+- budget 16: `G_H2:H4 = 0.2549`, `G_H4 = 0.1953`;
+- all nodes: `G_H2:H4 = 0.2440`, `G_H4 = 0.1673`.
+
+Both miss the predeclared `G >= 0.5` translatability gate. Balanced supervision
+over more already-captured nodes makes their individual route predictions more
+accurate, but dilutes factual deterministic-route candidate evidence. The
+candidate subsystem is only a scalar lift calibration plus quota classifier;
+it cannot repair this mismatch. Candidate, ranker, H1-only, formal validation,
+calibration, and sealed-test stages remain unopened.
+
+### Next no-capture experiment: factual mixture alignment
+
+Before authorizing any new capture, reuse the selected budget-16 translator and
+train a new expert-specific factual mixture aligner. Freeze route translation
+initially. For each `[horizon, layer, expert]`, expose only causal/predicted
+features:
+
+- anchor logit, exact-k marginal, and rank;
+- posterior-weighted branch marginal and MTP-prior-weighted branch marginal;
+- maximum and second-largest branch support;
+- support variance, positive-support count, and branch disagreement;
+- depth-conditioned H2/H3/H4 support;
+- posterior entropy, captured mass, and `OTHER` mass.
+
+A shared per-expert MLP with small layer/horizon adapters should emit a
+zero-gated correction to the anchor inclusion logit. Train it directly against
+factual exact sets with exact-set NLL and the missing-true-versus-false-anchor
+pair loss. Preserve anchor top-32 and fill the remaining C64 slots from
+strictly positive learned lift. This differs from the rejected 30-parameter
+candidate calibrator because it can rank experts differently within the same
+branch mixture, while counterfactual labels remain supervision-only.
+
+Run it on the existing 3,584/512/2,048 request-disjoint profile. Promote only
+if development H2--H4 C64 exceeds the budget-16 parent with a positive paired
+request-bootstrap interval and H4 does not regress. If this direct factual
+alignment also fails, the no-recapture information path is exhausted and a
+larger/longer corpus—not another reranker—is the next justified expense.
+
 The next immutable refinement source also uses a semantic-evaluation forward.
 It materializes the same anchor, H1-root, node, and posterior-mixture exact-k
 marginals as the production forward, but does not execute the frozen candidate
