@@ -87,6 +87,27 @@ def test_counterfactual_loss_uses_router_induced_query_error() -> None:
     assert float(shifted.components["induced_logit_huber"]) > 0.0
 
 
+def test_counterfactual_loss_neutralizes_masked_sentinel_labels() -> None:
+    torch.manual_seed(13)
+    queries = torch.randn(1, 2, 3, 4, requires_grad=True)
+    keys = torch.randn(3, 7, 4)
+    logits = torch.einsum("bnlr,ler->bnle", queries, keys)
+    ids = torch.argsort(logits.detach(), dim=-1, descending=True, stable=True)[..., :2]
+    valid = torch.ones(1, 2, 3, dtype=torch.bool)
+    valid[:, 1] = False
+    ids[:, 1] = 65535
+    target_queries = queries.detach().clone()
+    target_logits = logits.detach().clone()
+    target_queries[:, 1] = torch.nan
+    target_logits[:, 1] = torch.nan
+    loss = counterfactual_trajectory_loss(
+        queries, logits, target_queries, target_logits, ids, valid, keys,
+    )
+    assert torch.isfinite(loss.total)
+    loss.total.backward()
+    assert queries.grad is not None and torch.isfinite(queries.grad).all()
+
+
 def test_joint_factual_mixture_backpropagates_to_branch_scores() -> None:
     branch = torch.randn(1, 4, 2, 2, 6, requires_grad=True)
     anchor = torch.randn(1, 4, 2, 6)

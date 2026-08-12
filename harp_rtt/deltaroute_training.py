@@ -219,6 +219,15 @@ def counterfactual_trajectory_loss(
     if expert_keys.shape[:2] != (layers, predicted_scores.shape[-1]):
         raise ValueError("router geometry differs from trajectory")
     active = valid.bool()
+    safe_target_ids = torch.where(active[..., None], target_ids.long(), 0)
+    safe_target_queries = torch.where(
+        active[..., None], target_queries.detach().float(),
+        predicted_queries.detach().float(),
+    )
+    safe_target_logits = torch.where(
+        active[..., None], target_logits.detach().float(),
+        predicted_scores.detach().float(),
+    )
     weights = active.float()
     if supervision_weights is not None:
         if supervision_weights.shape == valid.shape[:-1]:
@@ -229,16 +238,16 @@ def counterfactual_trajectory_loss(
             raise ValueError("trajectory supervision weights must be finite and non-negative")
         weights = weights * supervision_weights.float()
     exact = exact_set_nll(
-        predicted_scores, target_ids.long(), valid=weights, k=target_ids.shape[-1]
+        predicted_scores, safe_target_ids, valid=weights, k=target_ids.shape[-1]
     )
-    difference = predicted_queries.float() - target_queries.detach().float()
+    difference = predicted_queries.float() - safe_target_queries
     induced = torch.einsum("...lr,ler->...le", difference, expert_keys.float())
     per_logit = F.huber_loss(
         induced, torch.zeros_like(induced), reduction="none", delta=1.0
     ).mean(-1)
     logit = (per_logit * weights).sum() / weights.sum().clamp_min(1.0)
     boundary_rows = boundary_loss_per_endpoint(
-        predicted_scores, target_logits.detach(), target_ids.long(),
+        predicted_scores, safe_target_logits, safe_target_ids,
         model_rank_start=6, teacher_rank_start=9, rank_end=32,
     )
     boundary = (boundary_rows * weights).sum() / weights.sum().clamp_min(1.0)
