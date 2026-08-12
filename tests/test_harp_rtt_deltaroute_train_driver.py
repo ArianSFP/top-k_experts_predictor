@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from harp_rtt.delta import HARPDeltaConfig, HARPDeltaTeacher
+from harp_rtt.factual_branch_attention import FactualAlignmentOutput
 
 
 SCRIPT = Path(__file__).parents[1] / "runpod" / "train_harp_deltaroute_v4.py"
@@ -64,3 +65,10 @@ def test_driver_records_optimizer_start_separately_and_preserves_32_nodes() -> N
     assert '"runtime_tree_nodes": 32' in source
     assert '"counterfactual_supervision_budget": 16' in source
     assert "candidate_coverage_h2_h4" in source
+
+
+def test_driver_explicitly_preserves_parent_h1_root_contract() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "marginals[:, 0] = parent_marginals[:, 0]" in source
+    assert "M0/M1 are H2--H4 aligners" in source
+    assert FactualAlignmentOutput.__name__ in source

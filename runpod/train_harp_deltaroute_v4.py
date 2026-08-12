@@ -29,6 +29,7 @@ from harp_rtt.delta import HARPDeltaConfig, HARPDeltaTeacher  # noqa: E402
 from harp_rtt.deltaroute_training import factual_alignment_loss  # noqa: E402
 from harp_rtt.factual_branch_attention import (  # noqa: E402
     ExpertConditionedBranchAttention,
+    FactualAlignmentOutput,
     SummaryFactualAligner,
 )
 from harp_rtt.deltaroute_metrics import paired_h2_h4_request_bootstrap  # noqa: E402
@@ -234,6 +235,24 @@ def _forward(
         aligned = _aligner_forward(
             stage, aligner, semantic, anchor_scores, anchor_marginals,
             node_marginals, host, device,
+        )
+        # M0/M1 are H2--H4 aligners.  The v3 parent replaces its H1 branch
+        # mixture with the dedicated exact-root prediction, while the generic
+        # aligner inputs contain only node marginals and therefore cannot
+        # reconstruct that overwrite.  Preserve H1 explicitly so the deployed
+        # dense evidence and C64 contract remain parent-identical at epoch zero.
+        marginals = aligned.marginals.clone()
+        marginals[:, 0] = parent_marginals[:, 0]
+        aligned = FactualAlignmentOutput(
+            scores=aligned.scores,
+            marginals=marginals,
+            correction=aligned.correction,
+            expert_branch_weights=aligned.expert_branch_weights,
+            coherence_kl=aligned.coherence_kl,
+            candidate_ids=quota_candidate_union(
+                anchor_scores, marginals, anchor_quota=32,
+                width=parent.config.candidate_width,
+            ).expert_ids,
         )
     return aligned, targets, anchor_scores, parent_marginals, semantic
 
