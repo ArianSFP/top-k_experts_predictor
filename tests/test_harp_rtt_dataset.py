@@ -10,7 +10,11 @@ import numpy as np
 import pytest
 import torch
 
-from harp_rtt.dataset import HarpRTTDataset, collate_harp_rtt
+from harp_rtt.dataset import (
+    HarpRTTDataset,
+    _structural_first_divergence_depths,
+    collate_harp_rtt,
+)
 from harp_rtt.index import (
     MTP_REQUIRED_ROLES,
     PROMPT_ROLES,
@@ -48,6 +52,15 @@ ID_ROLES = {
     "vocab_top64_token_ids",
     "harp_anchor_vocab_top64_token_ids",
 }
+
+
+def test_tree_divergence_ignores_rank_of_observed_exact_h1_root() -> None:
+    horizons = torch.tensor([1, 2, 2, 3, 4, 3, 4])
+    parents = torch.tensor([-1, 0, 0, 1, 3, 2, 5])
+    child_ranks = torch.tensor([9, 0, 1, 0, 0, 0, 2])
+    assert _structural_first_divergence_depths(
+        horizons, child_ranks, parents
+    ).tolist() == [0, 0, 2, 0, 0, 2, 2]
 
 
 def _prefix_hash(tokens: list[int]) -> str:

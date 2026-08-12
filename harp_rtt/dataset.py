@@ -101,6 +101,35 @@ def _zeros(shape: Sequence[int], dtype_name: str) -> Tensor:
     return torch.zeros(tuple(shape), dtype=torch.from_numpy(np.empty((), NP_DTYPES[dtype_name])).dtype)
 
 
+def _structural_first_divergence_depths(
+    horizons: Tensor,
+    child_ranks: Tensor,
+    parents: Tensor,
+) -> Tensor:
+    """Derive branch divergence below the observed exact-H1 root.
+
+    Adaptive capture fixes H1 to the target's already committed token.  Its
+    rank under an earlier MTP distribution is descriptive evidence only; it
+    is not a branch choice in the H2--H4 causal tree.
+    """
+
+    if any(value.ndim != 1 for value in (horizons, child_ranks, parents)):
+        raise ValueError("tree divergence inputs must be vectors")
+    if not (horizons.shape == child_ranks.shape == parents.shape):
+        raise ValueError("tree divergence inputs must share geometry")
+    divergence = torch.zeros_like(horizons, dtype=torch.int64)
+    for local in range(int(horizons.numel())):
+        current = local
+        first = 0
+        while current >= 0:
+            horizon = int(horizons[current])
+            if horizon > 1 and int(child_ranks[current]) > 0:
+                first = horizon
+            current = int(parents[current])
+        divergence[local] = first
+    return divergence
+
+
 @dataclass(frozen=True)
 class RichTokenRecord:
     """Resolved source, history, future, and tree rows for one sample."""
@@ -165,6 +194,10 @@ class RichSegmentIndex:
         self.target_offsets = np.load(self.root / "target_offsets.npy", mmap_mode="r")
         self.target_available = np.load(self.root / "target_available.npy", mmap_mode="r")
         self.target_scalars = np.load(self.root / "target_scalars.npy", mmap_mode="r")
+        target_prefix_path = self.root / "target_prefix_sha256.npy"
+        if not target_prefix_path.is_file():
+            raise ValueError(f"rich index lacks target prefix hashes in {self.root}")
+        self.target_prefix = np.load(target_prefix_path, mmap_mode="r")
         self.prompt_meta = np.load(self.root / "prompt_meta.npy", mmap_mode="r")
         self.prompt_offsets = np.load(self.root / "prompt_offsets.npy", mmap_mode="r")
         self.mtp_meta = np.load(self.root / "mtp_meta.npy", mmap_mode="r")
@@ -713,15 +746,9 @@ class HarpRTTDataset(Dataset[dict[str, Any]]):
             if rows.numel():
                 order = torch.argsort(scalars[rows, 1], descending=True, stable=True)
                 path_ranks[rows[order]] = torch.arange(1, rows.numel() + 1)
-        divergence = torch.zeros(count, dtype=torch.int64)
-        for local in range(count):
-            current = local
-            first = 0
-            while current >= 0:
-                if int(child_ranks[current]) > 0:
-                    first = int(horizons[current])
-                current = local_parents[current]
-            divergence[local] = first
+        divergence = _structural_first_divergence_depths(
+            horizons, child_ranks, parents
+        )
         tree["child_ranks"][:count] = child_ranks
         tree["first_divergence_depths"][:count] = divergence
         tree["cumulative_path_ranks"][:count] = path_ranks
@@ -998,6 +1025,13 @@ class HarpRTTDataset(Dataset[dict[str, Any]]):
                     (HORIZONS, TARGET_LAYERS), dtype=torch.bool
                 ),
                 "future_meta": torch.from_numpy(future_meta.copy()),
+                # Label-only: used to identify the factual adaptive-tree node.
+                # This hash is never copied into model inputs.
+                "future_prefix_hashes": torch.from_numpy(
+                    np.asarray(segment.target_prefix[list(record.future_rows)]).copy().view(
+                        np.uint8
+                    ).reshape(HORIZONS, 32)
+                ),
                 "tree_acceptance": tree_labels["acceptance"],
                 "tree_acceptance_valid": tree_labels["acceptance_valid"],
             },

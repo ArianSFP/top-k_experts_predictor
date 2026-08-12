@@ -1,5 +1,15 @@
 # HARP-RTT-90 v1.0
 
+> **Active successor (2026-08-11):** the v2 B3 result was not a matched-protocol
+> collapse from approximately 0.795 to 0.536; the long-generation frozen anchor
+> scored approximately 0.470 on that same probe. B3 improved the matched anchor
+> but failed to retain the accepted B1.5 branch-information ceiling. The active
+> implementation is the small, anchor-protected direct-set/selective-swap
+> architecture in
+> [HARP_DELTATREE_V3_PLAN_20260811.md](HARP_DELTATREE_V3_PLAN_20260811.md).
+> It supersedes the unconstrained factual generator and rich-reranker execution
+> path below. Historical formulas and evidence remain for provenance.
+
 > **Terminal B3 generator result (2026-08-10):** the seed-42 factual generator
 > completed 12 epochs but failed every learned candidate gate on the
 > request-disjoint probe: mean H2-H4 C64 `0.905447`, H4 C64 `0.885579`, and H4
