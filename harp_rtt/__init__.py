@@ -23,6 +23,8 @@ from .geometry import (
 )
 from .delta import HARPDeltaConfig, HARPDeltaOutput, HARPDeltaTeacher, HARPDeltaTree
 from .delta_batch import DeltaPreparedBatch, factual_branch_indices, prepare_delta_batch
+from .deltaroute_batch import DeltaRoutePreparedBatch, prepare_deltaroute_batch
+from .route_dynamics import DeltaRouteConfig, DeltaRouteTrajectory
 from .schema import (
     CandidateBatch,
     CandidateDiagnostics,
@@ -45,8 +47,12 @@ __all__ = [
     "HARPDeltaTeacher",
     "HARPDeltaTree",
     "DeltaPreparedBatch",
+    "DeltaRouteConfig",
+    "DeltaRoutePreparedBatch",
+    "DeltaRouteTrajectory",
     "factual_branch_indices",
     "prepare_delta_batch",
+    "prepare_deltaroute_batch",
     "RouterGeometryAudit",
     "ROUTER_GEOMETRY_SCHEMA",
     "TreeBatch",

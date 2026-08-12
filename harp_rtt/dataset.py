@@ -70,6 +70,7 @@ FUTURE_ROLES = (
     "raw_target_router_logits",
     "normalized_target_router_input_a",
     "selected_expert_ids",
+    "selected_execution_weights",
 )
 TREE_STATE_ROLES = (
     "mtp_fused_state",
@@ -1020,6 +1021,9 @@ class HarpRTTDataset(Dataset[dict[str, Any]]):
                 ),
                 "future_selected_ids": torch.stack(
                     [item["selected_expert_ids"].to(torch.int64) for item in future]
+                ),
+                "future_execution_weights": torch.stack(
+                    [item["selected_execution_weights"].float() for item in future]
                 ),
                 "future_available": torch.ones(
                     (HORIZONS, TARGET_LAYERS), dtype=torch.bool
