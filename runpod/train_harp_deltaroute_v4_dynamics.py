@@ -315,38 +315,44 @@ def route_forward(
     aligned = None
 
     if stage in ("transition_r0", "rollout_r1"):
-        context, _, _ = trajectory.causal_context(
-            context_states=semantic.context_states, **raw
-        )
-        node_context = gather_node_horizon(context, depth, node_mask)
-        if stage == "transition_r0":
-            next_queries = trajectory.dynamics.teacher_forced(
-                target_queries, target_ids, target_weights, node_context
+        with torch.autocast(
+            device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"
+        ):
+            context, _, _ = trajectory.causal_context(
+                context_states=semantic.context_states, **raw
             )
-            queries = torch.cat((target_queries[..., :1, :], next_queries), dim=-2)
-            affine = torch.cat((
-                target_queries[..., :1, :],
-                trajectory.dynamics.affine_control(target_queries),
-            ), dim=-2)
-        else:
-            force = sampled_teacher_force_mask(
-                target_queries.shape[:-2], trajectory.config.layers,
-                teacher_probability, device=device,
-            )
-            rollout = trajectory.dynamics.rollout(
-                target_queries[..., 0, :], node_context,
-                trajectory.expert_keys, trajectory.centered_bias,
-                teacher_ids=target_ids, teacher_weights=target_weights,
-                teacher_force_mask=force,
-            )
-            queries = rollout.queries
+            node_context = gather_node_horizon(context, depth, node_mask)
+            if stage == "transition_r0":
+                next_queries = trajectory.dynamics.teacher_forced(
+                    target_queries, target_ids, target_weights, node_context
+                )
+                queries = torch.cat((target_queries[..., :1, :], next_queries), dim=-2)
+                affine = torch.cat((
+                    target_queries[..., :1, :],
+                    trajectory.dynamics.affine_control(target_queries),
+                ), dim=-2)
+            else:
+                force = sampled_teacher_force_mask(
+                    target_queries.shape[:-2], trajectory.config.layers,
+                    teacher_probability, device=device,
+                )
+                rollout = trajectory.dynamics.rollout(
+                    target_queries[..., 0, :], node_context,
+                    trajectory.expert_keys, trajectory.centered_bias,
+                    teacher_ids=target_ids, teacher_weights=target_weights,
+                    teacher_force_mask=force,
+                )
+                queries = rollout.queries
     else:
-        trajectory_output = trajectory(
-            parent_queries=semantic.node_queries,
-            parent_scores=semantic.node_scores,
-            context_states=semantic.context_states,
-            **raw,
-        )
+        with torch.autocast(
+            device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"
+        ):
+            trajectory_output = trajectory(
+                parent_queries=semantic.node_queries,
+                parent_scores=semantic.node_scores,
+                context_states=semantic.context_states,
+                **raw,
+            )
         queries = gather_node_horizon(
             trajectory_output.queries, depth, node_mask
         )
