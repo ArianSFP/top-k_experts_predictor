@@ -46,7 +46,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-preprocessing", type=Path, required=True)
     parser.add_argument("--reuse-split-manifest", type=Path, required=True)
     parser.add_argument("--diagnostic-request-manifest", type=Path, required=True)
-    parser.add_argument("--adaptive-fitting-events", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--device", default="cuda")
@@ -58,12 +57,14 @@ def request_id(dataset: HarpRTTDataset, index: int) -> str:
     return str(dataset.segments[record.segment].sequences[record.sequence]["request_id"])
 
 
-def source_lineage_map(events: Path) -> dict[str, str]:
+def source_lineage_map(companion_manifest: dict[str, Any]) -> dict[str, str]:
     result: dict[str, str] = {}
-    for line in events.read_text().splitlines():
-        event = json.loads(line)
-        if event.get("event") == "sequence_start":
-            result[str(event["request_id"])] = str(event["source_request_id"])
+    for record in companion_manifest.get("records", []):
+        request = str(record["request_id"])
+        source = str(record["source_request_id"])
+        previous = result.setdefault(request, source)
+        if previous != source:
+            raise ValueError("companion request maps to multiple source lineages")
     return result
 
 
@@ -126,7 +127,7 @@ def main() -> None:
     counts = Counter(observed)
     if set(counts) != train_set | tune_set or set(counts.values()) != {16}:
         raise ValueError("branch fitting rows do not match the frozen 256x16 split")
-    lineage = source_lineage_map(args.adaptive_fitting_events)
+    lineage = source_lineage_map(companion_manifest)
     if set(lineage) != set(counts):
         raise ValueError("branch fitting source-lineage map is incomplete")
     diagnostic_sources = {
@@ -243,7 +244,6 @@ def main() -> None:
         "companion_audit_sha256": sha256_file(args.companion / "COUNTERFACTUAL_AUDIT.json"),
         "reuse_split_manifest_sha256": sha256_file(args.reuse_split_manifest),
         "diagnostic_request_manifest_sha256": sha256_file(args.diagnostic_request_manifest),
-        "adaptive_fitting_events_sha256": sha256_file(args.adaptive_fitting_events),
         "target_preprocessing_sha256": sha256_file(args.target_preprocessing),
         "static_manifest_sha256": sha256_file(args.static_dir / "manifest.json"),
         "counterfactual_labels_are_training_only": True,
