@@ -115,7 +115,7 @@ def route_forward(
         zero = cardinality_project_marginals(
             parent_marginals, parent.config.exact_k
         )[0]
-    marginals = parent_marginals + proposed - zero
+    marginals = parent_marginals + (proposed - zero)
     candidates = quota_candidate_union(
         anchor_scores, marginals, anchor_quota=32,
         width=parent.config.candidate_width,
