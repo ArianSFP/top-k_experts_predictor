@@ -106,6 +106,18 @@ def test_r0_parent_residual_starts_exactly_at_static_parent() -> None:
     with pytest.raises(ValueError, match="invalid geometry"):
         MODULE.parent_residual_teacher_queries(parent, target, changed[..., :-1, :])
 
+    parent_scores = torch.randn(2, 3, 4, 8, generator=generator)
+    expert_keys = torch.randn(4, 8, 3, generator=generator)
+    reproduced_scores = MODULE.parent_residual_router_scores(
+        parent_scores, parent, parent, expert_keys
+    )
+    torch.testing.assert_close(reproduced_scores, parent_scores, rtol=0, atol=0)
+    corrected_scores = MODULE.parent_residual_router_scores(
+        parent_scores, parent, corrected, expert_keys
+    )
+    expected_delta = torch.einsum("...lr,ler->...le", corrected - parent, expert_keys)
+    torch.testing.assert_close(corrected_scores, parent_scores + expected_delta)
+
 
 def test_driver_preserves_allnode_pretraining_and_budget16_deployment() -> None:
     source = SCRIPT.read_text(encoding="utf-8")

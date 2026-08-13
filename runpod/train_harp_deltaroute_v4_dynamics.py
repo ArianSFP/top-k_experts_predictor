@@ -267,6 +267,26 @@ def parent_residual_teacher_queries(
     )
 
 
+def parent_residual_router_scores(
+    parent_scores: Tensor,
+    parent_queries: Tensor,
+    corrected_queries: Tensor,
+    expert_keys: Tensor,
+) -> Tensor:
+    """Preserve the parent's free scores while scoring query corrections."""
+
+    if parent_queries.shape != corrected_queries.shape:
+        raise ValueError("parent and corrected query trajectories differ")
+    if parent_scores.shape[:-1] != parent_queries.shape[:-1]:
+        raise ValueError("parent score and query trajectories differ")
+    if expert_keys.shape[:2] != parent_scores.shape[-2:]:
+        raise ValueError("expert-key geometry differs from parent scores")
+    delta = corrected_queries.float() - parent_queries.float()
+    return parent_scores.float() + torch.einsum(
+        "...lr,ler->...le", delta, expert_keys.float()
+    )
+
+
 def _parent_forward(
     *,
     host: Mapping[str, Any],
@@ -352,6 +372,9 @@ def route_forward(
             parent_queries = gather_node_horizon(
                 semantic.node_queries, depth, node_mask
             )
+            parent_scores = gather_node_horizon(
+                semantic.node_scores, depth, node_mask
+            )
             if stage == "transition_r0":
                 transition_queries = trajectory.dynamics.teacher_forced(
                     target_queries, target_ids, target_weights, node_context
@@ -391,7 +414,11 @@ def route_forward(
         scores = gather_node_horizon(
             trajectory_output.scores, depth, node_mask
         )
-    if stage in ("transition_r0", "rollout_r1"):
+    if stage == "transition_r0":
+        scores = parent_residual_router_scores(
+            parent_scores, parent_queries, queries, trajectory.expert_keys
+        )
+    elif stage == "rollout_r1":
         scores = torch.einsum(
             "bnlr,ler->bnle", queries.float(), trajectory.expert_keys.float()
         ) + trajectory.centered_bias[None, None]
