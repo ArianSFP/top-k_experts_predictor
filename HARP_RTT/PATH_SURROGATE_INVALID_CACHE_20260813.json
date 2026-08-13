@@ -1,0 +1,24 @@
+{
+  "schema": "harp_path_surrogate_invalid_cache_record_v1",
+  "date": "2026-08-13",
+  "invalid_cache": "/root/harp_deltaroute_v4_local/cache/path_surrogate_pilot64_INVALID_SOURCE_OVERLAP_DO_NOT_USE",
+  "rows_planned": 28928,
+  "reason": "The initial selection compared recapture request IDs with original corpus IDs. The adaptive development requests are recaptures of 128 named tfprod source requests, so string-disjoint tfadaptive IDs did not establish source-lineage disjointness.",
+  "detection_point": "before cache audit, before model preflight, and before optimizer construction",
+  "training_started": false,
+  "optimizer_constructed": false,
+  "eligible_for_training": false,
+  "replacement_contract": {
+    "training_requests": 292,
+    "training_rows": 18688,
+    "tuning_requests": 32,
+    "tuning_rows": 2048,
+    "excluded_development_source_requests": 128,
+    "positions_per_request": 64,
+    "rows_total": 20736,
+    "source_lineage_enforced": true
+  },
+  "formal_validation_opened": false,
+  "calibration_opened": false,
+  "sealed_test_opened": false
+}

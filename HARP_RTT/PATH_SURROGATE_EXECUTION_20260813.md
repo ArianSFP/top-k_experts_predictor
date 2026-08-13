@@ -19,9 +19,12 @@ This stage reuses those artifacts; it performs no target replay and no capture.
 
 ## Data contract
 
-A deterministic seed-42 pilot samples at most 64 positions from each usable
-outer-train request. Thirty-two whole requests are held out for tuning. The
-resulting cache has 28,928 rows and is written to local NVMe before training.
+A source-lineage-bound seed-42 pilot samples at most 64 positions from each
+eligible outer-train request. The 128 source requests recaptured for adaptive
+development are excluded, even though their recapture IDs differ. The exact 32
+prior translator-tuning source requests remain the holdout. This leaves 292
+training requests (18,688 rows), 32 tuning requests (2,048 rows), and 20,736
+rows total. It is written to local NVMe before training.
 
 Each row contains only:
 
@@ -68,7 +71,7 @@ H3/H4 bottleneck without dropping H1/H2.
 
 ## Execution and decision ladder
 
-1. Build and audit the 28,928-row local-NVMe cache.
+1. Build and audit the 20,736-row source-lineage-disjoint local-NVMe cache.
 2. Run one seed (42), with effective batch 64, AdamW at `3e-4`, BF16 transforms,
    FP32 router geometry, maximum ten epochs, and patience three. Small
    diagnostics deliberately do not consume multiple seeds.
