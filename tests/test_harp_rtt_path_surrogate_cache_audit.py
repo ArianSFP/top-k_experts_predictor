@@ -40,6 +40,10 @@ def _cache(root: Path, *, duplicate: bool = False) -> Path:
         "state_rank": rank, "train_rows": 2 if duplicate else 1,
         "tune_rows": 0 if duplicate else 1,
         "train_requests": ["train"], "tune_requests": ["tune"],
+        "excluded_development_requests": [
+            f"development-{index}" for index in range(128)
+        ],
+        "source_lineage_enforced": True,
     }))
     return root
 

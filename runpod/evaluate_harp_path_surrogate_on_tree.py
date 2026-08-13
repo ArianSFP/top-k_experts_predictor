@@ -59,6 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--parent-checkpoint", type=Path, required=True)
     parser.add_argument("--surrogate-checkpoint", type=Path, required=True)
     parser.add_argument("--surrogate-cache", type=Path, required=True)
+    parser.add_argument("--diagnostic-request-manifest", type=Path, required=True)
     parser.add_argument("--static-dir", type=Path, required=True)
     parser.add_argument("--anchor-checkpoint", type=Path, required=True)
     parser.add_argument("--anchor-sha256", required=True)
@@ -281,8 +282,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     cache_requests = set(cache_manifest["train_requests"]) | set(
         cache_manifest["tune_requests"]
     )
-    if requests & cache_requests:
-        raise PermissionError("surrogate pretraining and tree-development requests overlap")
+    source_development = {
+        str(json.loads(line)["request_id"])
+        for line in args.diagnostic_request_manifest.read_text().splitlines()
+        if line.strip()
+    }
+    if (
+        cache_manifest.get("source_lineage_enforced") is not True
+        or source_development != set(cache_manifest.get("excluded_development_requests", []))
+        or sha256_file(args.diagnostic_request_manifest)
+        != cache_manifest.get("diagnostic_request_manifest_sha256")
+    ):
+        raise PermissionError("tree development is not bound to the excluded source lineage")
+    if source_development & cache_requests:
+        raise PermissionError("surrogate pretraining and tree-development sources overlap")
     config = PathRouteSurrogateConfig(**checkpoint["config"])
     surrogate = TokenConditionedRouteSurrogate(
         config, static.geometry.expert_keys, static.geometry.centered_bias,
@@ -311,6 +324,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "surrogate_cache_audit_sha256": checkpoint.get("cache_audit_sha256"),
         "surrogate_pretraining_requests": len(cache_requests),
         "pretraining_development_request_disjoint": True,
+        "source_lineage_development_requests": len(source_development),
+        "diagnostic_request_manifest_sha256": sha256_file(args.diagnostic_request_manifest),
         "parent_checkpoint_sha256": sha256_file(args.parent_checkpoint),
         "partition_manifest_sha256": partition_sha,
         "development_companion_manifest_sha256": companion_sha,

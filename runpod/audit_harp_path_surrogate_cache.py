@@ -131,8 +131,15 @@ def main() -> None:
         raise ValueError("cache split counts differ from manifest")
     train_requests = list(manifest["train_requests"])
     tune_requests = list(manifest["tune_requests"])
-    if set(train_requests) & set(tune_requests):
-        raise PermissionError("cache train and tuning request sets overlap")
+    excluded_requests = list(manifest.get("excluded_development_requests", []))
+    if manifest.get("source_lineage_enforced") is not True or len(excluded_requests) != 128:
+        raise PermissionError("cache lacks the 128-request source-lineage exclusion")
+    if (
+        set(train_requests) & set(tune_requests)
+        or set(train_requests) & set(excluded_requests)
+        or set(tune_requests) & set(excluded_requests)
+    ):
+        raise PermissionError("cache source-lineage request partitions overlap")
     request_index = np.asarray(arrays["request_index"])
     if (request_index < 0).any() or (request_index >= len(train_requests) + len(tune_requests)).any():
         raise ValueError("cache request index is outside the manifest namespace")
@@ -153,6 +160,8 @@ def main() -> None:
         "rows": rows,
         "train_requests": len(train_requests),
         "tune_requests": len(tune_requests),
+        "excluded_development_requests": len(excluded_requests),
+        "source_lineage_enforced": True,
         "request_group_disjoint": True,
         "unique_request_position_rows": True,
         "native_top8_agreement_from_fp16_logits": native_agreement,

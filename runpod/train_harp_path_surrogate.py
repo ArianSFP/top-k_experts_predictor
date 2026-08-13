@@ -228,6 +228,11 @@ def main() -> None:
     for flag in ("formal_validation_opened", "calibration_opened", "sealed_test_opened"):
         if manifest.get(flag) is not False:
             raise PermissionError(f"path cache violates {flag}")
+    if (
+        manifest.get("source_lineage_enforced") is not True
+        or len(manifest.get("excluded_development_requests", [])) != 128
+    ):
+        raise PermissionError("path cache lacks source-lineage split enforcement")
     audit_path = args.cache / "CACHE_AUDIT.json"
     if not audit_path.is_file():
         raise FileNotFoundError("path surrogate cache has not passed its audit")
@@ -270,6 +275,8 @@ def main() -> None:
         "trainable_parameters": sum(p.numel() for p in model.parameters()),
         "factual_path_tokens_are_training_only_teacher_inputs": True,
         "serving_path_tokens_must_come_from_causal_mtp_tree": True,
+        "source_lineage_enforced": True,
+        "excluded_development_requests": 128,
         "optimizer_constructed": False,
         "formal_validation_opened": False,
         "calibration_opened": False,

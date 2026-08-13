@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 from collections import defaultdict
 from datetime import datetime, timezone
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -39,6 +38,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--static-dir", type=Path, required=True)
     parser.add_argument("--target-preprocessing", type=Path, required=True)
+    parser.add_argument("--diagnostic-request-manifest", type=Path, required=True)
+    parser.add_argument("--reuse-split-manifest", type=Path, required=True)
+    parser.add_argument("--adaptive-fitting-events", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--positions-per-request", type=int, default=64)
     parser.add_argument("--tune-requests", type=int, default=32)
@@ -54,26 +56,52 @@ def request_id(dataset: HarpRTTDataset, index: int) -> str:
     return str(dataset.segments[record.segment].sequences[record.sequence]["request_id"])
 
 
+def source_lineage_partitions(
+    diagnostic_requests: Path,
+    reuse_split_manifest: Path,
+    adaptive_fitting_events: Path,
+) -> tuple[set[str], set[str]]:
+    development = {
+        str(json.loads(line)["request_id"])
+        for line in diagnostic_requests.read_text().splitlines() if line.strip()
+    }
+    reuse = json.loads(reuse_split_manifest.read_text())
+    tuning_adaptive = set(reuse["inner_split"]["tuning_requests"])
+    mapping: dict[str, str] = {}
+    for line in adaptive_fitting_events.read_text().splitlines():
+        event = json.loads(line)
+        if event.get("event") == "sequence_start":
+            mapping[str(event["request_id"])] = str(event["source_request_id"])
+    missing = tuning_adaptive - set(mapping)
+    if missing:
+        raise ValueError("adaptive tuning requests lack source-lineage mappings")
+    tuning = {mapping[value] for value in tuning_adaptive}
+    if len(development) != 128 or len(tuning) != 32:
+        raise ValueError("source-lineage partitions must contain 128 development and 32 tuning requests")
+    if development & tuning:
+        raise PermissionError("source-lineage development and tuning requests overlap")
+    return development, tuning
+
+
 def deterministic_rows(
     dataset: HarpRTTDataset,
     *,
     positions_per_request: int,
-    tune_requests: int,
-    seed: int,
+    tune_request_ids: set[str],
+    excluded_request_ids: set[str],
 ) -> tuple[list[int], list[int], list[str], list[str]]:
     grouped: dict[str, list[int]] = defaultdict(list)
     for index in range(len(dataset)):
         grouped[request_id(dataset, index)].append(index)
-    ordered_requests = sorted(
-        grouped,
-        key=lambda value: hashlib.sha256(
-            f"{seed}:{value}".encode("utf-8")
-        ).digest(),
-    )
-    if len(ordered_requests) <= tune_requests:
-        raise ValueError("path cache lacks enough requests for an inner holdout")
-    tune = sorted(ordered_requests[:tune_requests])
-    train = sorted(ordered_requests[tune_requests:])
+    unavailable = (tune_request_ids | excluded_request_ids) - set(grouped)
+    if unavailable:
+        raise ValueError("source-lineage partition names unavailable corpus requests")
+    if tune_request_ids & excluded_request_ids:
+        raise PermissionError("tuning and excluded source requests overlap")
+    tune = sorted(tune_request_ids)
+    train = sorted(set(grouped) - tune_request_ids - excluded_request_ids)
+    if not train or not tune:
+        raise ValueError("source-lineage cache split is empty")
 
     def select(requests: list[str]) -> list[int]:
         result: list[int] = []
@@ -134,9 +162,16 @@ def main() -> None:
     dataset = HarpRTTDataset(
         args.index, "train", corpus_root=args.corpus, max_tree_nodes=1
     )
+    excluded_requests, forced_tune_requests = source_lineage_partitions(
+        args.diagnostic_request_manifest, args.reuse_split_manifest,
+        args.adaptive_fitting_events,
+    )
+    if len(forced_tune_requests) != args.tune_requests:
+        raise ValueError("declared tuning count differs from source-lineage partition")
     train_rows, tune_rows, train_requests, tune_requests = deterministic_rows(
         dataset, positions_per_request=args.positions_per_request,
-        tune_requests=args.tune_requests, seed=args.seed,
+        tune_request_ids=forced_tune_requests,
+        excluded_request_ids=excluded_requests,
     )
     selected = train_rows + tune_rows
     split_values = [0] * len(train_rows) + [1] * len(tune_rows)
@@ -225,6 +260,11 @@ def main() -> None:
         "rows": len(selected), "train_rows": split_values.count(0),
         "tune_rows": split_values.count(1),
         "train_requests": train_requests, "tune_requests": tune_requests,
+        "excluded_development_requests": sorted(excluded_requests),
+        "source_lineage_enforced": True,
+        "diagnostic_request_manifest_sha256": sha256_file(args.diagnostic_request_manifest),
+        "reuse_split_manifest_sha256": sha256_file(args.reuse_split_manifest),
+        "adaptive_fitting_events_sha256": sha256_file(args.adaptive_fitting_events),
         "state_roles": list(ROLES), "state_rank": state_rank,
         "source_index_summary_sha256": sha256_file(args.index / "INDEX_SUMMARY.json"),
         "source_corpus_audit_sha256": sha256_file(args.corpus.parent / "CORPUS_AUDIT.json"),
