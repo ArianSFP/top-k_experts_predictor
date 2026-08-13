@@ -15,6 +15,7 @@ class LayerSpecificPostMoeProbe(nn.Module):
     def __init__(
         self,
         config: ContentTransitionConfig,
+        input_basis: Tensor,
         expert_keys: Tensor,
         centered_bias: Tensor,
         rank_mask: Tensor,
@@ -25,7 +26,9 @@ class LayerSpecificPostMoeProbe(nn.Module):
         config.validate()
         if state_rank < 1:
             raise ValueError("post-MoE state rank must be positive")
-        if expert_keys.shape != (
+        if input_basis.shape != (
+            config.layers, config.hidden_width, config.router_rank
+        ) or expert_keys.shape != (
             config.layers, config.experts, config.router_rank
         ) or centered_bias.shape != (config.layers, config.experts):
             raise ValueError("post-MoE probe router geometry is invalid")
@@ -33,6 +36,7 @@ class LayerSpecificPostMoeProbe(nn.Module):
             raise ValueError("post-MoE probe rank mask is invalid")
         self.config = config
         self.state_rank = state_rank
+        self.register_buffer("input_basis", input_basis.detach().float().clone())
         self.register_buffer("expert_keys", expert_keys.detach().float().clone())
         self.register_buffer("centered_bias", centered_bias.detach().float().clone())
         self.register_buffer("rank_mask", rank_mask.detach().bool().clone())
@@ -53,22 +57,37 @@ class LayerSpecificPostMoeProbe(nn.Module):
         self.output_bias = nn.Parameter(torch.zeros(
             transitions, config.router_rank
         ))
+        self.control_diagonal = nn.Parameter(torch.ones(
+            transitions, config.router_rank
+        ))
+        self.control_down = nn.Parameter(torch.empty(
+            transitions, config.router_rank, config.content_adapter_rank
+        ))
+        self.control_up = nn.Parameter(torch.zeros(
+            transitions, config.content_adapter_rank, config.router_rank
+        ))
         nn.init.normal_(self.state_down, std=0.02)
         nn.init.normal_(self.state_up, std=0.02)
         nn.init.normal_(self.expert_effect, std=0.02)
         nn.init.normal_(self.effect_up, std=0.02)
+        nn.init.normal_(self.control_down, std=0.02)
 
     def forward(
         self,
-        post_moe_states: Tensor,
+        combined_states: Tensor,
         selected_ids: Tensor,
         selected_weights: Tensor,
         *,
         use_router_blind_content: bool = True,
     ) -> ContentTransitionOutput:
         config = self.config
-        if post_moe_states.shape[-2:] != (config.layers, config.hidden_width):
-            raise ValueError("post-MoE states must end in [L,D]")
+        if combined_states.shape[-2:] != (
+            config.layers, 2 * config.hidden_width
+        ):
+            raise ValueError("combined post-MoE/router state must end in [L,2D]")
+        post_moe_states, router_inputs = combined_states.split(
+            config.hidden_width, dim=-1
+        )
         expected = post_moe_states.shape[:-1] + (config.exact_k,)
         if selected_ids.shape != expected or selected_weights.shape != expected:
             raise ValueError("post-MoE route labels disagree with states")
@@ -90,7 +109,18 @@ class LayerSpecificPostMoeProbe(nn.Module):
         effects = self.expert_effect[layer, ids]
         route = (effects * weights[..., None]).sum(-2)
         route_delta = torch.einsum("...la,lar->...lr", route, self.effect_up)
-        queries = (state_delta + route_delta + self.output_bias)
+        current_q = torch.einsum(
+            "...ld,ldr->...lr", router_inputs.float(), self.input_basis
+        )[..., :-1, :]
+        current_q = current_q * self.rank_mask[:-1].to(current_q.dtype)
+        control = current_q * self.control_diagonal
+        control_low = torch.einsum(
+            "...lr,lra->...la", current_q, self.control_down
+        )
+        control = control + torch.einsum(
+            "...la,lar->...lr", control_low, self.control_up
+        )
+        queries = control + state_delta + route_delta + self.output_bias
         queries = queries * self.rank_mask[1:].to(queries.dtype)
         scores = torch.einsum(
             "...lr,ler->...le", queries, self.expert_keys[1:]

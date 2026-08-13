@@ -22,8 +22,19 @@ FUTURE_STATE_ROLES = (
 class FutureTargetStateAdapter(Dataset[dict[str, Any]]):
     """Expose existing full states only under ``targets.future_states``."""
 
-    def __init__(self, base: Dataset[dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        base: Dataset[dict[str, Any]],
+        *,
+        roles: tuple[str, ...] = FUTURE_STATE_ROLES,
+    ) -> None:
         self.base = base
+        if not roles or len(set(roles)) != len(roles):
+            raise ValueError("future-state roles must be non-empty and unique")
+        unknown = set(roles) - set(FUTURE_STATE_ROLES)
+        if unknown:
+            raise ValueError(f"unknown future-state roles: {sorted(unknown)}")
+        self.roles = roles
         current: Any = base
         while not isinstance(current, HarpRTTDataset):
             current = getattr(current, "base", None)
@@ -57,12 +68,12 @@ class FutureTargetStateAdapter(Dataset[dict[str, Any]]):
             raise KeyError(f"future-state source lacks record {key}")
         segment = self.source.segments[record.segment]
         future = [
-            segment.read_layer_token("target", row, FUTURE_STATE_ROLES)
+            segment.read_layer_token("target", row, self.roles)
             for row in record.future_rows
         ]
         state_targets: dict[str, Tensor] = {
             role: torch.stack([row[role] for row in future])
-            for role in FUTURE_STATE_ROLES
+            for role in self.roles
         }
         result = dict(item)
         result_targets = dict(targets)

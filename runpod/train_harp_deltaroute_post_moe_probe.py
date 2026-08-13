@@ -30,7 +30,7 @@ def build_model(static: object) -> LayerSpecificPostMoeProbe:
         content_adapter_rank=8, output_adapter_rank=8, dropout=0.05,
     )
     return LayerSpecificPostMoeProbe(
-        config, geometry.expert_keys, geometry.centered_bias,
+        config, geometry.input_basis, geometry.expert_keys, geometry.centered_bias,
         geometry.rank_mask, state_rank=192,
     )
 
@@ -40,7 +40,9 @@ ORIGINAL_LOAD_SPLIT = baseline.load_split
 
 def load_split(*args: Any, **kwargs: Any) -> tuple[FutureTargetStateAdapter, set[str]]:
     dataset, groups = ORIGINAL_LOAD_SPLIT(*args, **kwargs)
-    return FutureTargetStateAdapter(dataset), groups
+    return FutureTargetStateAdapter(
+        dataset, roles=("post_moe_residual_xplus",)
+    ), groups
 
 
 def batch_tensors(host: Any, device: torch.device) -> tuple[torch.Tensor, ...]:
@@ -50,7 +52,11 @@ def batch_tensors(host: Any, device: torch.device) -> tuple[torch.Tensor, ...]:
     if not isinstance(states, dict):
         raise TypeError("post-MoE probe lacks target-only future states")
     return (
-        states["post_moe_residual_xplus"], targets["future_router_logits"],
+        torch.cat(
+            (states["post_moe_residual_xplus"], targets["future_router_inputs"]),
+            dim=-1,
+        ),
+        targets["future_router_logits"],
         targets["future_selected_ids"], targets["future_execution_weights"],
         targets["future_available"],
     )
