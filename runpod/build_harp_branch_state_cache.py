@@ -136,7 +136,7 @@ def main() -> None:
                 token_embedding[vocab_ids] * probability[..., None]
             ).sum(-2)
             vocab = vocab * mask.to(device)[..., None]
-            arrays["branch_states"][target_slice] = tree["states"].numpy().astype(np.float16)
+            arrays["branch_states"][target_slice] = tree["states"].float().numpy().astype(np.float16)
             arrays["branch_router_logits"][target_slice] = tree["router_logits"].numpy().astype(np.float16)
             arrays["branch_selected_ids"][target_slice] = tree["selected_ids"].numpy().astype(np.int16)
             arrays["branch_selected_weights"][target_slice] = tree["execution_weights"].numpy().astype(np.float16)
