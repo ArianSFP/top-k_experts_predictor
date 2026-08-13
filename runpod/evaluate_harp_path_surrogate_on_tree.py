@@ -34,6 +34,7 @@ from harp_rtt.path_route_surrogate import (  # noqa: E402
     PathRouteSurrogateConfig, TokenConditionedRouteSurrogate,
 )
 from harp_rtt.path_route_tree import reconstruct_tree_token_prefixes  # noqa: E402
+from harp_rtt.route_dynamics import gather_node_horizon  # noqa: E402
 from harp_rtt.static_artifacts import load_static_target_artifacts  # noqa: E402
 from harp_rtt.train import prepare_model_batch, runtime_static_artifacts  # noqa: E402
 from harp_rtt.training import move_to_device, seed_everything, sha256_file  # noqa: E402
@@ -378,11 +379,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
         predicted_ids = stable_topk(node_at_depth, config.exact_k)
         parent_ids = stable_topk(
-            semantic.node_scores.permute(0, 3, 1, 2, 4)[
-                torch.arange(tree["mask"].shape[0], device=device)[:, None],
-                torch.arange(tree["mask"].shape[1], device=device)[None],
-                (tree["depth"].long() - 1).clamp_min(0),
-            ],
+            gather_node_horizon(
+                semantic.node_scores, tree["depth"], tree["mask"]
+            ),
             config.exact_k,
         )
         native = counterfactual["selected_ids"].long()
