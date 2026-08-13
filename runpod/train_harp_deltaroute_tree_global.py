@@ -19,7 +19,7 @@ from harp_rtt.candidate_boundary import candidate_entry_loss  # noqa: E402
 from harp_rtt.deltaroute_training import (  # noqa: E402
     DeltaRouteLoss, factual_alignment_loss,
 )
-from harp_rtt.exact_k import cardinality_project_marginals  # noqa: E402
+from harp_rtt.exact_k import cardinality_project_marginals, stable_topk  # noqa: E402
 from harp_rtt.factual_branch_attention import (  # noqa: E402
     FactualAlignmentOutput, _trainable_exact_marginals,
 )
@@ -107,10 +107,15 @@ def route_forward(
         zero_marginals = _trainable_exact_marginals(
             parent_scores, parent.config.exact_k
         )
-    marginals = parent_marginals + proposed_marginals - zero_marginals
-    marginals = cardinality_project_marginals(
-        marginals, parent.config.exact_k
+    proposed = cardinality_project_marginals(
+        parent_marginals + proposed_marginals - zero_marginals,
+        parent.config.exact_k,
     )[0]
+    with torch.no_grad():
+        zero = cardinality_project_marginals(
+            parent_marginals, parent.config.exact_k
+        )[0]
+    marginals = parent_marginals + proposed - zero
     candidates = quota_candidate_union(
         anchor_scores, marginals, anchor_quota=32,
         width=parent.config.candidate_width,
@@ -128,7 +133,7 @@ def route_forward(
     node_scores = gather_node_horizon(semantic.node_scores, depth, node_mask).float()
     output = baseline.BatchRouteOutput(
         queries=queries, scores=node_scores,
-        selected_ids=counterfactual["selected_ids"].long(),
+        selected_ids=stable_topk(node_scores, parent.config.exact_k),
         affine_queries=None, targets=targets, counterfactual=counterfactual,
         anchor_scores=anchor_scores, semantic=semantic,
         branch_mask=torch.zeros(
