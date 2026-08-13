@@ -108,7 +108,7 @@ def route_forward(
         reference_scores, parent.config.exact_k
     ).detach()
     proposed = cardinality_project_marginals(
-        parent_marginals + proposed_marginals - zero_marginals,
+        parent_marginals + (proposed_marginals - zero_marginals),
         parent.config.exact_k,
     )[0]
     with torch.no_grad():
