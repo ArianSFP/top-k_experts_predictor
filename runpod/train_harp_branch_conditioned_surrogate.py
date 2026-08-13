@@ -25,6 +25,9 @@ from torch.utils.data import DataLoader, Dataset
 from harp_rtt.branch_conditioned_path import (  # noqa: E402
     BranchConditionedLayerwiseRouteSurrogate,
 )
+from harp_rtt.branch_direct_score import (  # noqa: E402
+    DirectHighRankBranchRouteSurrogate,
+)
 from harp_rtt.losses import boundary_loss_per_endpoint, exact_set_nll  # noqa: E402
 from harp_rtt.path_route_surrogate import PathRouteSurrogateConfig  # noqa: E402
 from harp_rtt.static_artifacts import load_static_target_artifacts  # noqa: E402
@@ -57,6 +60,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--architecture", choices=("trajectory", "direct_score"),
+        default="trajectory",
+    )
     parser.add_argument("--epochs", type=int, default=12)
     parser.add_argument("--patience", type=int, default=4)
     parser.add_argument("--branch-learning-rate", type=float, default=3e-4)
@@ -273,13 +280,23 @@ def main() -> None:
     }:
         raise ValueError("branch-conditioned initializer is incompatible")
     config = PathRouteSurrogateConfig(**initializer["config"])
-    model = BranchConditionedLayerwiseRouteSurrogate(
+    model_class = (
+        BranchConditionedLayerwiseRouteSurrogate
+        if args.architecture == "trajectory"
+        else DirectHighRankBranchRouteSurrogate
+    )
+    model_kwargs = (
+        {"branch_state_rank": 32, "branch_vocab_rank": 16}
+        if args.architecture == "trajectory" else {"raw_rank": 64}
+    )
+    model = model_class(
         config, static.geometry.expert_keys, static.geometry.centered_bias,
-        static.geometry.rank_mask, branch_state_rank=32, branch_vocab_rank=16,
+        static.geometry.rank_mask, **model_kwargs,
     ).to(device)
     incompatible = model.load_state_dict(initializer["model_state_dict"], strict=False)
     if incompatible.unexpected_keys or any(
-        not key.startswith("branch_") for key in incompatible.missing_keys
+        not key.startswith(("branch_", "query_", "score_"))
+        for key in incompatible.missing_keys
     ):
         raise ValueError(f"initializer mismatch: {incompatible}")
     train = BranchStateDataset(args.cache, args.state_cache, 0)
@@ -293,7 +310,7 @@ def main() -> None:
     write_json(args.output / "run_manifest.json", {
         "schema": SCHEMA, "created_utc": datetime.now(timezone.utc).isoformat(),
         "source_commit": args.source_commit, "seed": args.seed,
-        "architecture": "branch_conditioned_layerwise_route_trajectory_v1",
+        "architecture": f"branch_conditioned_{args.architecture}_v1",
         "initializer_sha256": sha256_file(args.initialize_from),
         "cache_manifest_sha256": sha256_file(base_manifest_path),
         "cache_audit_sha256": sha256_file(base_audit_path),
@@ -398,10 +415,10 @@ def main() -> None:
     checkpoint = args.output / "best_branch_conditioned_surrogate.pt"
     with checkpoint.open("xb") as handle:
         torch.save({
-            "schema": SCHEMA, "stage": "branch_conditioned_trajectory",
+            "schema": SCHEMA, "stage": f"branch_conditioned_{args.architecture}",
             "source_commit": args.source_commit, "seed": args.seed,
             "epoch": best_epoch, "config": config.to_dict(),
-            "architecture": "branch_conditioned_layerwise_route_trajectory_v1",
+            "architecture": f"branch_conditioned_{args.architecture}_v1",
             "initializer_sha256": sha256_file(args.initialize_from),
             "run_manifest_sha256": sha256_file(args.output / "run_manifest.json"),
             "cache_manifest_sha256": sha256_file(base_manifest_path),
