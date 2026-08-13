@@ -1,0 +1,28 @@
+{
+  "schema": "harp_deltaroute_v4_partial_stop_v1",
+  "stage": "causal_state_axial",
+  "run": "causal_axial_seed42_ac42b9b",
+  "source_commit": "ac42b9b",
+  "epochs_completed": 2,
+  "optimizer_stopped": true,
+  "results": {
+    "epoch_1_route_recall_h2_h4": 0.5462317364290357,
+    "epoch_1_c64_h2_h4": 0.910925293341279,
+    "epoch_2_route_recall_h2_h4": 0.550310818788906,
+    "epoch_2_route_gain_vs_parent": 0.006261203438043594,
+    "epoch_2_route_gain_ci95": [0.0059031990744794404, 0.006664546423902113],
+    "epoch_2_c64_h2_h4": 0.9123881012201309,
+    "epoch_2_c64_h4": 0.8920776378363371,
+    "epoch_2_c64_h4_mismatch": 0.8487641476094723
+  },
+  "comparison": {
+    "mtp_only_axial_epoch_2_route": 0.549661,
+    "mtp_only_axial_epoch_2_c64": 0.912278,
+    "native_branch_route_c64_h2_h4": 0.985358
+  },
+  "interpretation": "Exact current target residual and route history interact usefully with MTP branch state, but improve the two-epoch MTP-only axial result by only about 0.00065 route recall and 0.00011 C64. Fusion capacity is no longer the largest bottleneck. The 3,584-row fitting set is severely undersized relative to the 17.3M translator.",
+  "next": "Pretrain the token-conditioned target-route surrogate on the existing audited 113,289-row outer-train corpus, then fine-tune the same state x branch representation on the counterfactual companion.",
+  "formal_validation_opened": false,
+  "calibration_opened": false,
+  "sealed_test_opened": false
+}
