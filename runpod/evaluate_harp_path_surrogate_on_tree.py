@@ -93,6 +93,25 @@ def request_id(dataset: HarpRTTDataset, index: int) -> str:
     return str(dataset.segments[record.segment].sequences[record.sequence]["request_id"])
 
 
+def assert_development_companion_privacy(manifest: Mapping[str, Any]) -> None:
+    """Accept audited legacy train companions without weakening split guards.
+
+    The immutable B1.5 companion predates the explicit formal-validation and
+    calibration fields. Its loader already requires ``split=train``,
+    ``label_only=true`` and ``sealed_test_opened=false``. Missing newer flags
+    therefore mean "not recorded" for this legacy artifact; an explicit true
+    value remains a hard failure.
+    """
+
+    if manifest.get("split") != "train" or manifest.get("label_only") is not True:
+        raise PermissionError("development companion is not label-only outer-train data")
+    if manifest.get("sealed_test_opened") is not False:
+        raise PermissionError("development companion violates sealed_test_opened")
+    for flag in ("formal_validation_opened", "calibration_opened"):
+        if manifest.get(flag, False) is not False:
+            raise PermissionError(f"development companion violates {flag}")
+
+
 def load_development(args: argparse.Namespace) -> tuple[Any, set[str], str]:
     base = HarpRTTDataset(
         args.development_index, "train",
@@ -106,9 +125,7 @@ def load_development(args: argparse.Namespace) -> tuple[Any, set[str], str]:
     )
     if len(labels) != len(base):
         raise ValueError("development companion/base row count differs")
-    for flag in ("formal_validation_opened", "calibration_opened", "sealed_test_opened"):
-        if manifest.get(flag) is not False:
-            raise PermissionError(f"development companion violates {flag}")
+    assert_development_companion_privacy(manifest)
     return (
         NodeCounterfactualDatasetAdapter(base, labels, split="train", training=True),
         set(counts), sha256_file(args.development_companion / "manifest.json"),

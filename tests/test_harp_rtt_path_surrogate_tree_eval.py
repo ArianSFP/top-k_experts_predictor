@@ -5,7 +5,11 @@ from types import SimpleNamespace
 import torch
 
 from harp_rtt.path_route_tree import reconstruct_tree_token_prefixes
-from runpod.evaluate_harp_path_surrogate_on_tree import deployed_grid, predict_nodes
+from runpod.evaluate_harp_path_surrogate_on_tree import (
+    assert_development_companion_privacy,
+    deployed_grid,
+    predict_nodes,
+)
 from tests.test_harp_rtt_path_route_surrogate import _fixture
 
 
@@ -64,3 +68,25 @@ def test_deployed_grid_changes_only_each_nodes_declared_horizon() -> None:
     untouched[0, 1, :, 1] = 0
     untouched[0, 3, :, 2] = 0
     assert torch.count_nonzero(untouched) == 0
+
+
+def test_legacy_outer_train_companion_privacy_is_accepted() -> None:
+    assert_development_companion_privacy({
+        "split": "train", "label_only": True, "sealed_test_opened": False,
+    })
+
+
+def test_explicit_opened_split_is_rejected() -> None:
+    for field in (
+        "formal_validation_opened", "calibration_opened", "sealed_test_opened",
+    ):
+        manifest = {
+            "split": "train", "label_only": True,
+            "sealed_test_opened": False, field: True,
+        }
+        try:
+            assert_development_companion_privacy(manifest)
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError(f"explicit {field}=true must fail closed")
