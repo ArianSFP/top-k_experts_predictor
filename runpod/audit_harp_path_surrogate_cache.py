@@ -117,6 +117,13 @@ def main() -> None:
         ).any(-1).sum())
         native_slots += int(target_ids.size)
 
+    native_agreement = native_hits / native_slots
+    if native_agreement < 0.98:
+        raise ValueError(
+            f"FP16 dense labels preserve only {native_agreement:.6f} native top-8; "
+            "minimum is 0.98"
+        )
+
     split = np.asarray(arrays["split"])
     if not np.isin(split, (0, 1)).all():
         raise ValueError("cache split contains an undeclared value")
@@ -148,7 +155,8 @@ def main() -> None:
         "tune_requests": len(tune_requests),
         "request_group_disjoint": True,
         "unique_request_position_rows": True,
-        "native_top8_agreement_from_fp16_logits": native_hits / native_slots,
+        "native_top8_agreement_from_fp16_logits": native_agreement,
+        "required_native_top8_agreement": 0.98,
         "array_sha256": hashes,
         "complete": True,
         "formal_validation_opened": False,
