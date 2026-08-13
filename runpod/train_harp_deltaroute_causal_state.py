@@ -63,6 +63,21 @@ def configure_stage_parameters(
     return primary, []
 
 
+_ORIGINAL_LOAD_SPLIT = baseline.load_split
+
+
+def load_split(*args: Any, **kwargs: Any) -> tuple[Any, set[str]]:
+    """Avoid loading all-node teacher payloads in the factual-only fit loop."""
+
+    dataset, groups = _ORIGINAL_LOAD_SPLIT(*args, **kwargs)
+    split = str(args[1]) if len(args) > 1 else str(kwargs.get("split"))
+    if split == "train":
+        if not hasattr(dataset, "base"):
+            raise TypeError("counterfactual adapter lacks its causal base dataset")
+        return dataset.base, groups
+    return dataset, groups
+
+
 def _causal_inputs(
     host: Mapping[str, Any],
     *,
@@ -110,6 +125,44 @@ def _causal_inputs(
     }
 
 
+def _counterfactual_or_structural_dummy(
+    host: Mapping[str, Any],
+    *,
+    config: Any,
+) -> tuple[Mapping[str, Any], bool]:
+    targets = host.get("targets")
+    inputs = host.get("inputs")
+    if not isinstance(targets, Mapping) or not isinstance(inputs, Mapping):
+        raise TypeError("causal-state host batch lacks inputs/targets")
+    if "counterfactual" in targets:
+        return host, False
+    tree = inputs.get("tree")
+    if not isinstance(tree, Mapping):
+        raise TypeError("causal-state host batch lacks tree structure")
+    depth = tree["depth"].long()
+    node_mask = tree["mask"].bool()
+    batch, nodes = depth.shape
+    dummy = {
+        "depth": depth,
+        "node_mask": node_mask,
+        "valid": torch.zeros(batch, nodes, config.layers, dtype=torch.bool),
+        "query_coordinates": torch.zeros(
+            batch, nodes, config.layers, config.router_rank
+        ),
+        "selected_ids": torch.zeros(
+            batch, nodes, config.layers, config.exact_k, dtype=torch.long
+        ),
+        "selected_weights": torch.zeros(
+            batch, nodes, config.layers, config.exact_k
+        ),
+    }
+    amended_targets = dict(targets)
+    amended_targets["counterfactual"] = dummy
+    amended = dict(host)
+    amended["targets"] = amended_targets
+    return amended, True
+
+
 def route_forward(
     *,
     stage: str,
@@ -128,8 +181,11 @@ def route_forward(
     del teacher_probability
     if stage != STAGE or aligner is not None:
         raise ValueError("causal-state forward received another stage")
+    parent_host, structural_dummy = _counterfactual_or_structural_dummy(
+        host, config=parent.config
+    )
     semantic, targets, counterfactual, anchor_scores, _ = baseline._parent_forward(
-        host=host, parent=parent, anchor=anchor, trajectory=trajectory,
+        host=parent_host, parent=parent, anchor=anchor, trajectory=trajectory,
         runtime_static=runtime_static, token_embedding=token_embedding,
         input_basis=input_basis, rank_mask=rank_mask, device=device,
     )
@@ -187,6 +243,11 @@ def route_forward(
     node_queries = gather_node_horizon(
         semantic.node_queries, depth, node_mask
     ).float()
+    if structural_dummy:
+        # Training never evaluates counterfactual routes; preserve a valid
+        # structural shape without fabricating a teacher label.
+        counterfactual = dict(counterfactual)
+        counterfactual["label_only_payload_loaded"] = False
     output = baseline.BatchRouteOutput(
         queries=node_queries, scores=node_scores,
         selected_ids=stable_topk(node_scores, parent.config.exact_k),
@@ -258,4 +319,5 @@ if __name__ == "__main__":
     baseline.route_forward = route_forward
     baseline.objective = objective
     baseline.write_json_exclusive = write_json_exclusive
+    baseline.load_split = load_split
     baseline.main()
