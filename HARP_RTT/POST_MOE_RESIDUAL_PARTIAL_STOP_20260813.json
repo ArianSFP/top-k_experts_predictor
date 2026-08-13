@@ -1,0 +1,27 @@
+{
+  "schema": "harp_deltaroute_v4_partial_stop_v1",
+  "date": "2026-08-13",
+  "source_commit": "f800026",
+  "run": "post_moe_residual_seed42_f800026",
+  "completed_epochs": 1,
+  "training_stopped": true,
+  "tune": {
+    "query_plus_post_moe_route_recall_h2_h4": 0.18502729397732764,
+    "query_plus_post_moe_route_recall_h2": 0.1779159160796553,
+    "query_plus_post_moe_route_recall_h3": 0.1881635629106313,
+    "query_plus_post_moe_route_recall_h4": 0.18900240294169635,
+    "query_route_ablation_recall_h2_h4": 0.08476270370495816,
+    "paired_post_moe_gain": 0.10026459027236947,
+    "paired_ci95": [0.0853244363378811, 0.11479377511617106]
+  },
+  "matched_comparison": {
+    "query_plus_post_attention_epoch1_route_recall_h2_h4": 0.3707,
+    "query_plus_post_attention_epoch6_route_recall_h2_h4": 0.5830411973098913
+  },
+  "interpretation": "Post-MoE residual state is informative, but substantially less predictive of the next route than the post-attention router input once the exact current-query control path is preserved. It is not the high-leverage target for causal distillation.",
+  "next_experiment": "Train the parent-preserving direct layer-conditioned branch translator with all-node counterfactual semantic supervision and a budget-16 factual exact-mixture objective.",
+  "checkpoint_promoted": false,
+  "formal_validation_opened": false,
+  "calibration_opened": false,
+  "sealed_test_opened": false
+}
