@@ -88,6 +88,25 @@ def test_gate_constants_match_preregistered_recovery() -> None:
     }
 
 
+def test_r0_parent_residual_starts_exactly_at_static_parent() -> None:
+    generator = torch.Generator().manual_seed(19)
+    parent = torch.randn(2, 3, 4, 3, generator=generator)
+    target = torch.randn(2, 3, 4, 3, generator=generator)
+    identity_transition = target[..., :-1, :].clone()
+    reproduced = MODULE.parent_residual_teacher_queries(
+        parent, target, identity_transition
+    )
+    torch.testing.assert_close(reproduced, parent, rtol=0, atol=0)
+
+    changed = identity_transition.clone()
+    changed[..., 1, 0] += 0.25
+    corrected = MODULE.parent_residual_teacher_queries(parent, target, changed)
+    torch.testing.assert_close(corrected[..., 0, :], parent[..., 0, :])
+    torch.testing.assert_close(corrected[..., 2, 0], parent[..., 2, 0] + 0.25)
+    with pytest.raises(ValueError, match="invalid geometry"):
+        MODULE.parent_residual_teacher_queries(parent, target, changed[..., :-1, :])
+
+
 def test_driver_preserves_allnode_pretraining_and_budget16_deployment() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     assert '"allnode_transition_supervision": True' in source

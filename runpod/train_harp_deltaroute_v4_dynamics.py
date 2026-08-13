@@ -246,6 +246,27 @@ def _budget16_mask(counterfactual: Mapping[str, Tensor]) -> Tensor:
     return selection
 
 
+def parent_residual_teacher_queries(
+    parent_queries: Tensor,
+    target_queries: Tensor,
+    transition_queries: Tensor,
+) -> Tensor:
+    """Attach a one-step transition as a residual over the static parent."""
+
+    if parent_queries.shape != target_queries.shape:
+        raise ValueError("parent and target query trajectories differ")
+    if transition_queries.shape != target_queries[..., 1:, :].shape:
+        raise ValueError("one-step transition trajectory has invalid geometry")
+    correction = (
+        transition_queries.float() - target_queries[..., :-1, :].float()
+    )
+    return torch.cat(
+        (parent_queries[..., :1, :].float(),
+         parent_queries[..., 1:, :].float() + correction),
+        dim=-2,
+    )
+
+
 def _parent_forward(
     *,
     host: Mapping[str, Any],
@@ -328,11 +349,16 @@ def route_forward(
                 context_states=semantic.context_states, **raw
             )
             node_context = gather_node_horizon(context, depth, node_mask)
+            parent_queries = gather_node_horizon(
+                semantic.node_queries, depth, node_mask
+            )
             if stage == "transition_r0":
-                next_queries = trajectory.dynamics.teacher_forced(
+                transition_queries = trajectory.dynamics.teacher_forced(
                     target_queries, target_ids, target_weights, node_context
                 )
-                queries = torch.cat((target_queries[..., :1, :], next_queries), dim=-2)
+                queries = parent_residual_teacher_queries(
+                    parent_queries, target_queries, transition_queries
+                )
                 affine = torch.cat((
                     target_queries[..., :1, :],
                     trajectory.dynamics.affine_control(target_queries),
