@@ -143,17 +143,24 @@ def objective(
         enabled=device.type == "cuda",
     ):
         output = model(**inputs)
-    valid = torch.ones(labels.shape[:-1], dtype=torch.bool, device=device)
-    exact = exact_set_nll(output.scores, labels, valid=valid, k=model.config.exact_k)
+    horizon_weights = torch.tensor(
+        [1.0, 1.0, 1.25, 1.5], device=device, dtype=torch.float32
+    )[None, :, None].expand(labels.shape[:-1])
+    exact = exact_set_nll(
+        output.scores, labels, valid=horizon_weights, k=model.config.exact_k
+    )
     predicted = output.scores.float()
     predicted = predicted - predicted.mean(-1, keepdim=True)
-    dense = F.huber_loss(
+    dense_endpoint = F.huber_loss(
         predicted, target_logits, reduction="none", delta=1.0
-    ).mean(-1).mean()
-    boundary = boundary_loss_per_endpoint(
+    ).mean(-1)
+    boundary_endpoint = boundary_loss_per_endpoint(
         output.scores, target_logits, labels,
         model_rank_start=6, teacher_rank_start=9, rank_end=32,
-    ).mean()
+    )
+    denominator = horizon_weights.sum().clamp_min(1.0)
+    dense = (dense_endpoint * horizon_weights).sum() / denominator
+    boundary = (boundary_endpoint * horizon_weights).sum() / denominator
     total = exact + dense + 0.2 * boundary
     return total, {
         "exact_set": float(exact.detach()),
