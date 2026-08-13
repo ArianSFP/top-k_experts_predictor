@@ -897,7 +897,22 @@ def main() -> None:
             epoch_zero_output.counterfactual["depth"],
             epoch_zero_output.counterfactual["node_mask"],
         )
+        parent_queries = gather_node_horizon(
+            epoch_zero_output.semantic.node_queries,
+            epoch_zero_output.counterfactual["depth"],
+            epoch_zero_output.counterfactual["node_mask"],
+        )
         epoch_zero = {
+            "r0_parent_queries_exact": (
+                None if args.stage != "transition_r0" else bool(torch.equal(
+                    epoch_zero_output.queries, parent_queries.float()
+                ))
+            ),
+            "r0_parent_scores_exact": (
+                None if args.stage != "transition_r0" else bool(torch.equal(
+                    epoch_zero_output.scores, parent_scores.float()
+                ))
+            ),
             "r2_parent_queries_exact": (
                 None if args.stage != "rollout_r2" else bool(torch.equal(
                     epoch_zero_output.queries,
@@ -931,6 +946,10 @@ def main() -> None:
             epoch_zero["joint_aligner_reproduces_r2_c64"] = bool(torch.equal(
                 epoch_zero_output.aligned.candidate_ids, baseline_candidates
             ))
+    if args.stage == "transition_r0" and not (
+        epoch_zero["r0_parent_queries_exact"] and epoch_zero["r0_parent_scores_exact"]
+    ):
+        raise RuntimeError("DeltaRoute R0 epoch-zero parent reproduction failed")
     if args.stage == "rollout_r2" and not (
         epoch_zero["r2_parent_queries_exact"] and epoch_zero["r2_parent_scores_exact"]
     ):

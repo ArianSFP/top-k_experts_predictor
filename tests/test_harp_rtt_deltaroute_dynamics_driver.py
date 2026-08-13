@@ -115,6 +115,8 @@ def test_driver_preserves_allnode_pretraining_and_budget16_deployment() -> None:
     assert '"OPTIMIZER_START.json"' in source
     assert '"ranker_authorized"' in source
     assert "All 32 causal runtime nodes participate" in source
+    assert "r0_parent_queries_exact" in source
+    assert "r0_parent_scores_exact" in source
 
 
 def test_joint_objective_scatter_maps_node_scores_to_matching_horizon() -> None:
