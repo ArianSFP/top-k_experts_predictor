@@ -7,6 +7,7 @@ import torch
 from harp_rtt.path_route_tree import reconstruct_tree_token_prefixes
 from runpod.evaluate_harp_path_surrogate_on_tree import (
     assert_development_companion_privacy,
+    blend_branch_marginals,
     deployed_grid,
     predict_nodes,
 )
@@ -90,3 +91,33 @@ def test_explicit_opened_split_is_rejected() -> None:
             pass
         else:
             raise AssertionError(f"explicit {field}=true must fail closed")
+
+
+def test_branch_marginal_blend_preserves_exact_cardinality() -> None:
+    left = torch.tensor([[[[1.25, 0.75, 0.0]]]])
+    right = torch.tensor([[[[0.0, 0.5, 1.5]]]])
+    result = blend_branch_marginals(
+        left, right, adapted_weight=0.25, exact_k=2
+    )
+    assert result.shape == left.shape
+    assert torch.allclose(result.sum(-1), torch.full((1, 1, 1), 2.0))
+    assert torch.equal(
+        blend_branch_marginals(left, right, adapted_weight=1.0, exact_k=2),
+        left,
+    )
+
+
+def test_branch_marginal_blend_rejects_invalid_contract() -> None:
+    values = torch.ones(1, 1, 1, 3)
+    try:
+        blend_branch_marginals(values, values[..., :2], adapted_weight=0.5, exact_k=2)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("different branch shapes must fail closed")
+    try:
+        blend_branch_marginals(values, values, adapted_weight=1.1, exact_k=2)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("invalid blend weight must fail closed")

@@ -58,6 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--partition-manifest", type=Path, required=True)
     parser.add_argument("--parent-checkpoint", type=Path, required=True)
     parser.add_argument("--surrogate-checkpoint", type=Path, required=True)
+    parser.add_argument("--surrogate-ensemble-checkpoint", type=Path)
     parser.add_argument("--surrogate-cache", type=Path, required=True)
     parser.add_argument("--diagnostic-request-manifest", type=Path, required=True)
     parser.add_argument("--static-dir", type=Path, required=True)
@@ -217,7 +218,7 @@ def deployed_grid(node_scores: Tensor, semantic: Any, depth: Tensor, mask: Tenso
     return grid
 
 
-def candidate_ids(
+def branch_marginals(
     *,
     node_scores: Tensor,
     semantic: Any,
@@ -233,11 +234,51 @@ def candidate_ids(
         marginals, semantic.factual_path_posterior.float(), branch_mask,
         anchor_marginals, k=parent.config.exact_k,
     )
-    branch = cardinality_project_marginals(branch, parent.config.exact_k)[0]
+    return cardinality_project_marginals(branch, parent.config.exact_k)[0]
+
+
+def candidate_ids_from_marginals(
+    anchor_scores: Tensor, branch: Tensor, parent: Any
+) -> Tensor:
     return quota_candidate_union(
         anchor_scores, branch, anchor_quota=32,
         width=parent.config.candidate_width,
     ).expert_ids
+
+
+def candidate_ids(
+    *,
+    node_scores: Tensor,
+    semantic: Any,
+    anchor_scores: Tensor,
+    parent: Any,
+    branch_mask: Tensor,
+) -> Tensor:
+    branch = branch_marginals(
+        node_scores=node_scores, semantic=semantic, anchor_scores=anchor_scores,
+        parent=parent, branch_mask=branch_mask,
+    )
+    return candidate_ids_from_marginals(anchor_scores, branch, parent)
+
+
+def blend_branch_marginals(
+    adapted: Tensor,
+    reference: Tensor,
+    *,
+    adapted_weight: float,
+    exact_k: int,
+) -> Tensor:
+    """Convexly combine two exact-cardinality branch evidence tensors."""
+
+    if adapted.shape != reference.shape:
+        raise ValueError("branch evidence tensors differ in shape")
+    if not 0.0 <= adapted_weight <= 1.0:
+        raise ValueError("adapted branch weight must lie in [0,1]")
+    combined = (
+        float(adapted_weight) * adapted.float()
+        + (1.0 - float(adapted_weight)) * reference.float()
+    )
+    return cardinality_project_marginals(combined, exact_k)[0]
 
 
 def summarize(
@@ -335,6 +376,32 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     ).to(device)
     surrogate.load_state_dict(checkpoint["model_state_dict"], strict=True)
     surrogate.requires_grad_(False).eval()
+    ensemble_surrogate = None
+    ensemble_checkpoint = None
+    if args.surrogate_ensemble_checkpoint is not None:
+        ensemble_checkpoint = torch.load(
+            args.surrogate_ensemble_checkpoint, map_location="cpu", weights_only=True
+        )
+        if (
+            ensemble_checkpoint.get("schema") != "harp_path_surrogate_training_v1"
+            or ensemble_checkpoint.get("stage") != "path_surrogate_pretrain"
+            or ensemble_checkpoint.get("config") != checkpoint.get("config")
+        ):
+            raise ValueError("surrogate ensemble checkpoint is incompatible")
+        ensemble_sha = sha256_file(args.surrogate_ensemble_checkpoint)
+        if (
+            checkpoint_kind[0] == "harp_branch_surrogate_training_v1"
+            and ensemble_sha != checkpoint.get("initializer_sha256")
+        ):
+            raise ValueError("surrogate ensemble is not the branch initializer")
+        ensemble_surrogate = TokenConditionedRouteSurrogate(
+            config, static.geometry.expert_keys, static.geometry.centered_bias,
+            static.geometry.rank_mask,
+        ).to(device)
+        ensemble_surrogate.load_state_dict(
+            ensemble_checkpoint["model_state_dict"], strict=True
+        )
+        ensemble_surrogate.requires_grad_(False).eval()
     if static.token_embedding is None:
         raise RuntimeError("tree evaluation requires frozen token embeddings")
     token_embedding = static.token_embedding.to(device)
@@ -358,6 +425,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "counterfactual_branch_adapted": (
             checkpoint_kind[0] == "harp_branch_surrogate_training_v1"
         ),
+        "surrogate_ensemble_checkpoint_sha256": (
+            sha256_file(args.surrogate_ensemble_checkpoint)
+            if args.surrogate_ensemble_checkpoint is not None else None
+        ),
+        "ensemble_adapted_weights": [0.25, 0.5, 0.75],
         "pretraining_development_request_disjoint": True,
         "source_lineage_development_requests": len(source_development),
         "diagnostic_request_manifest_sha256": sha256_file(args.diagnostic_request_manifest),
@@ -374,9 +446,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "sealed_test_opened": False,
     }
     write_json_exclusive(args.output / "run_manifest.json", manifest)
+    candidate_names = ["budget16", "allnode", "parent"]
+    route_names = ["budget16", "allnode", "parent"]
+    if ensemble_surrogate is not None:
+        candidate_names.extend([
+            "initializer_budget16",
+            "blend_initializer_a25", "blend_initializer_a50",
+            "blend_initializer_a75", "blend_parent_a25",
+            "blend_parent_a50", "blend_parent_a75",
+        ])
+        route_names.append("initializer_budget16")
     metric_cells: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
     route_cells: dict[tuple[str, int], dict[str, list[Tensor]]] = defaultdict(
-        lambda: {"budget16": [], "allnode": [], "parent": []}
+        lambda: defaultdict(list)
     )
     for host in loader(
         dataset, batch=args.microbatch_size, shuffle=False, seed=0,
@@ -413,6 +495,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         grid = deployed_grid(
             node_at_depth, semantic, tree["depth"], tree["mask"]
         )
+        initializer_node_at_depth = None
+        initializer_grid = None
+        if ensemble_surrogate is not None:
+            _, initializer_node_at_depth = predict_nodes(
+                ensemble_surrogate, token_embedding=token_embedding,
+                state_coordinates=state, current_queries=current_q,
+                history_ids=history_ids, history_weights=history_weights,
+                tree=tree, node_microbatch=args.node_microbatch_size,
+            )
+            initializer_grid = deployed_grid(
+                initializer_node_at_depth, semantic, tree["depth"], tree["mask"]
+            )
         counterfactual = batch["targets"]["counterfactual"]
         label_valid = (
             counterfactual["valid"].bool()
@@ -434,10 +528,39 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         parent_marginals = parent.core.semantic_marginals(
             semantic, anchor_scores
         )[3]
-        candidates["parent"] = quota_candidate_union(
-            anchor_scores, parent_marginals, anchor_quota=32,
-            width=parent.config.candidate_width,
-        ).expert_ids
+        candidates["parent"] = candidate_ids_from_marginals(
+            anchor_scores, parent_marginals, parent
+        )
+        if initializer_grid is not None:
+            adapted_branch = branch_marginals(
+                node_scores=grid, semantic=semantic, anchor_scores=anchor_scores,
+                parent=parent, branch_mask=conditions["budget16"],
+            )
+            initializer_branch = branch_marginals(
+                node_scores=initializer_grid, semantic=semantic,
+                anchor_scores=anchor_scores, parent=parent,
+                branch_mask=conditions["budget16"],
+            )
+            candidates["initializer_budget16"] = candidate_ids_from_marginals(
+                anchor_scores, initializer_branch, parent
+            )
+            for suffix, weight in (("a25", 0.25), ("a50", 0.5), ("a75", 0.75)):
+                candidates[f"blend_initializer_{suffix}"] = candidate_ids_from_marginals(
+                    anchor_scores,
+                    blend_branch_marginals(
+                        adapted_branch, initializer_branch,
+                        adapted_weight=weight, exact_k=parent.config.exact_k,
+                    ),
+                    parent,
+                )
+                candidates[f"blend_parent_{suffix}"] = candidate_ids_from_marginals(
+                    anchor_scores,
+                    blend_branch_marginals(
+                        adapted_branch, parent_marginals,
+                        adapted_weight=weight, exact_k=parent.config.exact_k,
+                    ),
+                    parent,
+                )
         target = batch["targets"]["future_selected_ids"].long()
         coverage = {
             name: (target[..., None] == value[..., None, :]).any(-1).float().mean(-1)
@@ -458,6 +581,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         route = (
             native[..., None] == predicted_ids[..., None, :]
         ).any(-1).float().mean(-1)
+        initializer_route = None
+        if initializer_node_at_depth is not None:
+            initializer_ids = stable_topk(
+                initializer_node_at_depth, config.exact_k
+            )
+            initializer_route = (
+                native[..., None] == initializer_ids[..., None, :]
+            ).any(-1).float().mean(-1)
         parent_route = (
             native[..., None] == parent_ids[..., None, :]
         ).any(-1).float().mean(-1)
@@ -485,6 +616,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 route_cells[(request, horizon)]["parent"].append(
                     parent_route[row, depth_nodes].reshape(-1).cpu()
                 )
+                if initializer_route is not None:
+                    chosen = depth_nodes & conditions["budget16"][row, horizon - 1]
+                    route_cells[(request, horizon)]["initializer_budget16"].append(
+                        initializer_route[row, chosen].reshape(-1).cpu()
+                    )
 
     rows: list[dict[str, Any]] = []
     for key in sorted(metric_cells):
@@ -494,7 +630,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "request_id": request, "horizon": horizon,
             "prefix_mismatch": any(value["prefix_mismatch"] for value in values),
         }
-        for condition in ("budget16", "allnode", "parent"):
+        for condition in candidate_names:
             row[f"c64_{condition}"] = sum(
                 float(value[f"c64_{condition}"]) for value in values
             ) / len(values)
@@ -506,6 +642,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 sum(mismatch_values) / len(mismatch_values)
                 if mismatch_values else None
             )
+        for condition in route_names:
             tensors = route_cells[key][condition]
             row[f"route_recall_{condition}"] = float(torch.cat(tensors).mean())
         rows.append(row)
@@ -513,10 +650,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "schema": SCHEMA,
         "parent_checkpoint_development": parent_record.get("development"),
     }
-    for name in ("budget16", "allnode", "parent"):
+    for name in candidate_names:
         metrics.update(summarize(
             rows, prefix=f"c64_{name}", include_mismatch=True
         ))
+    for name in route_names:
         metrics.update(summarize(
             rows, prefix=f"route_recall_{name}", include_mismatch=False
         ))
