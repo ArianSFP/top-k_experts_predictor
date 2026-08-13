@@ -181,15 +181,17 @@ def main() -> None:
                 tree["depth"].to(device), tree["mask"].to(device), horizons=4,
             )
             counterfactual = targets["counterfactual"]
-            node_mask = counterfactual["node_mask"].bool()
+            structural_mask = counterfactual["node_mask"].bool()
             valid = counterfactual["valid"].bool()
-            if bool((node_mask[..., None] != valid).any()):
+            node_mask = valid.any(-1)
+            if bool((valid != node_mask[..., None]).any()):
                 raise ValueError("counterfactual layer validity is not node-constant")
-            if bool((node_mask & (counterfactual["depth"] < 2)).any()):
-                raise ValueError("counterfactual cache unexpectedly exposes H1 labels")
-            budget16 = counterfactual["budget_node_masks"][:, 2].bool()
+            expected = structural_mask & (counterfactual["depth"] >= 2)
+            if not torch.equal(node_mask, expected):
+                raise ValueError("counterfactual label mask is not exactly H2-H4")
+            budget16 = counterfactual["budget_node_masks"][:, 2].bool() & node_mask
             if bool((budget16 & ~node_mask).any()):
-                raise ValueError("budget-16 selects an unavailable node")
+                raise ValueError("budget-16 selects an unavailable label node")
             if bool((prefix_mask.sum(-1) != tree["depth"].to(device)).any()):
                 raise ValueError("tree prefix reconstruction disagrees with depth")
 
