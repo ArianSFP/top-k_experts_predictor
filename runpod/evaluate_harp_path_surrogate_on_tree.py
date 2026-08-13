@@ -286,7 +286,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     checkpoint = torch.load(
         args.surrogate_checkpoint, map_location="cpu", weights_only=True
     )
-    if checkpoint.get("schema") != "harp_path_surrogate_training_v1" or checkpoint.get("stage") != "path_surrogate_pretrain":
+    checkpoint_kind = (checkpoint.get("schema"), checkpoint.get("stage"))
+    if checkpoint_kind not in {
+        ("harp_path_surrogate_training_v1", "path_surrogate_pretrain"),
+        ("harp_branch_surrogate_training_v1", "counterfactual_branch_adaptation"),
+    }:
         raise ValueError("path surrogate checkpoint is incompatible")
     cache_manifest_path = args.surrogate_cache / "manifest.json"
     cache_audit_path = args.surrogate_cache / "CACHE_AUDIT.json"
@@ -296,9 +300,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     ):
         raise ValueError("surrogate cache differs from checkpoint lineage")
     cache_manifest = json.loads(cache_manifest_path.read_text())
-    cache_requests = set(cache_manifest["train_requests"]) | set(
-        cache_manifest["tune_requests"]
-    )
+    if cache_manifest.get("schema") == "harp_path_surrogate_cache_v1":
+        cache_requests = set(cache_manifest["train_requests"]) | set(
+            cache_manifest["tune_requests"]
+        )
+        excluded_development = set(
+            cache_manifest.get("excluded_development_requests", [])
+        )
+    elif cache_manifest.get("schema") == "harp_branch_surrogate_cache_v1":
+        cache_requests = set(cache_manifest["fitting_source_requests"])
+        excluded_development = set(
+            cache_manifest.get("excluded_development_source_requests", [])
+        )
+    else:
+        raise ValueError("surrogate cache manifest schema is incompatible")
     source_development = {
         str(json.loads(line)["request_id"])
         for line in args.diagnostic_request_manifest.read_text().splitlines()
@@ -306,7 +321,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     }
     if (
         cache_manifest.get("source_lineage_enforced") is not True
-        or source_development != set(cache_manifest.get("excluded_development_requests", []))
+        or source_development != excluded_development
         or sha256_file(args.diagnostic_request_manifest)
         != cache_manifest.get("diagnostic_request_manifest_sha256")
     ):
@@ -340,6 +355,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "surrogate_checkpoint_sha256": sha256_file(args.surrogate_checkpoint),
         "surrogate_cache_audit_sha256": checkpoint.get("cache_audit_sha256"),
         "surrogate_pretraining_requests": len(cache_requests),
+        "counterfactual_branch_adapted": (
+            checkpoint_kind[0] == "harp_branch_surrogate_training_v1"
+        ),
         "pretraining_development_request_disjoint": True,
         "source_lineage_development_requests": len(source_development),
         "diagnostic_request_manifest_sha256": sha256_file(args.diagnostic_request_manifest),
