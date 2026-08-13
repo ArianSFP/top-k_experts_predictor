@@ -227,11 +227,14 @@ def summarize(
 ) -> dict[str, float | None]:
     result: dict[str, float | None] = {}
     horizons = {}
-    for horizon in (2, 3, 4):
+    for horizon in (1, 2, 3, 4):
         values = [float(row[prefix]) for row in rows if row["horizon"] == horizon]
         horizons[horizon] = sum(values) / len(values)
         result[f"{prefix}_h{horizon}"] = horizons[horizon]
-    result[f"{prefix}_h2_h4"] = sum(horizons.values()) / 3
+    result[f"{prefix}_h2_h4"] = sum(
+        horizons[horizon] for horizon in (2, 3, 4)
+    ) / 3
+    result[f"{prefix}_h1_h4"] = sum(horizons.values()) / 4
     if include_mismatch:
         field = f"{prefix}_mismatch"
         mismatch = [
@@ -410,7 +413,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ).any(-1).float().mean(-1)
         request_values = [str(value) for value in host["metadata"]["request_id"]]
         for row, request in enumerate(request_values):
-            for horizon in (2, 3, 4):
+            for horizon in (1, 2, 3, 4):
                 record = {
                     "request_id": request,
                     "horizon": horizon,
@@ -468,7 +471,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             rows, prefix=f"route_recall_{name}", include_mismatch=False
         ))
     metrics["candidate_gate"] = {
-        "required_h2_h4": 0.98, "required_h4": 0.97,
+        "required_h1": 0.98, "required_h2_h4": 0.98, "required_h4": 0.97,
         "required_h4_mismatch": 0.93,
         "budget16_passed": bool(
             metrics["c64_budget16_h2_h4"] >= 0.98
@@ -476,6 +479,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             and metrics["c64_budget16_h4_mismatch"] is not None
             and metrics["c64_budget16_h4_mismatch"] >= 0.93
         ),
+        "h1_passed": bool(metrics["c64_budget16_h1"] >= 0.98),
         "allnode_passed": bool(
             metrics["c64_allnode_h2_h4"] >= 0.98
             and metrics["c64_allnode_h4"] >= 0.97
