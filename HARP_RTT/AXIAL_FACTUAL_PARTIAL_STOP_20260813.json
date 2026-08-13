@@ -1,0 +1,24 @@
+{
+  "schema": "harp_deltaroute_v4_partial_stop_v1",
+  "stage": "axial_route_factual",
+  "source_commit": "ec5fa37",
+  "seed": 42,
+  "training_started": true,
+  "completed_epochs": 2,
+  "stopped_at_epoch_boundary": true,
+  "checkpoint_promoted": false,
+  "reason": "Increasing factual exact-set likelihood did not improve the deployed discrete candidate set relative to route-first training.",
+  "epoch_2": {
+    "counterfactual_route_recall": 0.54636161091427,
+    "factual_candidate_c64_h2_h4": 0.9118896468232075,
+    "route_first_axial_epoch_2_c64_h2_h4": 0.9122782399257024,
+    "selected_parent_c64_h2_h4": 0.914467,
+    "factual_candidate_c64_h4": 0.8915283158421516,
+    "factual_candidate_c64_h4_mismatch": 0.8488628510385752
+  },
+  "conclusion": "The remaining objective mismatch is specifically the top-64 inclusion boundary, not simply insufficient factual-set loss weight.",
+  "next_experiment": "candidate-native missing-true entry loss at the deployed anchor-32 plus branch-32 boundary",
+  "formal_validation_opened": false,
+  "calibration_opened": false,
+  "sealed_test_opened": false
+}
