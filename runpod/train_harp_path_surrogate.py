@@ -220,6 +220,16 @@ def main() -> None:
     for flag in ("formal_validation_opened", "calibration_opened", "sealed_test_opened"):
         if manifest.get(flag) is not False:
             raise PermissionError(f"path cache violates {flag}")
+    audit_path = args.cache / "CACHE_AUDIT.json"
+    if not audit_path.is_file():
+        raise FileNotFoundError("path surrogate cache has not passed its audit")
+    audit = json.loads(audit_path.read_text())
+    if (
+        audit.get("schema") != "harp_path_surrogate_cache_audit_v1"
+        or audit.get("complete") is not True
+        or audit.get("manifest_sha256") != sha256_file(args.cache / "manifest.json")
+    ):
+        raise ValueError("path surrogate cache audit is incompatible")
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA path training requested but unavailable")
@@ -243,6 +253,7 @@ def main() -> None:
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "source_commit": args.source_commit, "seed": args.seed,
         "cache_manifest_sha256": sha256_file(args.cache / "manifest.json"),
+        "cache_audit_sha256": sha256_file(audit_path),
         "cache_rows": int(manifest["rows"]),
         "train_rows": len(train), "tune_rows": len(tune),
         "config": config.to_dict(),
@@ -330,6 +341,7 @@ def main() -> None:
         "source_commit": args.source_commit, "seed": args.seed,
         "epoch": best_epoch, "config": config.to_dict(),
         "cache_manifest_sha256": sha256_file(args.cache / "manifest.json"),
+        "cache_audit_sha256": sha256_file(audit_path),
         "model_state_dict": best_state, "tune": best_metrics,
         "formal_validation_opened": False,
         "calibration_opened": False, "sealed_test_opened": False,
