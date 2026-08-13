@@ -24,8 +24,9 @@ from torch.utils.data import DataLoader, Dataset
 
 from harp_rtt.exact_k import stable_topk  # noqa: E402
 from harp_rtt.losses import boundary_loss_per_endpoint, exact_set_nll  # noqa: E402
-from harp_rtt.path_route_surrogate import (  # noqa: E402
-    PathRouteSurrogateConfig, TokenConditionedRouteSurrogate,
+from harp_rtt.path_route_surrogate import PathRouteSurrogateConfig  # noqa: E402
+from harp_rtt.path_route_trajectory import (  # noqa: E402
+    LayerwiseTokenRouteSurrogate as TokenConditionedRouteSurrogate,
 )
 from harp_rtt.static_artifacts import load_static_target_artifacts  # noqa: E402
 from harp_rtt.training import seed_everything, sha256_file  # noqa: E402

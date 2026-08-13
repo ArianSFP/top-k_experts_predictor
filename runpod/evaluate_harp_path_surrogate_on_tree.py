@@ -30,8 +30,9 @@ from harp_rtt.factual_branch_attention import (  # noqa: E402
 from harp_rtt.node_counterfactual import (  # noqa: E402
     NodeCounterfactualDatasetAdapter, load_node_counterfactual_companion,
 )
-from harp_rtt.path_route_surrogate import (  # noqa: E402
-    PathRouteSurrogateConfig, TokenConditionedRouteSurrogate,
+from harp_rtt.path_route_surrogate import PathRouteSurrogateConfig  # noqa: E402
+from harp_rtt.path_route_trajectory import (  # noqa: E402
+    LayerwiseTokenRouteSurrogate as TokenConditionedRouteSurrogate,
 )
 from harp_rtt.path_route_tree import reconstruct_tree_token_prefixes  # noqa: E402
 from harp_rtt.route_dynamics import gather_node_horizon  # noqa: E402
