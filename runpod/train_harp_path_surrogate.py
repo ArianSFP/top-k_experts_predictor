@@ -182,6 +182,8 @@ def evaluate(
     workers: int,
 ) -> dict[str, Any]:
     model.eval(); hits = torch.zeros(4); slots = torch.zeros(4)
+    layer_hits = torch.zeros(4, model.config.layers)
+    layer_slots = torch.zeros(4, model.config.layers)
     loss_total = rows = 0.0
     loader = DataLoader(
         dataset, batch_size=batch_size, shuffle=False, num_workers=workers,
@@ -205,12 +207,16 @@ def evaluate(
         slots += torch.tensor(
             [labels.shape[0] * labels.shape[2] * labels.shape[3]] * 4
         )
+        layer_hits += overlap.sum((0, 3)).cpu()
+        layer_slots += labels.shape[0] * labels.shape[3]
         loss_total += float(loss) * labels.shape[0]; rows += labels.shape[0]
     horizon = (hits / slots).tolist()
+    by_layer = (layer_hits / layer_slots.clamp_min(1)).tolist()
     return {
         "loss": loss_total / rows,
         "route_recall_h1_h4": sum(horizon) / 4,
         "route_recall_h2_h4": sum(horizon[1:]) / 3,
+        "route_recall_by_horizon_layer": by_layer,
         **{f"route_recall_h{index + 1}": value
            for index, value in enumerate(horizon)},
     }
