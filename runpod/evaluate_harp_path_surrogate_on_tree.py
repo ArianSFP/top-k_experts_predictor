@@ -58,6 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--partition-manifest", type=Path, required=True)
     parser.add_argument("--parent-checkpoint", type=Path, required=True)
     parser.add_argument("--surrogate-checkpoint", type=Path, required=True)
+    parser.add_argument("--surrogate-cache", type=Path, required=True)
     parser.add_argument("--static-dir", type=Path, required=True)
     parser.add_argument("--anchor-checkpoint", type=Path, required=True)
     parser.add_argument("--anchor-sha256", required=True)
@@ -266,6 +267,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     if checkpoint.get("schema") != "harp_path_surrogate_training_v1" or checkpoint.get("stage") != "path_surrogate_pretrain":
         raise ValueError("path surrogate checkpoint is incompatible")
+    cache_manifest_path = args.surrogate_cache / "manifest.json"
+    cache_audit_path = args.surrogate_cache / "CACHE_AUDIT.json"
+    if (
+        sha256_file(cache_manifest_path) != checkpoint.get("cache_manifest_sha256")
+        or sha256_file(cache_audit_path) != checkpoint.get("cache_audit_sha256")
+    ):
+        raise ValueError("surrogate cache differs from checkpoint lineage")
+    cache_manifest = json.loads(cache_manifest_path.read_text())
+    cache_requests = set(cache_manifest["train_requests"]) | set(
+        cache_manifest["tune_requests"]
+    )
+    if requests & cache_requests:
+        raise PermissionError("surrogate pretraining and tree-development requests overlap")
     config = PathRouteSurrogateConfig(**checkpoint["config"])
     surrogate = TokenConditionedRouteSurrogate(
         config, static.geometry.expert_keys, static.geometry.centered_bias,
@@ -292,6 +306,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "source_commit": args.source_commit,
         "surrogate_checkpoint_sha256": sha256_file(args.surrogate_checkpoint),
         "surrogate_cache_audit_sha256": checkpoint.get("cache_audit_sha256"),
+        "surrogate_pretraining_requests": len(cache_requests),
+        "pretraining_development_request_disjoint": True,
         "parent_checkpoint_sha256": sha256_file(args.parent_checkpoint),
         "partition_manifest_sha256": partition_sha,
         "development_companion_manifest_sha256": companion_sha,
