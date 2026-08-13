@@ -1,0 +1,30 @@
+{
+  "schema": "harp_deltaroute_v4_partial_stop_v1",
+  "date": "2026-08-13",
+  "source_commit": "ab0b827",
+  "run": "direct_route_seed42_ab0b827",
+  "completed_epochs": 2,
+  "training_stopped": true,
+  "best_completed_epoch": 2,
+  "best_tune": {
+    "counterfactual_route_recall_h2_h4": 0.5468850232039889,
+    "parent_counterfactual_route_recall_h2_h4": 0.5440496153508624,
+    "paired_route_gain": 0.002835407853126526,
+    "paired_ci95": [0.0023854784512271484, 0.003285030974075198],
+    "factual_candidate_c64_h2_h4": 0.9109375017384688,
+    "factual_candidate_c64_h2": 0.928045654669404,
+    "factual_candidate_c64_h3": 0.9145019538700581,
+    "factual_candidate_c64_h4": 0.8902648966759443,
+    "factual_candidate_c64_h4_mismatch": 0.8469325881451368
+  },
+  "epoch_1": {
+    "counterfactual_route_recall_h2_h4": 0.5456510769824187,
+    "factual_candidate_c64_h2_h4": 0.9107035311559836
+  },
+  "interpretation": "Direct factual-mixture training is stable and statistically positive, but the gain is far too small. Shared 2048-to-256 channel projections remain an early information bottleneck even though attention is target-layer conditioned.",
+  "next_experiment": "Use a distinct rank-32 projection for each raw channel and target layer before channel attention, retaining the same zero-residual parent and factual-mixture contract.",
+  "checkpoint_promoted": false,
+  "formal_validation_opened": false,
+  "calibration_opened": false,
+  "sealed_test_opened": false
+}
