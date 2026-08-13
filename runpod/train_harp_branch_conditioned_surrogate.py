@@ -352,9 +352,18 @@ def main() -> None:
         model, tune, token_embedding=token_embedding, device=device,
         batch_size=args.source_batch_size, workers=args.num_workers,
     )
+    if args.architecture == "trajectory":
+        zero_initialized = torch.equal(
+            model.branch_gate.detach(), torch.zeros_like(model.branch_gate)
+        )
+    else:
+        zero_initialized = bool(
+            torch.count_nonzero(model.query_up_direct.detach()) == 0
+            and torch.count_nonzero(model.score_up_direct.detach()) == 0
+        )
     write_json(args.output / "EPOCH_ZERO_AUDIT.json", {
         "tune": epoch_zero, "branch_gate_exact_zero": bool(
-            torch.equal(model.branch_gate.detach(), torch.zeros_like(model.branch_gate))
+            zero_initialized
         ), "training_started": False, "optimizer_constructed": False,
     })
     if args.preflight_only:
