@@ -356,7 +356,8 @@ def main() -> None:
     if best_state is None or best_metrics is None:
         raise RuntimeError("path surrogate produced no checkpoint")
     checkpoint = args.output / "best_path_surrogate.pt"
-    torch.save({
+    with checkpoint.open("xb") as handle:
+        torch.save({
         "schema": SCHEMA, "stage": "path_surrogate_pretrain",
         "source_commit": args.source_commit, "seed": args.seed,
         "epoch": best_epoch, "config": config.to_dict(),
@@ -367,13 +368,19 @@ def main() -> None:
         "model_state_dict": best_state, "tune": best_metrics,
         "formal_validation_opened": False,
         "calibration_opened": False, "sealed_test_opened": False,
-    }, checkpoint)
+        }, handle)
+        handle.flush(); os.fsync(handle.fileno())
     write_json(args.output / "STAGE_RESULT.json", {
         "schema": RESULT_SCHEMA, "best_epoch": best_epoch,
         "best_tune": best_metrics, "checkpoint_sha256": sha256_file(checkpoint),
         "training_started": True, "formal_validation_opened": False,
         "calibration_opened": False, "sealed_test_opened": False,
     })
+    with (args.output / "SHA256SUMS").open("x", encoding="utf-8") as handle:
+        for path in sorted(args.output.iterdir()):
+            if path.is_file() and path.name != "SHA256SUMS":
+                handle.write(f"{sha256_file(path)}  {path.name}\n")
+        handle.flush(); os.fsync(handle.fileno())
 
 
 if __name__ == "__main__":
