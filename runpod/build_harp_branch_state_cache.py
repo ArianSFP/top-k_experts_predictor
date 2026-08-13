@@ -122,7 +122,7 @@ def main() -> None:
                 raise ValueError("branch-state/base-cache request order differs")
             if not np.array_equal(observed_position, base_position[target_slice]):
                 raise ValueError("branch-state/base-cache source positions differ")
-            mask = tree["mask"].bool()
+            mask = tree["mask"].bool() & (tree["depth"] >= 2)
             if not np.array_equal(mask.numpy().astype(np.uint8), base_node_mask[target_slice]):
                 raise ValueError("branch-state/base-cache node masks differ")
             vocab_ids = tree["vocab_top64_ids"].to(device, non_blocking=True).long()
