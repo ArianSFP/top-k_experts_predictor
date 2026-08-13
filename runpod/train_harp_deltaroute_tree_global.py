@@ -100,7 +100,14 @@ def route_forward(
     parent_scores = torch.logit(parent_marginals.clamp(epsilon, 1.0 - epsilon))
     parent_scores = parent_scores - parent_scores.mean(-1, keepdim=True)
     scores = parent_scores + factual.score_delta.float()
-    marginals = _trainable_exact_marginals(scores, parent.config.exact_k)
+    proposed_marginals = _trainable_exact_marginals(
+        scores, parent.config.exact_k
+    )
+    with torch.no_grad():
+        zero_marginals = _trainable_exact_marginals(
+            parent_scores, parent.config.exact_k
+        )
+    marginals = parent_marginals + proposed_marginals - zero_marginals
     marginals = cardinality_project_marginals(
         marginals, parent.config.exact_k
     )[0]
@@ -148,7 +155,9 @@ def route_forward(
             )),
         }
         if not all(_ZERO_AUDIT.values()):
-            raise RuntimeError("tree-global epoch-zero parent reproduction failed")
+            raise RuntimeError(
+                f"tree-global epoch-zero parent reproduction failed: {_ZERO_AUDIT}"
+            )
     return output
 
 
