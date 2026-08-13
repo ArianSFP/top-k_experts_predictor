@@ -185,7 +185,7 @@ def evaluate(
     loss_total = rows = 0.0
     loader = DataLoader(
         dataset, batch_size=batch_size, shuffle=False, num_workers=workers,
-        pin_memory=device.type == "cuda", persistent_workers=workers > 0,
+        pin_memory=device.type == "cuda", persistent_workers=False,
     )
     for batch in loader:
         loss, _ = objective(
@@ -265,6 +265,8 @@ def main() -> None:
         "cache_rows": int(manifest["rows"]),
         "train_rows": len(train), "tune_rows": len(tune),
         "config": config.to_dict(),
+        "architecture": "layerwise_token_path_self_conditioned_route_trajectory_v1",
+        "horizon_loss_weights": [1.0, 1.0, 1.25, 1.5],
         "trainable_parameters": sum(p.numel() for p in model.parameters()),
         "factual_path_tokens_are_training_only_teacher_inputs": True,
         "serving_path_tokens_must_come_from_causal_mtp_tree": True,
@@ -294,6 +296,16 @@ def main() -> None:
         raise RuntimeError("path surrogate failed numerical/memory preflight")
     if args.preflight_only:
         return
+    epoch_zero = evaluate(
+        model, tune, token_embedding=token_embedding, device=device,
+        batch_size=args.microbatch_size, workers=args.num_workers,
+    )
+    write_json(args.output / "EPOCH_ZERO_AUDIT.json", {
+        "tune": epoch_zero, "training_started": False,
+        "optimizer_constructed": False,
+        "formal_validation_opened": False,
+        "calibration_opened": False, "sealed_test_opened": False,
+    })
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.learning_rate,
         weight_decay=args.weight_decay,
@@ -313,7 +325,7 @@ def main() -> None:
             train, batch_size=args.microbatch_size, shuffle=True,
             generator=torch.Generator().manual_seed(args.seed + epoch),
             num_workers=args.num_workers, pin_memory=device.type == "cuda",
-            persistent_workers=args.num_workers > 0,
+            persistent_workers=False,
         )
         for step, batch in enumerate(loader, start=1):
             loss, _ = objective(
@@ -348,6 +360,8 @@ def main() -> None:
         "schema": SCHEMA, "stage": "path_surrogate_pretrain",
         "source_commit": args.source_commit, "seed": args.seed,
         "epoch": best_epoch, "config": config.to_dict(),
+        "architecture": "layerwise_token_path_self_conditioned_route_trajectory_v1",
+        "run_manifest_sha256": sha256_file(args.output / "run_manifest.json"),
         "cache_manifest_sha256": sha256_file(args.cache / "manifest.json"),
         "cache_audit_sha256": sha256_file(audit_path),
         "model_state_dict": best_state, "tune": best_metrics,
