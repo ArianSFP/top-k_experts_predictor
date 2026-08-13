@@ -21,11 +21,11 @@ class PathRouteSurrogateConfig:
     state_roles: int = 4
     state_rank: int = 128
     token_width: int = 2048
-    width: int = 256
-    ffn_width: int = 768
+    width: int = 384
+    ffn_width: int = 1024
     attention_heads: int = 8
-    blocks: int = 2
-    route_width: int = 64
+    blocks: int = 3
+    route_width: int = 96
     output_adapter_rank: int = 16
     free_rank: int = 16
     dropout: float = 0.05
