@@ -767,6 +767,42 @@ def native_reconstruction_audit(
 
 
 @torch.no_grad()
+def next_router_teacher_audit(
+    dataset: Dataset[Any],
+    *,
+    layer: int,
+    device: torch.device,
+    norm_weight: Tensor,
+    router_weight: Tensor,
+    workers: int,
+) -> dict[str, float]:
+    host = next(iter(loader(
+        dataset, batch=32, shuffle=False, seed=0, workers=workers, device=device
+    )))
+    _inputs, routed, _ids, _weights, valid, _requests, states = batch_tensors(
+        host, layer=layer, device=device
+    )
+    loss, parts, logits = next_router_agreement_loss(
+        routed,
+        states,
+        valid,
+        norm_weight=norm_weight,
+        router_weight=router_weight,
+    )
+    teacher_ids = states["next_selected_expert_ids"].long()
+    predicted_ids = stable_topk(logits, k=8)
+    overlap = (
+        teacher_ids[..., None] == predicted_ids[..., None, :]
+    ).any(-1).float().mean(-1)
+    recall = float((overlap * valid.float()).sum() / valid.sum().clamp_min(1))
+    return {
+        "teacher_forced_recall_at_8": recall,
+        "teacher_forced_total": float(loss),
+        **{name: float(value) for name, value in parts.items()},
+    }
+
+
+@torch.no_grad()
 def evaluate(
     model: nn.Module,
     dataset: Dataset[Any],
@@ -1108,6 +1144,42 @@ def main() -> None:
             "optimizer_constructed": False,
         },
     )
+    if args.next_router_agreement:
+        assert next_norm_weight is not None and next_router_weight is not None
+        teacher_audit = next_router_teacher_audit(
+            datasets["train"],
+            layer=args.layer,
+            device=device,
+            norm_weight=next_norm_weight,
+            router_weight=next_router_weight,
+            workers=args.num_workers,
+        )
+        initial_tune, _rows = evaluate(
+            model,
+            datasets["tune"],
+            mode=args.mode,
+            layer=args.layer,
+            device=device,
+            gate_up=gate_up,
+            down=down,
+            microbatch=32,
+            workers=args.num_workers,
+            next_norm_weight=next_norm_weight,
+            next_router_weight=next_router_weight,
+            router_agreement_weight=args.router_agreement_weight,
+        )
+        router_audit = {
+            **teacher_audit,
+            "initializer_tune": initial_tune,
+            "minimum_teacher_forced_recall_at_8": 0.98,
+            "passed": teacher_audit["teacher_forced_recall_at_8"] >= 0.98,
+            "optimizer_constructed": False,
+        }
+        write_json_exclusive(
+            args.output / "EPOCH_ZERO_ROUTER_AUDIT.json", router_audit
+        )
+        if not router_audit["passed"]:
+            raise ValueError("teacher-forced next-router reconstruction failed")
     microbatch, trace = autotune(
         model,
         datasets["train"],
