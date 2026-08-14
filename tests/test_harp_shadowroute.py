@@ -155,6 +155,26 @@ def test_target_selected_expert_outputs_match_swiglu_and_static_importance():
     assert bool((importance[1] > 0).all())
 
 
+def test_target_selected_expert_top1_fast_path_matches_manual_swiglu():
+    torch.manual_seed(7)
+    hidden = torch.randn(3, 2, 4)
+    ids = torch.tensor([[[0], [2]], [[1], [0]], [[2], [1]]])
+    gate_up = torch.randn(3, 6, 4)
+    down = torch.randn(3, 4, 3)
+    outputs = target_selected_expert_outputs(hidden, ids, gate_up, down)
+    expected = torch.empty_like(outputs)
+    for batch in range(3):
+        for token in range(2):
+            expert = int(ids[batch, token, 0])
+            gate, up = torch.nn.functional.linear(
+                hidden[batch, token], gate_up[expert]
+            ).chunk(2)
+            expected[batch, token, 0] = torch.nn.functional.linear(
+                torch.nn.functional.silu(gate) * up, down[expert]
+            )
+    assert torch.allclose(outputs, expected, atol=1e-6, rtol=1e-6)
+
+
 def test_shadow_parameter_counts_match_formal_plan():
     assert shadow_pool_parameter_count() == 1_006_632_960
     assert shadow_pool_parameter_count(

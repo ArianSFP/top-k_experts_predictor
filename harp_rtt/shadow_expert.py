@@ -114,6 +114,31 @@ def target_selected_expert_outputs(
     )
     gate_up = target_gate_up.to(device=hidden.device, dtype=hidden.dtype)
     down = target_down.to(device=hidden.device, dtype=hidden.dtype)
+    if ids.shape[1] == 1:
+        # S0 needs only the authoritative top-one effect.  A batched gather
+        # removes the Python loop and dozens of tiny per-expert GEMMs that
+        # otherwise leave the GPU almost entirely idle.  Chunking bounds the
+        # temporary gathered native weights while preserving exact arithmetic.
+        chunk = 64
+        parts: list[Tensor] = []
+        flat_ids = ids[:, 0]
+        for start in range(0, hidden.shape[0], chunk):
+            stop = min(start + chunk, hidden.shape[0])
+            selected = flat_ids[start:stop]
+            selected_gate_up = gate_up.index_select(0, selected)
+            projected = torch.bmm(
+                selected_gate_up, hidden[start:stop, :, None]
+            ).squeeze(-1)
+            gate, up = projected.chunk(2, -1)
+            selected_down = down.index_select(0, selected)
+            parts.append(
+                torch.bmm(
+                    selected_down,
+                    (F.silu(gate) * up)[..., None],
+                ).squeeze(-1)
+            )
+        output[:, 0] = torch.cat(parts, dim=0)
+        return output.reshape(*leading, 1, hidden_width)
     for expert_id in torch.unique(ids).tolist():
         positions = (ids == int(expert_id)).nonzero(as_tuple=False)
         token_index, slot_index = positions[:, 0], positions[:, 1]

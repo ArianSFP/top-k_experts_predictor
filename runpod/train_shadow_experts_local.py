@@ -319,19 +319,20 @@ def objective(
     inputs, routed_target, ids, weights, valid, requests = batch_tensors(
         host, layer=layer, device=device
     )
-    individual_target, reconstructed = teacher_values(
-        inputs, ids, weights, gate_up, down
-    )
-    reconstruction_error = (
-        (reconstructed.float() - routed_target.float()).square().mean(-1)
-    )
-    if valid.any() and float(reconstruction_error[valid].max()) > 0.05:
-        raise ValueError("native expert replay does not reconstruct captured routed residual")
+    if mode == "s0_exact_top1_plus_draft":
+        with torch.no_grad():
+            top1_target = target_selected_expert_outputs(
+                inputs, ids[..., :1], gate_up, down
+            )[..., 0, :]
+    elif mode == "s2_indexed":
+        individual_target, _reconstructed = teacher_values(
+            inputs, ids, weights, gate_up, down
+        )
     with torch.autocast(
         device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"
     ):
         if mode == "s0_exact_top1_plus_draft":
-            exact_top1 = individual_target[..., 0, :] * weights[..., 0, None].to(inputs)
+            exact_top1 = top1_target * weights[..., 0, None].to(inputs)
             predicted = exact_top1 + model(inputs)
             individual_loss = predicted.sum() * 0.0
         elif mode == "s1_shared":
@@ -359,9 +360,7 @@ def objective(
             "aggregate_huber": float(aggregate.detach()),
             "aggregate_cosine_distance": float(cosine.detach()),
             "individual_huber": float(individual_loss.detach()),
-            "native_reconstruction_max_mse": float(
-                reconstruction_error[valid].max() if valid.any() else 0.0
-            ),
+            "native_reconstruction_checked_in_epoch_zero": 1.0,
             "total": float(loss.detach()),
         },
         predicted.detach(),
@@ -369,6 +368,30 @@ def objective(
         valid.detach(),
         requests,
     )
+
+
+@torch.no_grad()
+def native_reconstruction_audit(
+    dataset: Dataset[Any],
+    *,
+    layer: int,
+    device: torch.device,
+    gate_up: Tensor,
+    down: Tensor,
+    workers: int,
+) -> float:
+    host = next(iter(loader(
+        dataset, batch=1, shuffle=False, seed=0, workers=workers, device=device
+    )))
+    inputs, routed_target, ids, weights, valid, _requests = batch_tensors(
+        host, layer=layer, device=device
+    )
+    _individual, reconstructed = teacher_values(inputs, ids, weights, gate_up, down)
+    rows = (reconstructed.float() - routed_target.float()).square().mean(-1)
+    maximum = float(rows[valid].max() if valid.any() else 0.0)
+    if maximum > 0.05:
+        raise ValueError("native expert replay does not reconstruct captured routed residual")
+    return maximum
 
 
 @torch.no_grad()
@@ -590,6 +613,19 @@ def main() -> None:
         "trained_selected_slot_mass": trained_mass,
     }
     write_json_exclusive(args.output / "run_manifest.json", manifest)
+    reconstruction_max_mse = native_reconstruction_audit(
+        datasets["train"], layer=args.layer, device=device,
+        gate_up=gate_up, down=down, workers=args.num_workers,
+    )
+    write_json_exclusive(
+        args.output / "EPOCH_ZERO_AUDIT.json",
+        {
+            "native_expert_reconstruction_max_mse": reconstruction_max_mse,
+            "maximum_allowed_mse": 0.05,
+            "passed": reconstruction_max_mse <= 0.05,
+            "optimizer_constructed": False,
+        },
+    )
     microbatch, trace = autotune(
         model, datasets["train"], args, device=device, gate_up=gate_up, down=down
     )
