@@ -11,7 +11,7 @@ authorize ShadowRoute.
 from __future__ import annotations
 
 import argparse
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 import json
 import math
@@ -32,6 +32,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from harp_rtt.future_state_adapter import FutureTargetStateAdapter  # noqa: E402
+from harp_rtt.dataset import HarpRTTDataset  # noqa: E402
 from harp_rtt.shadow_checkpoint import (  # noqa: E402
     IndexedCheckpoint,
     load_target_layer_experts,
@@ -47,9 +48,12 @@ from harp_rtt.shadow_expert import (  # noqa: E402
 from harp_rtt.shadow_training import selected_expert_distillation_loss  # noqa: E402
 from harp_rtt.training import move_to_device, seed_everything  # noqa: E402
 from runpod.train_harp_delta_v3 import (  # noqa: E402
+    DATA_PROFILES,
+    RequestSubset,
     _manifest as validate_partition,
+    _record_request_id,
+    _request_counts,
     _reuse_split_manifest as validate_reuse_split,
-    load_split as load_delta_split,
     loader,
 )
 
@@ -128,19 +132,74 @@ def load_split(
     *,
     selected_requests: set[str] | None,
 ) -> tuple[FutureTargetStateAdapter, set[str]]:
-    base, requests = load_delta_split(
-        args, split, selected_requests=selected_requests
-    )
+    index = getattr(args, f"{split}_index")
+    corpus = getattr(args, f"{split}_corpus")
+    companion = getattr(args, f"{split}_companion")
+    base = HarpRTTDataset(index, "train", corpus_root=corpus, max_tree_nodes=32)
+
+    # Local expert distillation consumes factual future states only.  Loading
+    # every 2 MiB counterfactual-node record here would deserialize 4,096
+    # label-only tensors once per target layer despite never using one.  Keep
+    # the lineage fail-closed by checking the immutable manifest and exact
+    # base join instead.
+    companion_manifest_path = companion / "manifest.json"
+    companion_audit_path = companion / "COUNTERFACTUAL_AUDIT.json"
+    manifest = json.loads(companion_manifest_path.read_text(encoding="utf-8"))
+    audit = json.loads(companion_audit_path.read_text(encoding="utf-8"))
+    if manifest.get("schema") != "harp_rtt_counterfactual_target_companion_v4_nodes":
+        raise ValueError(f"ShadowRoute {split} companion schema changed")
+    if (
+        manifest.get("label_only") is not True
+        or manifest.get("runtime_available") is not False
+        or manifest.get("sealed_test_opened") is not False
+        or audit.get("passed") is not True
+        or audit.get("label_only") is not True
+    ):
+        raise PermissionError(f"ShadowRoute {split} companion is not sealed label-only data")
+    records = manifest.get("records")
+    if not isinstance(records, list) or len(records) != len(base):
+        raise ValueError(f"ShadowRoute {split} companion/base row count differs")
+    companion_joins = {
+        (str(record["request_id"]), int(record["source_position"]))
+        for record in records
+    }
+    if len(companion_joins) != len(records):
+        raise ValueError(f"ShadowRoute {split} companion joins are not unique")
+    base_joins = set()
+    for record in base.records:
+        segment = base.segments[record.segment]
+        request = str(segment.sequences[record.sequence]["request_id"])
+        base_joins.add((request, int(record.position)))
+    if base_joins != companion_joins:
+        raise ValueError(f"ShadowRoute {split} companion/base joins changed")
+
+    filtered: Dataset[Any]
+    if selected_requests is None:
+        filtered = base
+        counts = _request_counts(base)
+    else:
+        filtered = RequestSubset(base, selected_requests)
+        counts = Counter(
+            _record_request_id(base, index)
+            for index in filtered.indices  # type: ignore[attr-defined]
+        )
+    contract = DATA_PROFILES[args.data_profile]
+    if (
+        len(filtered) != int(contract["rows"][split])
+        or len(counts) != int(contract["requests"][split])
+        or set(counts.values()) != {16}
+    ):
+        raise ValueError(f"ShadowRoute {split} split has invalid row/request counts")
     return (
         FutureTargetStateAdapter(
-            base,
+            filtered,
             roles=(
                 "post_attention_residual_u",
                 "routed_expert_output_delta_r",
                 "post_moe_residual_xplus",
             ),
         ),
-        requests,
+        set(counts),
     )
 
 
@@ -444,6 +503,11 @@ def main() -> None:
         "target_checkpoint_index_sha256": checkpoint.index_sha256,
         "partition_manifest_sha256": sha256_file(args.partition_manifest),
         "reuse_split_manifest_sha256": sha256_file(args.reuse_split_manifest),
+        "companion_manifest_sha256": {
+            split: sha256_file(getattr(args, f"{split}_companion") / "manifest.json")
+            for split in ("train", "tune", "development")
+        },
+        "counterfactual_payload_loaded": False,
         "partition_schema": partition["schema"],
         "diagnostic_reuse": True,
         "target_state_is_label_only": True,
