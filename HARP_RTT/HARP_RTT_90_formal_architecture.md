@@ -1,5 +1,15 @@
 # HARP-RTT-90 v1.0
 
+> **Active successor (2026-08-14):** DeltaRoute v4 established that native
+> adaptive-tree routes plus the raw causal MTP prior reach approximately
+> `0.8646` strict H2--H4 Recall@8, while learned branch-route translation
+> remains near `0.56`. The active large-gain architecture is
+> [HARP_SHADOWROUTE_V1_PLAN_20260814.md](HARP_SHADOWROUTE_V1_PLAN_20260814.md).
+> It restores the exact committed-prefix hybrid cache, executes the frozen
+> target non-expert backbone, replaces only routed experts with resident shadow
+> experts, and reads the target's exact frozen routers. DeltaRoute translators,
+> selector expansion, candidate widening, and ranker work remain closed.
+
 > **Active successor (2026-08-12):** DeltaTree v3 established that the
 > adaptive-32 tree plus learned branch posterior reaches approximately
 > `0.9853` H2--H4 C64 when given native counterfactual target routes, but the
