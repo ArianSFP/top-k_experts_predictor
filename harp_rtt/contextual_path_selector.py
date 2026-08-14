@@ -61,8 +61,8 @@ class ContextualFactualPathSelector(nn.Module):
             nn.RMSNorm(width), nn.Linear(width, width), nn.SiLU(),
             nn.Linear(width, 1),
         )
-        # Reproduce the raw MTP posterior at epoch zero.  Unlike a scalar gate,
-        # these final layers open independently per feature after one update.
+        # Zero final projections reproduce the frozen learned parent posterior.
+        # Context/tree features open independently after the first update.
         nn.init.zeros_(self.interaction[-1].weight)
         nn.init.zeros_(self.interaction[-1].bias)
         nn.init.zeros_(self.bilinear_query.weight)
@@ -71,7 +71,7 @@ class ContextualFactualPathSelector(nn.Module):
 
     def forward(
         self, *, tree_states: Tensor, context_states: Tensor,
-        path_log_probabilities: Tensor, horizon_mask: Tensor,
+        base_probabilities: Tensor, horizon_mask: Tensor,
         node_available: Tensor,
     ) -> ContextualPathOutput:
         config = self.config; batch, nodes, width = tree_states.shape
@@ -81,8 +81,10 @@ class ContextualFactualPathSelector(nn.Module):
             batch, config.horizons, config.layers, config.latent_width
         ):
             raise ValueError("contextual selector target context is invalid")
-        if path_log_probabilities.shape != (batch, nodes):
-            raise ValueError("contextual selector path prior is invalid")
+        if base_probabilities.shape != (
+            batch, config.horizons, nodes + 1
+        ):
+            raise ValueError("contextual selector parent posterior is invalid")
         if horizon_mask.shape != (batch, config.horizons, nodes):
             raise ValueError("contextual selector horizon mask is invalid")
         if node_available.shape != (batch, nodes):
@@ -104,15 +106,19 @@ class ContextualFactualPathSelector(nn.Module):
             self.bilinear_key(nodes_encoded),
         ) / math.sqrt(width)
         visible = horizon_mask.bool() & node_available[:, None].bool()
-        node_prior = path_log_probabilities[:, None].float().expand_as(correction)
+        base = base_probabilities.float()
         captured = torch.where(
-            visible, node_prior.exp(), torch.zeros_like(node_prior)
+            visible, base[..., :-1], torch.zeros_like(base[..., :-1])
         ).sum(-1)
-        other_prior = (1.0 - captured).clamp_min(1e-8).log()
-        logits = torch.cat((
-            node_prior + correction,
-            (other_prior + self.other(context).squeeze(-1))[..., None],
+        base = torch.cat((
+            torch.where(visible, base[..., :-1], torch.zeros_like(base[..., :-1])),
+            (1.0 - captured).clamp_min(0.0)[..., None],
         ), dim=-1)
+        base = base / base.sum(-1, keepdim=True).clamp_min(1e-12)
+        correction = torch.cat((
+            correction, self.other(context).squeeze(-1)[..., None],
+        ), dim=-1)
+        logits = base.clamp_min(1e-12).log() + correction
         mask = torch.cat((
             visible,
             torch.ones(batch, config.horizons, 1, dtype=torch.bool,

@@ -120,7 +120,15 @@ def route_forward(
     visible, labels, available = _visible_and_labels(
         host, counterfactual, targets["factual_branch_index"], device=device
     )
-    tree = host["inputs"]["tree"]
+    parent_posterior = semantic.factual_path_posterior.detach().float()
+    captured_parent = torch.where(
+        visible, parent_posterior[..., :-1],
+        torch.zeros_like(parent_posterior[..., :-1]),
+    )
+    parent_posterior = torch.cat((
+        captured_parent,
+        (1.0 - captured_parent.sum(-1)).clamp_min(0.0)[..., None],
+    ), dim=-1)
     with torch.autocast(
         device_type=device.type, dtype=torch.bfloat16,
         enabled=device.type == "cuda",
@@ -128,10 +136,9 @@ def route_forward(
         selected = trajectory(
             tree_states=semantic.tree_states,
             context_states=semantic.context_states,
-            path_log_probabilities=tree["path_log_probabilities"].to(device),
+            base_probabilities=parent_posterior,
             horizon_mask=visible, node_available=available,
         )
-    parent_posterior = semantic.factual_path_posterior.detach()
     semantic = replace(
         semantic, factual_path_logits=selected.logits,
         factual_path_posterior=selected.probabilities,

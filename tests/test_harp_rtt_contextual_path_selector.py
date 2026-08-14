@@ -27,12 +27,6 @@ def test_contextual_selector_prior_reproduction_and_context_interaction() -> Non
     visible[:, 2, :4] = True
     visible[:, 3] = True
     available = torch.ones(2, 5, dtype=torch.bool)
-    with torch.no_grad():
-        initial = model(
-            tree_states=tree, context_states=context,
-            path_log_probabilities=path, horizon_mask=visible,
-            node_available=available,
-        )
     expected_captured = torch.where(
         visible, path[:, None].exp(), torch.zeros_like(path[:, None])
     )
@@ -40,6 +34,12 @@ def test_contextual_selector_prior_reproduction_and_context_interaction() -> Non
         expected_captured,
         (1.0 - expected_captured.sum(-1)).clamp_min(1e-8)[..., None],
     ), -1)
+    with torch.no_grad():
+        initial = model(
+            tree_states=tree, context_states=context,
+            base_probabilities=expected, horizon_mask=visible,
+            node_available=available,
+        )
     assert torch.allclose(initial.probabilities, expected, atol=1e-6)
     assert torch.allclose(initial.probabilities.sum(-1), torch.ones(2, 4))
     assert torch.equal(initial.probabilities[..., :-1][~visible], torch.zeros_like(
@@ -49,7 +49,7 @@ def test_contextual_selector_prior_reproduction_and_context_interaction() -> Non
     model.train(); model.zero_grad(set_to_none=True)
     output = model(
         tree_states=tree, context_states=context,
-        path_log_probabilities=path, horizon_mask=visible,
+        base_probabilities=expected, horizon_mask=visible,
         node_available=available,
     )
     (-output.logits[:, 1:, 0].mean()).backward()
