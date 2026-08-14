@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--base-capture", type=Path, required=True)
     parser.add_argument("--native-companion", type=Path, required=True)
-    parser.add_argument("--layer-checkpoint-root", type=Path, required=True)
+    parser.add_argument("--layer-checkpoint-root", type=Path)
     parser.add_argument("--s1-fallback-root", type=Path)
     parser.add_argument(
         "--mode",
@@ -47,6 +47,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--native-parity", action="store_true")
+    parser.add_argument(
+        "--native-parity-only",
+        action="store_true",
+        help=(
+            "audit exact prefix/cache replay against authoritative native routes "
+            "without loading a learned ShadowRoute bundle"
+        ),
+    )
     parser.add_argument("--device", default="cuda")
     return parser.parse_args()
 
@@ -129,6 +137,10 @@ def main() -> None:
         raise ValueError("source commit must be a full lowercase Git SHA")
     if args.limit is not None and args.limit < 1:
         raise ValueError("evaluation limit must be positive")
+    if args.native_parity_only:
+        args.native_parity = True
+    elif args.layer_checkpoint_root is None:
+        raise ValueError("learned evaluation requires --layer-checkpoint-root")
     if args.mode == "indexed_width16" and args.s1_fallback_root is None:
         raise ValueError("S2 evaluation requires the frozen S1 fallback bundle")
 
@@ -156,6 +168,7 @@ def main() -> None:
         "mode": args.mode,
         "trees": len(trees),
         "native_parity_requested": args.native_parity,
+        "native_parity_only": args.native_parity_only,
         "target_checkpoint_index_sha256": checkpoint.index_sha256,
         "base_capture_manifest_sha256": sha256_file(args.base_capture / "run_manifest.json"),
         "native_companion_manifest_sha256": sha256_file(args.native_companion / "manifest.json"),
@@ -175,21 +188,23 @@ def main() -> None:
     installed = install_shadow_experts(
         target, args.mode, retain_native=True, shadow_width=16
     )
-    layer_paths = load_shadow_bundle(
-        installed,
-        args.layer_checkpoint_root,
-        source_commit=args.source_commit,
-        target_checkpoint_index_sha256=checkpoint.index_sha256,
-        s1_fallback_root=args.s1_fallback_root,
-    )
-    write_json_exclusive(
-        args.output / "BUNDLE_AUDIT.json",
-        {
-            "layers": len(layer_paths),
-            "checkpoint_sha256": [sha256_file(path) for path in layer_paths],
-            "complete": len(layer_paths) == 40,
-        },
-    )
+    if not args.native_parity_only:
+        assert args.layer_checkpoint_root is not None
+        layer_paths = load_shadow_bundle(
+            installed,
+            args.layer_checkpoint_root,
+            source_commit=args.source_commit,
+            target_checkpoint_index_sha256=checkpoint.index_sha256,
+            s1_fallback_root=args.s1_fallback_root,
+        )
+        write_json_exclusive(
+            args.output / "BUNDLE_AUDIT.json",
+            {
+                "layers": len(layer_paths),
+                "checkpoint_sha256": [sha256_file(path) for path in layer_paths],
+                "complete": len(layer_paths) == 40,
+            },
+        )
 
     cells: dict[tuple[str, int], list[torch.Tensor]] = defaultdict(list)
     native_mismatches = 0
@@ -232,31 +247,37 @@ def main() -> None:
                     raise RuntimeError("exact-prefix native cache parity failed")
                 del reference
 
-            result = run_shadow_tree(
-                installed, hooks, authoritative_prefix=authoritative_prefix,
-                token_ids=token_ids, parent_indices=parents, node_mask=node_mask,
-            )
-            predicted = result.selected_ids[:count].cpu()
-            truth = native["selected_ids"][:count].long()
-            depth = native["depth"][:count].long()
-            valid = native["valid"][:count]
-            overlap = route_overlap(predicted, truth)
-            request = str(tree["source_request_id"] or tree["request_id"])
-            for horizon in (2, 3, 4):
-                active = valid & (depth[:, None] == horizon)
-                if active.any():
-                    cells[(request, horizon)].append(overlap[active])
+            if not args.native_parity_only:
+                result = run_shadow_tree(
+                    installed, hooks, authoritative_prefix=authoritative_prefix,
+                    token_ids=token_ids, parent_indices=parents, node_mask=node_mask,
+                )
+                predicted = result.selected_ids[:count].cpu()
+                truth = native["selected_ids"][:count].long()
+                depth = native["depth"][:count].long()
+                valid = native["valid"][:count]
+                overlap = route_overlap(predicted, truth)
+                request = str(tree["source_request_id"] or tree["request_id"])
+                for horizon in (2, 3, 4):
+                    active = valid & (depth[:, None] == horizon)
+                    if active.any():
+                        cells[(request, horizon)].append(overlap[active])
             if torch.cuda.is_available() and str(args.device).startswith("cuda"):
                 peak_gib = max(peak_gib, torch.cuda.max_memory_reserved() / 2**30)
             print(json.dumps({"tree": ordinal + 1, "total": len(trees)}), flush=True)
 
-    metrics, rows = summarize(cells)
+    if args.native_parity_only:
+        metrics: dict[str, float] = {}
+        rows: list[dict[str, Any]] = []
+    else:
+        metrics, rows = summarize(cells)
     write_rows(args.output / "request_route_predictions.jsonl", rows)
-    large_gain = metrics["route_recall_h2_h4"] >= 0.85
-    h4_gate = metrics["route_recall_h4"] >= 0.80
+    large_gain = args.native_parity_only or metrics["route_recall_h2_h4"] >= 0.85
+    h4_gate = args.native_parity_only or metrics["route_recall_h4"] >= 0.80
     result = {
         "schema": RESULT_SCHEMA,
         "mode": args.mode,
+        "native_parity_only": args.native_parity_only,
         "metrics": metrics,
         "native_parity_mismatches": native_mismatches,
         "peak_reserved_gib": peak_gib,
