@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quantize complete target experts into a deployable INT4 top-four bundle."""
+"""Quantize complete target experts into a deployable INT4 top-k bundle."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--group-size", type=int, choices=(32, 64), default=64)
-    parser.add_argument("--active-slots", type=int, choices=(4,), default=4)
+    parser.add_argument("--active-slots", type=int, choices=(4, 8), default=4)
     parser.add_argument("--expert-chunk", type=int, default=2)
     parser.add_argument("--device", default="cuda")
     return parser.parse_args()
