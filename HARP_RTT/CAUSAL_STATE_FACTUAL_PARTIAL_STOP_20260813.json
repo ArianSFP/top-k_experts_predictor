@@ -1,0 +1,30 @@
+{
+  "schema": "harp_deltaroute_v4_partial_stop_v1",
+  "stage": "causal_state_factual",
+  "run": "causal_state_fast_seed42_3a0f129",
+  "source_commit": "3a0f129",
+  "epochs_completed": 2,
+  "optimizer_stopped": true,
+  "epoch_zero": {
+    "parent_scores_exact": true,
+    "parent_marginals_exact": true,
+    "parent_c64_exact": true,
+    "preflight_peak_reserved_gib_microbatch4": 2.662109375
+  },
+  "results": {
+    "epoch_1_c64_h2_h4": 0.9111694352080425,
+    "epoch_1_c64_h4": 0.8909912090748549,
+    "epoch_1_c64_h4_mismatch": 0.8509594742208719,
+    "epoch_2_c64_h2_h4": 0.9128458661337694,
+    "epoch_2_c64_h2": 0.9290344249457121,
+    "epoch_2_c64_h3": 0.9159973096102476,
+    "epoch_2_c64_h4": 0.8935058638453484,
+    "epoch_2_c64_h4_mismatch": 0.8546452187001705
+  },
+  "interpretation": "Four exact serving-time target residual streams plus executed route identity/weights deliver a real monotonic factual gain, proving that the parent discarded useful causal information. The gain remains roughly 0.0023 C64 after two epochs and does not approach the 0.98 candidate gate; it is not the dominant missing mapping.",
+  "stop_reason": "User-directed large-gain iteration: stop a positive but low-slope diagnostic before spending further epochs on a mechanism two orders of magnitude short of the candidate gap.",
+  "next": "Measure learned candidate-quota sensitivity, then exploit the 150,000-position audited legacy corpus for large-scale route-translation pretraining before considering recapture.",
+  "formal_validation_opened": false,
+  "calibration_opened": false,
+  "sealed_test_opened": false
+}

@@ -1,0 +1,33 @@
+{
+  "schema": "harp_deltaroute_v4_partial_stop_v1",
+  "stage": "axial_route_candidate",
+  "source_commit": "c822773",
+  "seed": 42,
+  "training_started": true,
+  "completed_epochs": 2,
+  "stopped_at_epoch_boundary": true,
+  "checkpoint_promoted": false,
+  "reason": "Direct pressure on factual experts missing from the deployed anchor-32 plus branch-32 C64 boundary regressed both counterfactual route translation and factual candidate coverage.",
+  "epoch_2": {
+    "counterfactual_route_recall": 0.5427212618912259,
+    "parent_counterfactual_route_recall": 0.5440617635225257,
+    "paired_gain": -0.0013405016312996545,
+    "paired_ci95": [-0.001679685424702863, -0.0010139480310802657],
+    "factual_candidate_c64_h2_h4": 0.9102050798634688,
+    "selected_parent_c64_h2_h4": 0.914467,
+    "factual_candidate_c64_h4": 0.8889465369284153,
+    "factual_candidate_c64_h4_mismatch": 0.8428023476153612
+  },
+  "conclusion": "The dominant bottleneck is the requirement that causal MTP nodes first reconstruct target counterfactual routes. Neither factual exact-set weighting nor discrete candidate-entry weighting repairs that intermediate representation.",
+  "next_experiment": {
+    "name": "expert-conditioned tree-global factual head",
+    "principle": "Bypass per-node target-route imitation and map the full raw causal tree directly to factual H2-H4 expert evidence.",
+    "inputs": "causal tree channels, topology, learned posterior, frozen expert keys, anchor scores",
+    "targets": "factual future selected sets only",
+    "serving_contract": "budget-16 causal nodes plus explicit anchor/OTHER; no target or counterfactual label input",
+    "seed_policy": "single diagnostic seed 42"
+  },
+  "formal_validation_opened": false,
+  "calibration_opened": false,
+  "sealed_test_opened": false
+}

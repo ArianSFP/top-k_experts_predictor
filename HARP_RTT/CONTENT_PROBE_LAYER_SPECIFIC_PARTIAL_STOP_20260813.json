@@ -1,0 +1,28 @@
+{
+  "schema": "harp_deltaroute_v4_partial_diagnostic_stop_v1",
+  "date": "2026-08-13",
+  "stage": "layer_specific_full_state_content_probe",
+  "source_commit": "c2aadf7",
+  "seed": 42,
+  "completed_epochs": 6,
+  "best_completed_epoch": 6,
+  "tune": {
+    "full_state_route_recall_h2_h4": 0.5830411973098913,
+    "full_state_route_recall_h2": 0.5717961229383945,
+    "full_state_route_recall_h3": 0.586250496096909,
+    "full_state_route_recall_h4": 0.5910769728943706,
+    "router_visible_ablation_recall_h2_h4": 0.12793594699663421,
+    "paired_content_gain": 0.45510525031325716,
+    "paired_ci95_lower": 0.4307583265355788,
+    "paired_ci95_upper": 0.47743107701341314
+  },
+  "stop_reason": "Layer-specific router-blind content delivered a large gain but its incremental slope fell to 0.017 and remained far below the 0.80 gate. Existing factual post-MoE states permit the higher-value expert-output ceiling without recapture.",
+  "optimizer_constructed": true,
+  "checkpoint_written": false,
+  "ranker_authorized": false,
+  "serving_authorized": false,
+  "formal_validation_opened": false,
+  "calibration_opened": false,
+  "sealed_test_opened": false,
+  "successor": "layer_specific_post_moe_transition_probe"
+}

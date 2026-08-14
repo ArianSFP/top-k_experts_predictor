@@ -1,0 +1,42 @@
+{
+  "schema": "harp_deltaroute_v4_partial_stop_v1",
+  "stage": "axial_route_open",
+  "source_commit": "8d01214",
+  "seed": 42,
+  "training_started": true,
+  "completed_epochs": 5,
+  "stopped_at_epoch_boundary": true,
+  "checkpoint_promoted": false,
+  "reason": "The gradient-open whole-trajectory design produced the first sustained route lift and crossed the selected parent's tuning C64, validating the mechanism. The absolute candidate gain remained too small and the slope was flattening, so optimization pivots to the deployed factual objective.",
+  "epoch_5": {
+    "counterfactual_route_recall": 0.5595926968380809,
+    "parent_counterfactual_route_recall": 0.5440617635225257,
+    "paired_gain": 0.015530933315555254,
+    "paired_ci95": [0.014708767769237359, 0.016314107459038496],
+    "factual_candidate_c64_h2_h4": 0.9145711238185564,
+    "selected_parent_c64_h2_h4": 0.914467,
+    "factual_candidate_c64_h4": 0.8945068307220936,
+    "factual_candidate_c64_h4_mismatch": 0.8530411012470722
+  },
+  "mechanism_result": {
+    "gradient_starvation_was_real": true,
+    "whole_trajectory_structure_helped": true,
+    "sufficient_for_candidate_gate": false,
+    "next_bottleneck": "The counterfactual trajectory surrogate still dominates training despite weak correspondence with deployed factual C64."
+  },
+  "next_experiment": {
+    "stage": "axial_route_factual",
+    "architecture": "same gradient-open axial trajectory",
+    "objective_weights": {
+      "factual_branch_mixture": 2.0,
+      "factual_aligned_exact_set": 4.0,
+      "counterfactual_trajectory": 0.25,
+      "missing_true_pair": 0.2
+    },
+    "selection_metric": "tune factual H2-H4 C64",
+    "seed_policy": "single diagnostic seed 42"
+  },
+  "formal_validation_opened": false,
+  "calibration_opened": false,
+  "sealed_test_opened": false
+}

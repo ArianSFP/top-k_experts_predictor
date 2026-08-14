@@ -465,6 +465,7 @@ def test_rich_dataset_shapes_and_label_isolation(tmp_path: Path) -> None:
     assert item["targets"]["future_router_logits"].shape == (4, 40, 256)
     assert item["targets"]["future_router_inputs"].shape == (4, 40, 2048)
     assert item["targets"]["future_selected_ids"].shape == (4, 40, 8)
+    assert item["targets"]["future_execution_weights"].shape == (4, 40, 8)
     assert torch.allclose(
         item["inputs"]["history"]["logits"].mean(-1),
         torch.zeros(8, 40),

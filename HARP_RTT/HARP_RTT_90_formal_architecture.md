@@ -1,5 +1,18 @@
 # HARP-RTT-90 v1.0
 
+> **Active successor (2026-08-12):** DeltaTree v3 established that the
+> adaptive-32 tree plus learned branch posterior reaches approximately
+> `0.9853` H2--H4 C64 when given native counterfactual target routes, but the
+> selected learned translator reaches only `0.9145`. The active no-recapture
+> architecture is the layerwise router-state world model in
+> [HARP_DELTAROUTE_V4_PLAN_20260812.md](HARP_DELTAROUTE_V4_PLAN_20260812.md).
+> It preserves all 32 causal runtime nodes, keeps budget 16 as the
+> counterfactual semantic-supervision mask, adds direct H2--H4 factual-mixture
+> training over the all-node runtime mixture, and blocks the
+> ranker until learned candidate coverage passes `0.98 / 0.97 / 0.93`.
+> The DeltaTree v3 semantic/candidate execution instructions below are now
+> historical; its selected budget-16 checkpoint remains the frozen v4 parent.
+
 > **Active successor (2026-08-11):** the v2 B3 result was not a matched-protocol
 > collapse from approximately 0.795 to 0.536; the long-generation frozen anchor
 > scored approximately 0.470 on that same probe. B3 improved the matched anchor

@@ -1,0 +1,24 @@
+{
+  "schema": "harp_deltaroute_v4_partial_stop_v1",
+  "stage": "tree_global_factual",
+  "run": "tree_global_seed42_cc6f3fe",
+  "source_commit": "cc6f3fe",
+  "epochs_completed": 2,
+  "optimizer_stopped": true,
+  "results": {
+    "parent_tune_c64_h2_h4": 0.910543,
+    "epoch_1_c64_h2_h4": 0.9080322279284397,
+    "epoch_1_c64_h4": 0.8846740741282701,
+    "epoch_1_c64_h4_mismatch": 0.838117828592658,
+    "epoch_2_c64_h2_h4": 0.9065856952220201,
+    "epoch_2_c64_h4": 0.8827575724571943,
+    "epoch_2_c64_h4_mismatch": 0.8350621182471514
+  },
+  "interpretation": "Direct expert-conditioned attention over all causal MTP nodes regressed factual candidate coverage on both epochs. Counterfactual route recall remains exactly the frozen parent by design. This rejects missing tree-global aggregation capacity as the dominant bottleneck for the current inputs.",
+  "stop_reason": "Two consecutive tune regressions with worsening slope; continuing would spend compute on a falsified mechanism.",
+  "successor": "exact causal current-target state and route-history factual model",
+  "training_started": true,
+  "formal_validation_opened": false,
+  "calibration_opened": false,
+  "sealed_test_opened": false
+}

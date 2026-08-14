@@ -1,0 +1,28 @@
+{
+  "schema": "harp_deltaroute_v4_partial_diagnostic_stop_v1",
+  "date": "2026-08-13",
+  "stage": "shared_full_state_content_probe",
+  "source_commit": "37e4487",
+  "seed": 42,
+  "completed_epochs": 5,
+  "best_completed_epoch": 5,
+  "tune": {
+    "full_state_route_recall_h2_h4": 0.4597731331984202,
+    "full_state_route_recall_h2": 0.44772260170429945,
+    "full_state_route_recall_h3": 0.4634602824226022,
+    "full_state_route_recall_h4": 0.468136515468359,
+    "router_visible_ablation_recall_h2_h4": 0.22796265625705323,
+    "paired_content_gain": 0.231810476941367,
+    "paired_ci95_lower": 0.21558848164277153,
+    "paired_ci95_upper": 0.24677655675138035
+  },
+  "stop_reason": "User-directed efficient iteration: the shared 2048-to-256 content projection confirmed a large router-blind signal but was itself layer-rotation bottlenecked; continue with the predeclared layer-specific high-capacity ceiling instead of spending 15 more epochs on a small diagnostic.",
+  "optimizer_constructed": true,
+  "checkpoint_written": false,
+  "ranker_authorized": false,
+  "serving_authorized": false,
+  "formal_validation_opened": false,
+  "calibration_opened": false,
+  "sealed_test_opened": false,
+  "successor": "layer_specific_full_state_content_probe"
+}

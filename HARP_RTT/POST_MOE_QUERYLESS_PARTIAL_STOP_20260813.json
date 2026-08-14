@@ -1,0 +1,26 @@
+{
+  "schema": "harp_deltaroute_v4_partial_stop_v1",
+  "date": "2026-08-13",
+  "source_commit": "3d1ce7d",
+  "run": "post_moe_probe_seed42_3d1ce7d",
+  "completed_epochs": 1,
+  "training_stopped": true,
+  "reason": "The queryless post-MoE probe removed the trusted current-query residual, so its result confounds post-MoE content value with relearning the current router coordinates from an unnormalised 2048-dimensional residual stream.",
+  "tune": {
+    "post_moe_route_recall_h2_h4": 0.2128885390702635,
+    "post_moe_route_recall_h2": 0.20299980067647994,
+    "post_moe_route_recall_h3": 0.2173289768397808,
+    "post_moe_route_recall_h4": 0.21833683969452977,
+    "route_only_ablation_recall_h2_h4": 0.2071272369939834,
+    "paired_gain": 0.005761302076280117,
+    "paired_ci95": [0.003379939987401788, 0.008125868526985868]
+  },
+  "comparison": {
+    "layer_specific_pre_moe_epoch1_recall_h2_h4": 0.3707
+  },
+  "interpretation": "This variant is not a valid post-MoE information ceiling. The next matched experiment preserves the exact current router query/control path and changes only the full-state source from post-attention to post-MoE.",
+  "optimizer_checkpoint_promoted": false,
+  "formal_validation_opened": false,
+  "calibration_opened": false,
+  "sealed_test_opened": false
+}

@@ -1,0 +1,44 @@
+{
+  "schema": "harp_deltaroute_v4_partial_stop_v1",
+  "stage": "parallel_direct_layerspecific",
+  "source_commit": "fcea2c1",
+  "seed": 42,
+  "training_started": true,
+  "completed_epochs": 2,
+  "stopped_at_epoch_boundary": true,
+  "checkpoint_promoted": false,
+  "reason": "Two-epoch slope matched the rejected shared direct head; target-layer-specific raw projections did not materially improve branch route translation.",
+  "parent_tune_counterfactual_route_recall": 0.5440827325607339,
+  "epoch_1": {
+    "counterfactual_route_recall": 0.5453242675090829,
+    "paired_gain": 0.001241534948348999,
+    "factual_candidate_c64_h2_h4": 0.9105428084731102,
+    "factual_candidate_c64_h4": 0.8899658247828484,
+    "factual_candidate_c64_h4_mismatch": 0.8472484592348337
+  },
+  "epoch_2": {
+    "counterfactual_route_recall": 0.5468549054736892,
+    "paired_gain": 0.002772172912955284,
+    "paired_ci95": [0.0023533347373207412, 0.0032042934792116283],
+    "factual_candidate_c64_h2_h4": 0.9109374992549419,
+    "factual_candidate_c64_h4": 0.8904357887804508,
+    "factual_candidate_c64_h4_mismatch": 0.846895769238472
+  },
+  "comparison": {
+    "shared_direct_epoch_2_route_recall": 0.546885,
+    "shared_direct_epoch_2_gain": 0.002835,
+    "conclusion": "Layer-specific source compression alone is not the dominant bottleneck."
+  },
+  "next_experiment": {
+    "name": "gradient-open axial route trajectory",
+    "changes": [
+      "Model all 40 target layers jointly using layer-axis self-attention.",
+      "Project parent router queries into a shared router-visible hidden-space sketch.",
+      "Feed layer-local parent expert selections and weights as trajectory messages.",
+      "Use reference-anchored residual maps so epoch-zero outputs are parent-exact while all feature layers receive gradients on the first step."
+    ]
+  },
+  "formal_validation_opened": false,
+  "calibration_opened": false,
+  "sealed_test_opened": false
+}
