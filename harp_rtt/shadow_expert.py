@@ -463,6 +463,9 @@ class PackedInt4TopKExperts(nn.Module):
         self.experts = int(experts)
         self.active_slots = int(active_slots)
         self.group_size = int(group_size)
+        self.cache_dequantized = False
+        self._gate_up_cache: dict[int, Tensor] = {}
+        self._down_cache: dict[int, Tensor] = {}
         self.register_buffer(
             "gate_up_packed",
             torch.empty(
@@ -473,6 +476,7 @@ class PackedInt4TopKExperts(nn.Module):
                 device=device,
             ),
         )
+
         self.register_buffer(
             "gate_up_scales",
             torch.empty(
@@ -504,6 +508,36 @@ class PackedInt4TopKExperts(nn.Module):
             ),
         )
 
+    def enable_dequantized_cache(self, enabled: bool = True) -> None:
+        """Cache the exact reference dequantization without changing arithmetic."""
+
+        self.cache_dequantized = bool(enabled)
+        if not self.cache_dequantized:
+            self._gate_up_cache.clear()
+            self._down_cache.clear()
+
+    def _expert_weights(
+        self, expert_id: int, *, dtype: torch.dtype
+    ) -> tuple[Tensor, Tensor]:
+        if self.cache_dequantized and expert_id in self._gate_up_cache:
+            return self._gate_up_cache[expert_id], self._down_cache[expert_id]
+        gate_up = dequantize_groupwise_int4(
+            self.gate_up_packed[expert_id],
+            self.gate_up_scales[expert_id],
+            group_size=self.group_size,
+            dtype=dtype,
+        )
+        down = dequantize_groupwise_int4(
+            self.down_packed[expert_id],
+            self.down_scales[expert_id],
+            group_size=self.group_size,
+            dtype=dtype,
+        )
+        if self.cache_dequantized:
+            self._gate_up_cache[expert_id] = gate_up
+            self._down_cache[expert_id] = down
+        return gate_up, down
+
     def forward(
         self, hidden_states: Tensor, top_k_index: Tensor, top_k_weights: Tensor
     ) -> Tensor:
@@ -520,20 +554,11 @@ class PackedInt4TopKExperts(nn.Module):
         for expert_id in torch.unique(ids).tolist():
             positions = (ids == int(expert_id)).nonzero(as_tuple=False)
             token_index, slot_index = positions[:, 0], positions[:, 1]
-            gate_up = dequantize_groupwise_int4(
-                self.gate_up_packed[int(expert_id)],
-                self.gate_up_scales[int(expert_id)],
-                group_size=self.group_size,
-                dtype=hidden.dtype,
+            gate_up, down = self._expert_weights(
+                int(expert_id), dtype=hidden.dtype
             )
             projected = F.linear(hidden[token_index], gate_up)
             gate, up = projected.chunk(2, dim=-1)
-            down = dequantize_groupwise_int4(
-                self.down_packed[int(expert_id)],
-                self.down_scales[int(expert_id)],
-                group_size=self.group_size,
-                dtype=hidden.dtype,
-            )
             value = F.linear(F.silu(gate) * up, down)
             output[token_index] += value * weights[token_index, slot_index, None]
         return output.reshape(*leading, self.hidden_width)

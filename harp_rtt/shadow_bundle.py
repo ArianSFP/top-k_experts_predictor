@@ -9,7 +9,6 @@ import torch
 
 from .shadow_backbone import InstalledShadowBackbone
 from .shadow_expert import (
-    dequantize_groupwise_int4,
     ExactTop1PlusDraftExperts,
     IndexedShadowExperts,
     PackedInt4TopKExperts,
@@ -170,89 +169,9 @@ def load_shadow_bundle(
     return paths
 
 
-def load_int4_bundle_into_native(
-    installed: InstalledShadowBackbone,
-    root: str | Path,
-    *,
-    source_commit: str,
-    target_checkpoint_index_sha256: str,
-    active_slots: int,
-    allow_unpromoted_diagnostic: bool = False,
-    expert_chunk: int = 2,
-) -> tuple[Path, ...]:
-    """Materialize the identical INT4 weights in the official BF16 kernel.
-
-    This is an evaluation accelerator, not a different checkpoint.  Deployment
-    retains packed INT4 weights and a fused sparse kernel; broad offline audits
-    can dequantize once and avoid repeating that operation at every tree node.
-    """
-
-    if installed.mode != "exact_top1_plus_draft":
-        raise ValueError("INT4 native materialization requires the exact wrapper")
-    if not 1 <= active_slots <= 8 or expert_chunk < 1:
-        raise ValueError("INT4 native materialization configuration is invalid")
-    paths = discover_layer_checkpoints(root, "int4_top4")
-    for layer, (module, path) in enumerate(
-        zip(installed.shadow_experts, paths, strict=True)
-    ):
-        if not isinstance(module, ExactTop1PlusDraftExperts):
-            raise TypeError("INT4 native materialization wrapper changed")
-        if module.native_experts is None:
-            raise ValueError("INT4 native materialization lacks official experts")
-        if module.exact_slots != active_slots or module.draft_scale != 0.0:
-            raise ValueError("INT4 native materialization execution contract changed")
-        value = _load_value(
-            path,
-            expected_mode="int4_top4",
-            expected_layer=layer,
-            source_commit=source_commit,
-            target_checkpoint_index_sha256=target_checkpoint_index_sha256,
-            allow_unpromoted_diagnostic=allow_unpromoted_diagnostic,
-        )
-        state = value["model_state_dict"]
-        expected = {
-            "gate_up_packed", "gate_up_scales", "down_packed", "down_scales"
-        }
-        if set(state) != expected:
-            raise ValueError("INT4 native materialization shard is incomplete")
-        group_size = int(value.get("group_size", -1))
-        if group_size not in {32, 64} or int(value.get("active_slots", -1)) != active_slots:
-            raise ValueError("INT4 native materialization runtime differs from shard")
-        native = module.native_experts
-        gate_target = getattr(native, "gate_up_proj", None)
-        down_target = getattr(native, "down_proj", None)
-        if not isinstance(gate_target, torch.Tensor) or not isinstance(
-            down_target, torch.Tensor
-        ):
-            raise TypeError("official expert tensor layout changed")
-        experts = gate_target.shape[0]
-        with torch.no_grad():
-            for start in range(0, experts, expert_chunk):
-                stop = min(start + expert_chunk, experts)
-                gate = dequantize_groupwise_int4(
-                    state["gate_up_packed"][start:stop].to(gate_target.device),
-                    state["gate_up_scales"][start:stop].to(gate_target.device),
-                    group_size=group_size,
-                    dtype=gate_target.dtype,
-                )
-                down = dequantize_groupwise_int4(
-                    state["down_packed"][start:stop].to(down_target.device),
-                    state["down_scales"][start:stop].to(down_target.device),
-                    group_size=group_size,
-                    dtype=down_target.dtype,
-                )
-                gate_target[start:stop].copy_(gate)
-                down_target[start:stop].copy_(down)
-        module.eval()
-        for parameter in module.parameters():
-            parameter.requires_grad_(False)
-    return paths
-
-
 __all__ = [
     "CHECKPOINT_MODE",
     "LOCAL_SCHEMA",
     "discover_layer_checkpoints",
-    "load_int4_bundle_into_native",
     "load_shadow_bundle",
 ]

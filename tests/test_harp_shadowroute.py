@@ -224,7 +224,16 @@ def test_groupwise_int4_round_trip_and_sparse_execution():
         reconstructed_down,
     )
     expected = (individual * weights[:, :2, None]).sum(1)
-    assert torch.allclose(module(hidden, ids, weights), expected, atol=1e-6, rtol=1e-6)
+    uncached = module(hidden, ids, weights)
+    assert torch.allclose(uncached, expected, atol=1e-6, rtol=1e-6)
+    module.enable_dequantized_cache()
+    cached_first = module(hidden, ids, weights)
+    cached_second = module(hidden, ids, weights)
+    assert torch.equal(cached_first, uncached)
+    assert torch.equal(cached_second, uncached)
+    assert set(module._gate_up_cache) == {0, 1, 2}
+    module.enable_dequantized_cache(False)
+    assert not module._gate_up_cache and not module._down_cache
 
 
 def test_indexed_shadow_execution_and_gradient_ownership():

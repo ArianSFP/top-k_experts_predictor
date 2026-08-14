@@ -25,11 +25,9 @@ from harp_rtt.exact_k import stable_topk  # noqa: E402
 from harp_rtt.route_ceiling import factual_branch_topk, posterior_native_topk  # noqa: E402
 from harp_rtt.shadow_route import shadow_lm_path_posterior  # noqa: E402
 from harp_rtt.shadow_backbone import exact_prefix_experts, install_shadow_experts  # noqa: E402
-from harp_rtt.shadow_bundle import (  # noqa: E402
-    load_int4_bundle_into_native,
-    load_shadow_bundle,
-)
+from harp_rtt.shadow_bundle import load_shadow_bundle  # noqa: E402
 from harp_rtt.shadow_checkpoint import IndexedCheckpoint, sha256_file  # noqa: E402
+from harp_rtt.shadow_expert import PackedInt4TopKExperts  # noqa: E402
 from harp_rtt.shadow_rollout import ShadowRouteHooks, run_shadow_tree  # noqa: E402
 
 
@@ -75,11 +73,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--native-parity", action="store_true")
     parser.add_argument(
-        "--int4-native-eval",
+        "--cache-int4-experts",
         action="store_true",
         help=(
-            "dequantize the same INT4 bundle once into the official BF16 expert "
-            "kernel for broad offline evaluation"
+            "cache each expert after its first exact reference dequantization "
+            "for broad offline evaluation"
         ),
     )
     parser.add_argument(
@@ -313,10 +311,8 @@ def main() -> None:
         "exact_top1_plus_draft", "indexed_width16", "int4_top4"
     }:
         raise ValueError("the unpromoted diagnostic override is restricted to S0/S2/INT4")
-    if args.int4_native_eval and (
-        args.mode != "int4_top4" or args.native_parity or args.native_parity_only
-    ):
-        raise ValueError("INT4 native evaluation requires INT4 mode without native parity")
+    if args.cache_int4_experts and args.mode != "int4_top4":
+        raise ValueError("INT4 expert caching requires INT4 mode")
     if (args.ceiling_bundle is None) != (args.ceiling_parent_sha256 is None):
         raise ValueError(
             "--ceiling-bundle and --ceiling-parent-sha256 must be provided together"
@@ -376,8 +372,8 @@ def main() -> None:
         "ceiling_parent_sha256": args.ceiling_parent_sha256,
         "factual_mixture_evaluation": ceiling is not None,
         "execution_backend": (
-            "official_bf16_with_dequantized_int4_weights"
-            if args.int4_native_eval
+            "packed_int4_reference_with_exact_dequantization_cache"
+            if args.cache_int4_experts
             else "packed_int4_python_reference"
             if args.mode == "int4_top4"
             else "native_shadow_module"
@@ -397,41 +393,30 @@ def main() -> None:
     target, _config = load_target(args.model, device=args.device)
     installed = install_shadow_experts(
         target,
-        "exact_top1_plus_draft" if args.int4_native_eval else args.mode,
-        retain_native=True,
+        args.mode,
+        retain_native=args.native_parity,
         shadow_width=args.shadow_width,
-        exact_slots=(
-            args.indexed_active_slots
-            if args.int4_native_eval
-            else 1 if args.native_exact_slots is None else args.native_exact_slots
-        ),
-        draft_scale=(
-            0.0
-            if args.int4_native_eval
-            else 1.0 if args.native_exact_slots is None else 0.0
-        ),
+        exact_slots=(1 if args.native_exact_slots is None else args.native_exact_slots),
+        draft_scale=(1.0 if args.native_exact_slots is None else 0.0),
         indexed_active_slots=args.indexed_active_slots,
     )
+    if args.mode == "int4_top4" and not args.native_parity and torch.cuda.is_available():
+        torch.cuda.empty_cache()
     if not args.native_parity_only and args.native_exact_slots is None:
         assert args.layer_checkpoint_root is not None
-        if args.int4_native_eval:
-            layer_paths = load_int4_bundle_into_native(
-                installed,
-                args.layer_checkpoint_root,
-                source_commit=args.source_commit,
-                target_checkpoint_index_sha256=checkpoint.index_sha256,
-                active_slots=args.indexed_active_slots,
-                allow_unpromoted_diagnostic=args.diagnostic_unpromoted_bundle,
-            )
-        else:
-            layer_paths = load_shadow_bundle(
-                installed,
-                args.layer_checkpoint_root,
-                source_commit=args.source_commit,
-                target_checkpoint_index_sha256=checkpoint.index_sha256,
-                s1_fallback_root=args.s1_fallback_root,
-                allow_unpromoted_diagnostic=args.diagnostic_unpromoted_bundle,
-            )
+        layer_paths = load_shadow_bundle(
+            installed,
+            args.layer_checkpoint_root,
+            source_commit=args.source_commit,
+            target_checkpoint_index_sha256=checkpoint.index_sha256,
+            s1_fallback_root=args.s1_fallback_root,
+            allow_unpromoted_diagnostic=args.diagnostic_unpromoted_bundle,
+        )
+        if args.cache_int4_experts:
+            for module in installed.shadow_experts:
+                if not isinstance(module, PackedInt4TopKExperts):
+                    raise TypeError("INT4 cache requested for a non-INT4 module")
+                module.enable_dequantized_cache()
         write_json_exclusive(
             args.output / "BUNDLE_AUDIT.json",
             {
