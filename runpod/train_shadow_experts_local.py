@@ -32,6 +32,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from harp_rtt.dataset import HarpRTTDataset  # noqa: E402
+from harp_rtt.exact_k import exact_set_nll, stable_topk  # noqa: E402
+from harp_rtt.losses import boundary_loss_per_endpoint  # noqa: E402
 from harp_rtt.shadow_checkpoint import (  # noqa: E402
     IndexedCheckpoint,
     load_target_layer_experts,
@@ -76,6 +78,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scale-train-corpus", type=Path)
     parser.add_argument("--outer-split-manifest", type=Path)
     parser.add_argument("--initializer-checkpoint", type=Path)
+    parser.add_argument("--next-router-agreement", action="store_true")
+    parser.add_argument("--router-agreement-weight", type=float, default=0.1)
     parser.add_argument("--target-model", type=Path, required=True)
     parser.add_argument("--mode", choices=MODES, required=True)
     parser.add_argument("--layer", type=int, choices=range(40), required=True)
@@ -99,10 +103,15 @@ def parse_args() -> argparse.Namespace:
 class ShadowFactualStateDataset(Dataset[dict[str, Any]]):
     """Minimal label-only factual reader for local shadow-expert training."""
 
-    def __init__(self, base: Dataset[Any], *, layer: int) -> None:
+    def __init__(
+        self, base: Dataset[Any], *, layer: int, next_router_agreement: bool = False
+    ) -> None:
         if layer not in range(40):
             raise ValueError("ShadowRoute factual reader layer is out of range")
         self.layer = int(layer)
+        self.next_router_agreement = bool(next_router_agreement)
+        if self.next_router_agreement and self.layer == 39:
+            raise ValueError("layer 39 has no within-token next-router target")
         if isinstance(base, RequestSubset):
             self.source = base.base
             self.indices = tuple(int(index) for index in base.indices)
@@ -126,15 +135,47 @@ class ShadowFactualStateDataset(Dataset[dict[str, Any]]):
             "selected_execution_weights",
             "routed_expert_output_delta_r",
         )
-        future = [
-            {
+        future = []
+        for row in record.future_rows:
+            values = {
                 role: segment.read(
                     "target", [int(row) + self.layer], role
                 )[0]
                 for role in roles
             }
-            for row in record.future_rows
-        ]
+            if self.next_router_agreement:
+                for role in (
+                    "post_attention_residual_u",
+                    "post_moe_residual_xplus",
+                    "shared_expert_output_delta_s",
+                ):
+                    values[role] = segment.read(
+                        "target", [int(row) + self.layer], role
+                    )[0]
+                for role in (
+                    "post_attention_residual_u",
+                    "raw_target_router_logits",
+                    "selected_expert_ids",
+                ):
+                    values[f"next_{role}"] = segment.read(
+                        "target", [int(row) + self.layer + 1], role
+                    )[0]
+            future.append(values)
+        states = {
+            "routed_expert_output_delta_r": torch.stack(
+                [row["routed_expert_output_delta_r"] for row in future]
+            )
+        }
+        if self.next_router_agreement:
+            for role in (
+                "post_attention_residual_u",
+                "post_moe_residual_xplus",
+                "shared_expert_output_delta_s",
+                "next_post_attention_residual_u",
+                "next_raw_target_router_logits",
+                "next_selected_expert_ids",
+            ):
+                states[role] = torch.stack([row[role] for row in future])
         return {
             "metadata": {
                 "request_id": str(segment.sequences[record.sequence]["request_id"]),
@@ -154,11 +195,7 @@ class ShadowFactualStateDataset(Dataset[dict[str, Any]]):
                     [row["selected_execution_weights"].float() for row in future]
                 ),
                 "future_available": torch.ones(4, dtype=torch.bool),
-                "future_states": {
-                    "routed_expert_output_delta_r": torch.stack(
-                        [row["routed_expert_output_delta_r"] for row in future]
-                    )
-                },
+                "future_states": states,
             },
         }
 
@@ -172,10 +209,14 @@ class ShadowGeneratedTokenDataset(Dataset[dict[str, Any]]):
         *,
         layer: int,
         allowed_request_ids: set[str],
+        next_router_agreement: bool = False,
     ) -> None:
         if layer not in range(40):
             raise ValueError("ShadowRoute generated-token reader layer is out of range")
         self.layer = int(layer)
+        self.next_router_agreement = bool(next_router_agreement)
+        if self.next_router_agreement and self.layer == 39:
+            raise ValueError("layer 39 has no within-token next-router target")
         self.source = base
         self.rows: list[tuple[int, int, int, int]] = []
         self.requests: set[str] = set()
@@ -209,6 +250,38 @@ class ShadowGeneratedTokenDataset(Dataset[dict[str, Any]]):
             role: segment.read("target", [row + self.layer], role)[0]
             for role in roles
         }
+        if self.next_router_agreement:
+            for role in (
+                "post_attention_residual_u",
+                "post_moe_residual_xplus",
+                "shared_expert_output_delta_s",
+            ):
+                values[role] = segment.read(
+                    "target", [row + self.layer], role
+                )[0]
+            for role in (
+                "post_attention_residual_u",
+                "raw_target_router_logits",
+                "selected_expert_ids",
+            ):
+                values[f"next_{role}"] = segment.read(
+                    "target", [row + self.layer + 1], role
+                )[0]
+        states = {
+            "routed_expert_output_delta_r": values[
+                "routed_expert_output_delta_r"
+            ].unsqueeze(0)
+        }
+        if self.next_router_agreement:
+            for role in (
+                "post_attention_residual_u",
+                "post_moe_residual_xplus",
+                "shared_expert_output_delta_s",
+                "next_post_attention_residual_u",
+                "next_raw_target_router_logits",
+                "next_selected_expert_ids",
+            ):
+                states[role] = values[role].unsqueeze(0)
         request = str(segment.sequences[sequence]["request_id"])
         return {
             "metadata": {"request_id": request, "position": position},
@@ -224,11 +297,7 @@ class ShadowGeneratedTokenDataset(Dataset[dict[str, Any]]):
                     "selected_execution_weights"
                 ].float().unsqueeze(0),
                 "future_available": torch.ones(1, dtype=torch.bool),
-                "future_states": {
-                    "routed_expert_output_delta_r": values[
-                        "routed_expert_output_delta_r"
-                    ].unsqueeze(0)
-                },
+                "future_states": states,
             },
         }
 
@@ -331,7 +400,11 @@ def load_split(
     ):
         raise ValueError(f"ShadowRoute {split} split has invalid row/request counts")
     return (
-        ShadowFactualStateDataset(filtered, layer=args.layer),
+        ShadowFactualStateDataset(
+            filtered,
+            layer=args.layer,
+            next_router_agreement=args.next_router_agreement,
+        ),
         set(counts),
     )
 
@@ -416,7 +489,10 @@ def build_scaled_training_dataset(
         include_optional_current=False,
     )
     dataset = ShadowGeneratedTokenDataset(
-        base, layer=args.layer, allowed_request_ids=allowed_requests
+        base,
+        layer=args.layer,
+        allowed_request_ids=allowed_requests,
+        next_router_agreement=args.next_router_agreement,
     )
     if dataset.requests - allowed_requests:
         raise PermissionError("scaled token dataset escaped its outer-train allowlist")
@@ -446,7 +522,7 @@ def build_student(mode: str, device: torch.device) -> nn.Module:
 
 def batch_tensors(
     host: Mapping[str, Any], *, layer: int, device: torch.device
-) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, list[str]]:
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, list[str], Mapping[str, Tensor]]:
     batch = move_to_device(host, device)
     targets = batch.get("targets")
     metadata = batch.get("metadata")
@@ -488,6 +564,76 @@ def batch_tensors(
         execution_weights,
         available.bool(),
         [str(value) for value in requests],
+        states,
+    )
+
+
+def next_router_agreement_loss(
+    predicted_routed: Tensor,
+    states: Mapping[str, Tensor],
+    valid: Tensor,
+    *,
+    norm_weight: Tensor,
+    router_weight: Tensor,
+) -> tuple[Tensor, dict[str, Tensor], Tensor]:
+    required = (
+        "post_attention_residual_u",
+        "post_moe_residual_xplus",
+        "shared_expert_output_delta_s",
+        "next_post_attention_residual_u",
+        "next_raw_target_router_logits",
+        "next_selected_expert_ids",
+    )
+    if any(name not in states for name in required):
+        raise ValueError("next-router agreement labels are incomplete")
+    current_u = states["post_attention_residual_u"]
+    current_xplus = states["post_moe_residual_xplus"]
+    shared = states["shared_expert_output_delta_s"]
+    next_u = states["next_post_attention_residual_u"]
+    teacher_logits = states["next_raw_target_router_logits"]
+    teacher_ids = states["next_selected_expert_ids"].long()
+    if any(value.shape[:-1] != predicted_routed.shape[:-1] for value in (
+        current_u, current_xplus, shared, next_u, teacher_logits, teacher_ids
+    )):
+        raise ValueError("next-router agreement leading axes differ")
+    predicted_xplus = current_u + shared + predicted_routed
+    frozen_attention_delta = next_u - current_xplus
+    predicted_next_u = predicted_xplus + frozen_attention_delta
+    values = predicted_next_u.float()
+    normalized = values * torch.rsqrt(
+        values.square().mean(-1, keepdim=True) + 1e-6
+    )
+    normalized = normalized * norm_weight.float()
+    predicted_logits = F.linear(normalized, router_weight.float())
+    teacher_probability = torch.softmax(teacher_logits.detach().float(), dim=-1)
+    kl_rows = F.kl_div(
+        torch.log_softmax(predicted_logits, dim=-1),
+        teacher_probability,
+        reduction="none",
+    ).sum(-1)
+    active = valid.bool()
+    kl = (kl_rows * active.float()).sum() / active.sum().clamp_min(1)
+    safe_ids = torch.where(active[..., None], teacher_ids, 0)
+    exact = exact_set_nll(predicted_logits, safe_ids, valid=active, k=8)
+    boundary_rows = boundary_loss_per_endpoint(
+        predicted_logits,
+        teacher_logits.detach(),
+        safe_ids,
+        margin=0.125,
+        model_rank_start=9,
+        teacher_rank_start=9,
+        rank_end=32,
+    )
+    boundary = (boundary_rows * active.float()).sum() / active.sum().clamp_min(1)
+    total = kl + exact + 0.2 * boundary
+    return (
+        total,
+        {
+            "next_router_kl": kl,
+            "next_router_exact_set": exact,
+            "next_router_boundary": boundary,
+        },
+        predicted_logits,
     )
 
 
@@ -513,8 +659,13 @@ def objective(
     device: torch.device,
     gate_up: Tensor,
     down: Tensor,
-) -> tuple[Tensor, dict[str, float], Tensor, Tensor, Tensor, list[str]]:
-    inputs, routed_target, ids, weights, valid, requests = batch_tensors(
+    next_norm_weight: Tensor | None = None,
+    next_router_weight: Tensor | None = None,
+    router_agreement_weight: float = 0.0,
+) -> tuple[
+    Tensor, dict[str, float], Tensor, Tensor, Tensor, list[str], Tensor | None
+]:
+    inputs, routed_target, ids, weights, valid, requests, states = batch_tensors(
         host, layer=layer, device=device
     )
     if mode == "s0_exact_top1_plus_draft":
@@ -551,7 +702,27 @@ def objective(
         predicted.float(), routed_target.float(), dim=-1, eps=1e-8
     )
     cosine = (cosine_rows * valid.float()).sum() / valid.sum().clamp_min(1)
-    loss = aggregate + 0.1 * cosine + individual_loss
+    agreement = predicted.sum() * 0.0
+    agreement_parts: dict[str, Tensor] = {}
+    next_overlap: Tensor | None = None
+    if router_agreement_weight > 0:
+        if next_norm_weight is None or next_router_weight is None:
+            raise ValueError("router-agreement weights were not loaded")
+        agreement, agreement_parts, next_logits = next_router_agreement_loss(
+            predicted,
+            states,
+            valid,
+            norm_weight=next_norm_weight,
+            router_weight=next_router_weight,
+        )
+        teacher_ids = states["next_selected_expert_ids"].long()
+        next_ids = stable_topk(next_logits, k=8)
+        next_overlap = (
+            teacher_ids[..., None] == next_ids[..., None, :]
+        ).any(-1).float().mean(-1).detach()
+    loss = aggregate + 0.1 * cosine + individual_loss + (
+        float(router_agreement_weight) * agreement
+    )
     return (
         loss,
         {
@@ -559,12 +730,15 @@ def objective(
             "aggregate_cosine_distance": float(cosine.detach()),
             "individual_huber": float(individual_loss.detach()),
             "native_reconstruction_checked_in_epoch_zero": 1.0,
+            "next_router_agreement": float(agreement.detach()),
+            **{name: float(value.detach()) for name, value in agreement_parts.items()},
             "total": float(loss.detach()),
         },
         predicted.detach(),
         routed_target.detach(),
         valid.detach(),
         requests,
+        next_overlap,
     )
 
 
@@ -581,7 +755,7 @@ def native_reconstruction_audit(
     host = next(iter(loader(
         dataset, batch=1, shuffle=False, seed=0, workers=workers, device=device
     )))
-    inputs, routed_target, ids, weights, valid, _requests = batch_tensors(
+    inputs, routed_target, ids, weights, valid, _requests, _states = batch_tensors(
         host, layer=layer, device=device
     )
     _individual, reconstructed = teacher_values(inputs, ids, weights, gate_up, down)
@@ -604,19 +778,29 @@ def evaluate(
     down: Tensor,
     microbatch: int,
     workers: int,
+    next_norm_weight: Tensor | None = None,
+    next_router_weight: Tensor | None = None,
+    router_agreement_weight: float = 0.0,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     model.eval()
     request_cells: dict[tuple[str, int], list[tuple[float, float, float]]] = defaultdict(list)
     error_sum = energy_sum = dot_sum = pred_norm = target_norm = 0.0
     elements = 0
+    next_overlap_sum = next_overlap_rows = 0.0
     for host in loader(
         dataset, batch=microbatch, shuffle=False, seed=0,
         workers=workers, device=device,
     ):
-        _loss, _parts, predicted, target, valid, requests = objective(
+        _loss, _parts, predicted, target, valid, requests, next_overlap = objective(
             model, host, mode=mode, layer=layer, device=device,
             gate_up=gate_up, down=down,
+            next_norm_weight=next_norm_weight,
+            next_router_weight=next_router_weight,
+            router_agreement_weight=router_agreement_weight,
         )
+        if next_overlap is not None:
+            next_overlap_sum += float((next_overlap * valid.float()).sum())
+            next_overlap_rows += float(valid.sum())
         error = (predicted.float() - target.float()).square().mean(-1)
         energy = target.float().square().mean(-1)
         cosine = F.cosine_similarity(predicted.float(), target.float(), dim=-1, eps=1e-8)
@@ -654,15 +838,15 @@ def evaluate(
                 "cosine": sum(value[2] for value in values) / len(values),
             }
         )
-    return (
-        {
+    metrics = {
             "normalized_rmse": normalized_rmse,
             "cosine": cosine,
             "relative_mse_reduction_vs_zero": 1.0 - error_sum / max(energy_sum, 1e-12),
             "rows": len(rows),
-        },
-        rows,
-    )
+    }
+    if next_overlap_rows:
+        metrics["next_router_recall_at_8"] = next_overlap_sum / next_overlap_rows
+    return metrics, rows
 
 
 def expert_counts(
@@ -672,7 +856,7 @@ def expert_counts(
     for host in loader(
         dataset, batch=32, shuffle=False, seed=0, workers=workers, device=device
     ):
-        _inputs, _routed, ids, _weights, valid, _requests = batch_tensors(
+        _inputs, _routed, ids, _weights, valid, _requests, _states = batch_tensors(
             host, layer=layer, device=device
         )
         active = ids[valid].detach().cpu().flatten()
@@ -688,6 +872,8 @@ def autotune(
     device: torch.device,
     gate_up: Tensor,
     down: Tensor,
+    next_norm_weight: Tensor | None = None,
+    next_router_weight: Tensor | None = None,
 ) -> tuple[int, list[dict[str, Any]]]:
     choices = (args.microbatch_size,) if args.microbatch_size else MICROBATCH_CHOICES
     trace: list[dict[str, Any]] = []
@@ -704,6 +890,11 @@ def autotune(
             objective(
                 model, host, mode=args.mode, layer=args.layer, device=device,
                 gate_up=gate_up, down=down,
+                next_norm_weight=next_norm_weight,
+                next_router_weight=next_router_weight,
+                router_agreement_weight=(
+                    args.router_agreement_weight if args.next_router_agreement else 0.0
+                ),
             )[0].backward()
             model.zero_grad(set_to_none=True)
             peak = torch.cuda.max_memory_reserved(device) / 2**30 if device.type == "cuda" else 0.0
@@ -727,6 +918,11 @@ def main() -> None:
         character not in "0123456789abcdef" for character in args.source_commit
     ):
         raise ValueError("source commit must be a full lowercase Git SHA")
+    if args.next_router_agreement and (
+        not math.isfinite(args.router_agreement_weight)
+        or args.router_agreement_weight <= 0
+    ):
+        raise ValueError("router-agreement weight must be finite and positive")
     partition = validate_partition(args.partition_manifest, args.data_profile)
     reuse = validate_reuse_split(args.reuse_split_manifest)
     selected = {
@@ -784,6 +980,27 @@ def main() -> None:
     gate_up, down = load_target_layer_experts(
         checkpoint, args.layer, device=device, dtype=torch.bfloat16
     )
+    next_norm_weight: Tensor | None = None
+    next_router_weight: Tensor | None = None
+    if args.next_router_agreement:
+        if args.layer >= 39:
+            raise ValueError("layer 39 has no within-token next router")
+        prefix = f"model.language_model.layers.{args.layer + 1}."
+        names = (
+            prefix + "post_attention_layernorm.weight",
+            prefix + "mlp.gate.weight",
+        )
+        values = checkpoint.tensors(names)
+        next_norm_weight = values[names[0]].to(
+            device=device, dtype=torch.bfloat16
+        )
+        next_router_weight = values[names[1]].to(
+            device=device, dtype=torch.bfloat16
+        )
+        if next_norm_weight.shape != (2048,) or next_router_weight.shape != (
+            256, 2048
+        ):
+            raise ValueError("next target router geometry changed")
     model = build_student(args.mode, device)
     initializer_provenance: dict[str, Any] | None = None
     if args.initializer_checkpoint is not None:
@@ -851,6 +1068,11 @@ def main() -> None:
         "diagnostic_reuse": True,
         "scaled_outer_train_factual_reuse": scale_provenance,
         "initializer": initializer_provenance,
+        "next_router_agreement": args.next_router_agreement,
+        "router_agreement_weight": (
+            args.router_agreement_weight if args.next_router_agreement else 0.0
+        ),
+        "frozen_attention_delta_teacher_forcing": args.next_router_agreement,
         "target_state_is_label_only": True,
         "native_target_layer_loaded": True,
         "complete_target_model_loaded": False,
@@ -887,7 +1109,14 @@ def main() -> None:
         },
     )
     microbatch, trace = autotune(
-        model, datasets["train"], args, device=device, gate_up=gate_up, down=down
+        model,
+        datasets["train"],
+        args,
+        device=device,
+        gate_up=gate_up,
+        down=down,
+        next_norm_weight=next_norm_weight,
+        next_router_weight=next_router_weight,
     )
     write_json_exclusive(
         args.output / "MEMORY_AUTOTUNE.json",
@@ -940,6 +1169,11 @@ def main() -> None:
             loss, _parts, *_ = objective(
                 model, host, mode=args.mode, layer=args.layer, device=device,
                 gate_up=gate_up, down=down,
+                next_norm_weight=next_norm_weight,
+                next_router_weight=next_router_weight,
+                router_agreement_weight=(
+                    args.router_agreement_weight if args.next_router_agreement else 0.0
+                ),
             )
             (loss / accumulation).backward()
             total += float(loss.detach())
@@ -952,12 +1186,21 @@ def main() -> None:
             model, datasets["tune"], mode=args.mode, layer=args.layer,
             device=device, gate_up=gate_up, down=down,
             microbatch=microbatch, workers=args.num_workers,
+            next_norm_weight=next_norm_weight,
+            next_router_weight=next_router_weight,
+            router_agreement_weight=(
+                args.router_agreement_weight if args.next_router_agreement else 0.0
+            ),
         )
         append_jsonl(
             args.output / "metrics.jsonl",
             {"epoch": epoch, "train_loss": total / max(batches, 1.0), "tune": tune},
         )
-        value = float(tune["normalized_rmse"])
+        value = (
+            -float(tune["next_router_recall_at_8"])
+            if args.next_router_agreement
+            else float(tune["normalized_rmse"])
+        )
         if value < best_value:
             best_value = value
             best_epoch = epoch
@@ -977,11 +1220,23 @@ def main() -> None:
         model, datasets["development"], mode=args.mode, layer=args.layer,
         device=device, gate_up=gate_up, down=down,
         microbatch=microbatch, workers=args.num_workers,
+        next_norm_weight=next_norm_weight,
+        next_router_weight=next_router_weight,
+        router_agreement_weight=(
+            args.router_agreement_weight if args.next_router_agreement else 0.0
+        ),
     )
     write_rows(args.output / "development_residual_predictions.jsonl", rows)
     component_gate = bool(
-        development["relative_mse_reduction_vs_zero"] >= 0.50
-        and development["cosine"] >= 0.70
+        (
+            development.get("next_router_recall_at_8", 0.0) >= 0.80
+            and development["relative_mse_reduction_vs_zero"] >= 0.40
+        )
+        if args.next_router_agreement
+        else (
+            development["relative_mse_reduction_vs_zero"] >= 0.50
+            and development["cosine"] >= 0.70
+        )
     )
     checkpoint_value = {
         "schema": SCHEMA,
@@ -995,7 +1250,16 @@ def main() -> None:
         "minimum_expert_count": args.minimum_expert_count,
         "trained_selected_slot_mass": trained_mass,
         "best_epoch": best_epoch,
-        "best_tune_normalized_rmse": best_value,
+        "selection_metric": (
+            "next_router_recall_at_8"
+            if args.next_router_agreement else "normalized_rmse"
+        ),
+        "best_selection_value": (
+            -best_value if args.next_router_agreement else best_value
+        ),
+        "best_tune_normalized_rmse": (
+            None if args.next_router_agreement else best_value
+        ),
         "development": development,
         "target_checkpoint_index_sha256": checkpoint.index_sha256,
         "partition_manifest_sha256": sha256_file(args.partition_manifest),

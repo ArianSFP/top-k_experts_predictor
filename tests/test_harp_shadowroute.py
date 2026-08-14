@@ -42,7 +42,10 @@ from harp_rtt.shadow_training import (
     shadow_route_objective,
     teacher_state_reset_interval,
 )
-from runpod.train_shadow_experts_local import ShadowGeneratedTokenDataset
+from runpod.train_shadow_experts_local import (
+    ShadowGeneratedTokenDataset,
+    next_router_agreement_loss,
+)
 
 
 class TinyNativeExperts(nn.Module):
@@ -85,6 +88,10 @@ class TinyGeneratedSegment:
             "selected_expert_ids": 2,
             "selected_execution_weights": 2,
             "routed_expert_output_delta_r": 4,
+            "post_attention_residual_u": 4,
+            "post_moe_residual_xplus": 4,
+            "shared_expert_output_delta_s": 4,
+            "raw_target_router_logits": 256,
         }[role]
         dtype = torch.int32 if role == "selected_expert_ids" else torch.float32
         return torch.full((len(rows), width), rows[0], dtype=dtype)
@@ -103,6 +110,54 @@ def test_generated_token_dataset_is_unique_and_request_allowlisted():
     assert first["targets"]["future_router_inputs"].shape == (1, 4)
     assert first["targets"]["future_selected_ids"].shape == (1, 2)
     assert first["targets"]["future_available"].tolist() == [True]
+    routed = ShadowGeneratedTokenDataset(
+        base,
+        layer=3,
+        allowed_request_ids={"train-a"},
+        next_router_agreement=True,
+    )[0]
+    states = routed["targets"]["future_states"]
+    assert states["next_raw_target_router_logits"].shape == (1, 256)
+    assert states["next_selected_expert_ids"].shape == (1, 2)
+
+
+def test_next_router_agreement_teacher_forcing_and_gradient():
+    torch.manual_seed(17)
+    target_routed = torch.randn(2, 1, 4)
+    predicted = target_routed.clone().requires_grad_(True)
+    current_u = torch.randn(2, 1, 4)
+    shared = torch.randn(2, 1, 4)
+    current_xplus = current_u + shared + target_routed
+    attention_delta = torch.randn(2, 1, 4)
+    next_u = current_xplus + attention_delta
+    norm_weight = torch.randn(4)
+    router_weight = torch.randn(256, 4)
+    normalized = next_u * torch.rsqrt(
+        next_u.square().mean(-1, keepdim=True) + 1e-6
+    ) * norm_weight
+    teacher_logits = torch.nn.functional.linear(normalized, router_weight)
+    teacher_ids = torch.argsort(
+        teacher_logits, dim=-1, descending=True, stable=True
+    )[..., :8]
+    loss, parts, predicted_logits = next_router_agreement_loss(
+        predicted,
+        {
+            "post_attention_residual_u": current_u,
+            "post_moe_residual_xplus": current_xplus,
+            "shared_expert_output_delta_s": shared,
+            "next_post_attention_residual_u": next_u,
+            "next_raw_target_router_logits": teacher_logits,
+            "next_selected_expert_ids": teacher_ids,
+        },
+        torch.ones(2, 1, dtype=torch.bool),
+        norm_weight=norm_weight,
+        router_weight=router_weight,
+    )
+    assert torch.allclose(predicted_logits, teacher_logits, atol=1e-5, rtol=1e-5)
+    assert float(parts["next_router_kl"].detach()) < 1e-6
+    loss.backward()
+    assert predicted.grad is not None
+    assert torch.isfinite(predicted.grad).all()
 
 
 def test_exact_top1_plus_draft_uses_only_top1_native():
