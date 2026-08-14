@@ -75,6 +75,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scale-train-index", type=Path)
     parser.add_argument("--scale-train-corpus", type=Path)
     parser.add_argument("--outer-split-manifest", type=Path)
+    parser.add_argument("--initializer-checkpoint", type=Path)
     parser.add_argument("--target-model", type=Path, required=True)
     parser.add_argument("--mode", choices=MODES, required=True)
     parser.add_argument("--layer", type=int, choices=range(40), required=True)
@@ -776,6 +777,36 @@ def main() -> None:
         checkpoint, args.layer, device=device, dtype=torch.bfloat16
     )
     model = build_student(args.mode, device)
+    initializer_provenance: dict[str, Any] | None = None
+    if args.initializer_checkpoint is not None:
+        initializer = torch.load(
+            args.initializer_checkpoint, map_location="cpu", weights_only=False
+        )
+        expected = {
+            "schema": SCHEMA,
+            "mode": args.mode,
+            "layer": args.layer,
+            "target_checkpoint_index_sha256": checkpoint.index_sha256,
+            "formal_validation_opened": False,
+            "calibration_opened": False,
+            "sealed_test_opened": False,
+        }
+        for field, value in expected.items():
+            if initializer.get(field) != value:
+                raise ValueError(f"ShadowRoute initializer {field} mismatch")
+        state = initializer.get("model_state_dict")
+        if not isinstance(state, Mapping):
+            raise ValueError("ShadowRoute initializer lacks a model state")
+        model.load_state_dict(state, strict=True)
+        initializer_provenance = {
+            "checkpoint_sha256": sha256_file(args.initializer_checkpoint),
+            "source_commit": str(initializer["source_commit"]),
+            "best_epoch": int(initializer["best_epoch"]),
+            "diagnostic_only": bool(initializer.get("diagnostic_only", False)),
+            "closed_loop_authorized": bool(
+                initializer.get("closed_loop_authorized", False)
+            ),
+        }
     selected_neurons = None
     if isinstance(model, IndexedShadowExperts):
         selected_neurons = model.initialize_from_target_neurons(
@@ -811,6 +842,7 @@ def main() -> None:
         "partition_schema": partition["schema"],
         "diagnostic_reuse": True,
         "scaled_outer_train_factual_reuse": scale_provenance,
+        "initializer": initializer_provenance,
         "target_state_is_label_only": True,
         "native_target_layer_loaded": True,
         "complete_target_model_loaded": False,
