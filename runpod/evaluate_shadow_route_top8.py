@@ -48,6 +48,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--native-parity", action="store_true")
     parser.add_argument(
+        "--diagnostic-unpromoted-bundle",
+        action="store_true",
+        help=(
+            "load component-gate failures for a non-promoting Stage-A diagnostic; "
+            "restricted to S0"
+        ),
+    )
+    parser.add_argument(
         "--native-parity-only",
         action="store_true",
         help=(
@@ -143,6 +151,8 @@ def main() -> None:
         raise ValueError("learned evaluation requires --layer-checkpoint-root")
     if args.mode == "indexed_width16" and args.s1_fallback_root is None:
         raise ValueError("S2 evaluation requires the frozen S1 fallback bundle")
+    if args.diagnostic_unpromoted_bundle and args.mode != "exact_top1_plus_draft":
+        raise ValueError("the unpromoted diagnostic override is restricted to S0")
 
     base_manifest, trees, sequence_tokens = load_base_capture(args.base_capture)
     labels, companion_manifest = load_node_counterfactual_companion(
@@ -169,6 +179,7 @@ def main() -> None:
         "trees": len(trees),
         "native_parity_requested": args.native_parity,
         "native_parity_only": args.native_parity_only,
+        "diagnostic_unpromoted_bundle": args.diagnostic_unpromoted_bundle,
         "target_checkpoint_index_sha256": checkpoint.index_sha256,
         "base_capture_manifest_sha256": sha256_file(args.base_capture / "run_manifest.json"),
         "native_companion_manifest_sha256": sha256_file(args.native_companion / "manifest.json"),
@@ -196,6 +207,7 @@ def main() -> None:
             source_commit=args.source_commit,
             target_checkpoint_index_sha256=checkpoint.index_sha256,
             s1_fallback_root=args.s1_fallback_root,
+            allow_unpromoted_diagnostic=args.diagnostic_unpromoted_bundle,
         )
         write_json_exclusive(
             args.output / "BUNDLE_AUDIT.json",
@@ -272,19 +284,28 @@ def main() -> None:
     else:
         metrics, rows = summarize(cells)
     write_rows(args.output / "request_route_predictions.jsonl", rows)
-    large_gain = args.native_parity_only or metrics["route_recall_h2_h4"] >= 0.85
-    h4_gate = args.native_parity_only or metrics["route_recall_h4"] >= 0.80
+    accuracy_gate_met = bool(
+        args.native_parity_only
+        or (
+            metrics["route_recall_h2_h4"] >= 0.85
+            and metrics["route_recall_h4"] >= 0.80
+        )
+    )
+    promotion_eligible = not args.diagnostic_unpromoted_bundle
     result = {
         "schema": RESULT_SCHEMA,
         "mode": args.mode,
         "native_parity_only": args.native_parity_only,
+        "diagnostic_unpromoted_bundle": args.diagnostic_unpromoted_bundle,
+        "promotion_eligible": promotion_eligible,
         "metrics": metrics,
         "native_parity_mismatches": native_mismatches,
         "peak_reserved_gib": peak_gib,
         "gate": {
             "route_recall_h2_h4_required": 0.85,
             "route_recall_h4_required": 0.80,
-            "passed": bool(large_gain and h4_gate),
+            "accuracy_thresholds_met": accuracy_gate_met,
+            "passed": bool(accuracy_gate_met and promotion_eligible),
         },
         "training_started": False,
         "optimizer_constructed": False,

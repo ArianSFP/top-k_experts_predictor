@@ -47,6 +47,7 @@ def _load_value(
     expected_layer: int,
     source_commit: str,
     target_checkpoint_index_sha256: str,
+    allow_unpromoted_diagnostic: bool = False,
 ) -> dict[str, Any]:
     value = torch.load(path, map_location="cpu", weights_only=True)
     if not isinstance(value, dict) or value.get("schema") != LOCAL_SCHEMA:
@@ -61,7 +62,10 @@ def _load_value(
         raise PermissionError("ShadowRoute layer checkpoint opened formal validation")
     if value.get("calibration_opened") is not False or value.get("sealed_test_opened") is not False:
         raise PermissionError("ShadowRoute layer checkpoint crossed a sealed split")
-    if value.get("closed_loop_authorized") is not True:
+    if (
+        value.get("closed_loop_authorized") is not True
+        and not allow_unpromoted_diagnostic
+    ):
         raise PermissionError("ShadowRoute layer shard did not pass its component gate")
     state = value.get("model_state_dict")
     if not isinstance(state, dict):
@@ -76,6 +80,7 @@ def load_shadow_bundle(
     source_commit: str,
     target_checkpoint_index_sha256: str,
     s1_fallback_root: str | Path | None = None,
+    allow_unpromoted_diagnostic: bool = False,
 ) -> tuple[Path, ...]:
     """Load all layer shards, rejecting mixed lineage or partial bundles."""
 
@@ -94,6 +99,7 @@ def load_shadow_bundle(
             expected_layer=layer,
             source_commit=source_commit,
             target_checkpoint_index_sha256=target_checkpoint_index_sha256,
+            allow_unpromoted_diagnostic=allow_unpromoted_diagnostic,
         )
         state = value["model_state_dict"]
         if isinstance(module, ExactTop1PlusDraftExperts):
@@ -120,6 +126,7 @@ def load_shadow_bundle(
                 expected_layer=layer,
                 source_commit=source_commit,
                 target_checkpoint_index_sha256=target_checkpoint_index_sha256,
+                allow_unpromoted_diagnostic=allow_unpromoted_diagnostic,
             )
             module.fallback.draft_expert.load_state_dict(
                 fallback["model_state_dict"], strict=True
