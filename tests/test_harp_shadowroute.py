@@ -174,6 +174,19 @@ def test_exact_top1_plus_draft_uses_only_top1_native():
     assert torch.allclose(output[1], torch.full((3,), 0.6))
 
 
+def test_exact_topk_without_draft_uses_requested_native_slots():
+    native = TinyNativeExperts(4, 3)
+    draft = SwiGLUDraftExpert(3, 2)
+    module = ExactTop1PlusDraftExperts(
+        native, draft, experts=4, exact_slots=2, draft_scale=0.0
+    )
+    hidden = torch.ones(1, 3)
+    ids = torch.tensor([[2, 1, 0]])
+    weights = torch.tensor([[0.5, 0.3, 0.2]])
+    expected = native(hidden, ids[:, :2], weights[:, :2])
+    assert torch.equal(module(hidden, ids, weights), expected)
+
+
 def test_indexed_shadow_execution_and_gradient_ownership():
     config = ShadowExpertConfig(
         hidden_width=3, experts=4, exact_k=2, shadow_width=1,

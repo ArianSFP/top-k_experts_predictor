@@ -198,6 +198,8 @@ class ExactTop1PlusDraftExperts(nn.Module):
         draft_expert: SwiGLUDraftExpert,
         *,
         experts: int = 256,
+        exact_slots: int = 1,
+        draft_scale: float = 1.0,
     ) -> None:
         super().__init__()
         if isinstance(native_experts, nn.Module):
@@ -208,6 +210,12 @@ class ExactTop1PlusDraftExperts(nn.Module):
             self._native_callable = native_experts
         self.draft_expert = draft_expert
         self.experts = int(experts)
+        self.exact_slots = int(exact_slots)
+        self.draft_scale = float(draft_scale)
+        if not 1 <= self.exact_slots <= 8:
+            raise ValueError("exact native slots must lie in 1..8")
+        if not math.isfinite(self.draft_scale) or self.draft_scale < 0:
+            raise ValueError("draft scale must be finite and non-negative")
 
     def _native(self, hidden: Tensor, ids: Tensor, weights: Tensor) -> Tensor:
         function = self.native_experts if self.native_experts is not None else self._native_callable
@@ -222,9 +230,15 @@ class ExactTop1PlusDraftExperts(nn.Module):
             hidden_states, top_k_index, top_k_weights,
             hidden_width=self.draft_expert.hidden_width, experts=self.experts,
         )
-        exact_top1 = self._native(hidden, ids[:, :1], weights[:, :1])
+        if self.exact_slots > ids.shape[1]:
+            raise ValueError("exact native slots exceed the routed top-k width")
+        exact_top1 = self._native(
+            hidden, ids[:, : self.exact_slots], weights[:, : self.exact_slots]
+        )
         residual = self.draft_expert(hidden)
-        return (exact_top1 + residual).reshape(*leading, hidden.shape[-1])
+        return (
+            exact_top1 + self.draft_scale * residual
+        ).reshape(*leading, hidden.shape[-1])
 
 
 class SharedResidualExperts(nn.Module):

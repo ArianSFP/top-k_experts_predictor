@@ -69,6 +69,8 @@ def install_shadow_experts(
     *,
     retain_native: bool = False,
     shadow_width: int = 16,
+    exact_slots: int = 1,
+    draft_scale: float = 1.0,
 ) -> InstalledShadowBackbone:
     """Replace only routed experts in an already-materialized official model."""
 
@@ -82,7 +84,13 @@ def install_shadow_experts(
         device, dtype = _module_device_dtype(original)
         if mode == "exact_top1_plus_draft":
             draft = SwiGLUDraftExpert(2048, 512).to(device=device, dtype=dtype)
-            replacement = ExactTop1PlusDraftExperts(original, draft, experts=256)
+            replacement = ExactTop1PlusDraftExperts(
+                original,
+                draft,
+                experts=256,
+                exact_slots=exact_slots,
+                draft_scale=draft_scale,
+            )
             native.append(original)
         elif mode == "shared_width128":
             draft = SwiGLUDraftExpert(2048, 128).to(device=device, dtype=dtype)

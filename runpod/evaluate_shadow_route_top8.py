@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--layer-checkpoint-root", type=Path)
     parser.add_argument("--s1-fallback-root", type=Path)
     parser.add_argument("--shadow-width", type=int, choices=(16, 32, 64), default=16)
+    parser.add_argument("--native-exact-slots", type=int, choices=(1, 2, 4, 6, 8))
     parser.add_argument(
         "--mode",
         choices=("exact_top1_plus_draft", "shared_width128", "indexed_width16"),
@@ -157,8 +158,12 @@ def main() -> None:
         raise ValueError("evaluation limit must be positive")
     if args.native_parity_only:
         args.native_parity = True
-    elif args.layer_checkpoint_root is None:
+    elif args.layer_checkpoint_root is None and args.native_exact_slots is None:
         raise ValueError("learned evaluation requires --layer-checkpoint-root")
+    if args.native_exact_slots is not None and args.mode != "exact_top1_plus_draft":
+        raise ValueError("native top-k diagnostic requires the exact-top1 S0 wrapper")
+    if args.native_exact_slots is not None and args.layer_checkpoint_root is not None:
+        raise ValueError("native top-k diagnostic may not load a learned bundle")
     if args.diagnostic_unpromoted_bundle and args.mode not in {
         "exact_top1_plus_draft", "indexed_width16"
     }:
@@ -188,6 +193,8 @@ def main() -> None:
         "execution_source_commit": args.execution_source_commit,
         "mode": args.mode,
         "shadow_width": args.shadow_width,
+        "native_exact_slots": args.native_exact_slots,
+        "draft_scale": 0.0 if args.native_exact_slots is not None else 1.0,
         "trees": len(trees),
         "native_parity_requested": args.native_parity,
         "native_parity_only": args.native_parity_only,
@@ -209,9 +216,14 @@ def main() -> None:
 
     target, _config = load_target(args.model, device=args.device)
     installed = install_shadow_experts(
-        target, args.mode, retain_native=True, shadow_width=args.shadow_width
+        target,
+        args.mode,
+        retain_native=True,
+        shadow_width=args.shadow_width,
+        exact_slots=(1 if args.native_exact_slots is None else args.native_exact_slots),
+        draft_scale=(1.0 if args.native_exact_slots is None else 0.0),
     )
-    if not args.native_parity_only:
+    if not args.native_parity_only and args.native_exact_slots is None:
         assert args.layer_checkpoint_root is not None
         layer_paths = load_shadow_bundle(
             installed,
