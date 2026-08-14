@@ -19,13 +19,19 @@ from .shadow_checkpoint import (
 from .shadow_expert import (
     ExactTop1PlusDraftExperts,
     IndexedShadowExperts,
+    PackedInt4TopKExperts,
     ShadowExpertConfig,
     SharedResidualExperts,
     SwiGLUDraftExpert,
 )
 
 
-SHADOW_MODES = ("exact_top1_plus_draft", "shared_width128", "indexed_width16")
+SHADOW_MODES = (
+    "exact_top1_plus_draft",
+    "shared_width128",
+    "indexed_width16",
+    "int4_top4",
+)
 
 
 def resolve_text_model(model: nn.Module) -> nn.Module:
@@ -97,7 +103,7 @@ def install_shadow_experts(
             draft = SwiGLUDraftExpert(2048, 128).to(device=device, dtype=dtype)
             replacement = SharedResidualExperts(draft, experts=256)
             native.append(original if retain_native else None)
-        else:
+        elif mode == "indexed_width16":
             fallback = SharedResidualExperts(
                 SwiGLUDraftExpert(2048, 128), experts=256
             )
@@ -109,6 +115,12 @@ def install_shadow_experts(
                 fallback=fallback,
             ).to(device=device, dtype=dtype)
             native.append(original if retain_native else None)
+        else:
+            replacement = PackedInt4TopKExperts(
+                active_slots=indexed_active_slots,
+                device=device,
+            )
+            native.append(original if retain_native else None)
         layer.mlp.experts = replacement
         installed.append(replacement)
     for parameter in resolve_text_model(model).parameters():
@@ -118,7 +130,7 @@ def install_shadow_experts(
             module.draft_expert.requires_grad_(True)
             if module.native_experts is not None:
                 module.native_experts.requires_grad_(False)
-        else:
+        elif isinstance(module, (SharedResidualExperts, IndexedShadowExperts)):
             module.requires_grad_(True)
     return InstalledShadowBackbone(
         model=model,

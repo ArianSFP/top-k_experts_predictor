@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--native-exact-slots", type=int, choices=(1, 2, 4, 6, 8))
     parser.add_argument(
         "--mode",
-        choices=("exact_top1_plus_draft", "shared_width128", "indexed_width16"),
+        choices=("exact_top1_plus_draft", "shared_width128", "indexed_width16", "int4_top4"),
         required=True,
     )
     parser.add_argument("--source-commit", required=True)
@@ -60,7 +60,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "load component-gate failures for a non-promoting Stage-A diagnostic; "
-            "restricted to S0"
+            "restricted to S0/S2/INT4"
         ),
     )
     parser.add_argument(
@@ -166,9 +166,9 @@ def main() -> None:
     if args.native_exact_slots is not None and args.layer_checkpoint_root is not None:
         raise ValueError("native top-k diagnostic may not load a learned bundle")
     if args.diagnostic_unpromoted_bundle and args.mode not in {
-        "exact_top1_plus_draft", "indexed_width16"
+        "exact_top1_plus_draft", "indexed_width16", "int4_top4"
     }:
-        raise ValueError("the unpromoted diagnostic override is restricted to S0/S2")
+        raise ValueError("the unpromoted diagnostic override is restricted to S0/S2/INT4")
 
     base_manifest, trees, sequence_tokens = load_base_capture(args.base_capture)
     labels, companion_manifest = load_node_counterfactual_companion(

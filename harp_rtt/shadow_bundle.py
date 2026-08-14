@@ -11,6 +11,7 @@ from .shadow_backbone import InstalledShadowBackbone
 from .shadow_expert import (
     ExactTop1PlusDraftExperts,
     IndexedShadowExperts,
+    PackedInt4TopKExperts,
     SharedResidualExperts,
 )
 
@@ -20,6 +21,7 @@ CHECKPOINT_MODE = {
     "exact_top1_plus_draft": "s0_exact_top1_plus_draft",
     "shared_width128": "s1_shared",
     "indexed_width16": "s2_indexed",
+    "int4_top4": "int4_top4",
 }
 
 
@@ -144,6 +146,21 @@ def load_shadow_bundle(
                 module.fallback.draft_expert.load_state_dict(
                     fallback["model_state_dict"], strict=True
                 )
+        elif isinstance(module, PackedInt4TopKExperts):
+            expected = {
+                "gate_up_packed",
+                "gate_up_scales",
+                "down_packed",
+                "down_scales",
+            }
+            if set(state) != expected:
+                raise ValueError("INT4 shadow shard state is incomplete")
+            if (
+                int(value.get("group_size", -1)) != module.group_size
+                or int(value.get("active_slots", -1)) != module.active_slots
+            ):
+                raise ValueError("INT4 shadow runtime configuration differs from shard")
+            module.load_state_dict(state, strict=True)
         else:  # pragma: no cover - installed bundle invariant
             raise TypeError("installed layer is not a ShadowRoute expert")
         module.eval()

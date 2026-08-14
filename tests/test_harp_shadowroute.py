@@ -28,11 +28,14 @@ from harp_rtt.shadow_checkpoint import (
 from harp_rtt.shadow_expert import (
     ExactTop1PlusDraftExperts,
     IndexedShadowExperts,
+    PackedInt4TopKExperts,
     ShadowExpertConfig,
     SharedResidualExperts,
     SwiGLUDraftExpert,
     shadow_pool_parameter_count,
     target_neuron_importance,
+    dequantize_groupwise_int4,
+    quantize_groupwise_int4,
     target_selected_expert_outputs,
 )
 from harp_rtt.shadow_route import raw_mtp_prior_mixture
@@ -185,6 +188,43 @@ def test_exact_topk_without_draft_uses_requested_native_slots():
     weights = torch.tensor([[0.5, 0.3, 0.2]])
     expected = native(hidden, ids[:, :2], weights[:, :2])
     assert torch.equal(module(hidden, ids, weights), expected)
+
+
+def test_groupwise_int4_round_trip_and_sparse_execution():
+    torch.manual_seed(7)
+    gate_up = torch.randn(3, 4, 4)
+    down = torch.randn(3, 4, 2)
+    gate_packed, gate_scales = quantize_groupwise_int4(gate_up, group_size=2)
+    down_packed, down_scales = quantize_groupwise_int4(down, group_size=2)
+    reconstructed_gate = dequantize_groupwise_int4(
+        gate_packed, gate_scales, group_size=2, dtype=torch.float32
+    )
+    reconstructed_down = dequantize_groupwise_int4(
+        down_packed, down_scales, group_size=2, dtype=torch.float32
+    )
+    assert float((reconstructed_gate - gate_up).square().mean().sqrt()) < 0.2
+    module = PackedInt4TopKExperts(
+        hidden_width=4,
+        intermediate_width=2,
+        experts=3,
+        active_slots=2,
+        group_size=2,
+    )
+    module.gate_up_packed.copy_(gate_packed)
+    module.gate_up_scales.copy_(gate_scales)
+    module.down_packed.copy_(down_packed)
+    module.down_scales.copy_(down_scales)
+    hidden = torch.randn(2, 4)
+    ids = torch.tensor([[0, 2, 1], [1, 0, 2]])
+    weights = torch.tensor([[0.5, 0.3, 0.2], [0.6, 0.25, 0.15]])
+    individual = target_selected_expert_outputs(
+        hidden,
+        ids[:, :2],
+        reconstructed_gate,
+        reconstructed_down,
+    )
+    expected = (individual * weights[:, :2, None]).sum(1)
+    assert torch.allclose(module(hidden, ids, weights), expected, atol=1e-6, rtol=1e-6)
 
 
 def test_indexed_shadow_execution_and_gradient_ownership():

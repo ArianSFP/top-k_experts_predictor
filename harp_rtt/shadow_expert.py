@@ -396,6 +396,149 @@ class IndexedShadowExperts(nn.Module):
         return routed.reshape(*leading, cfg.hidden_width)
 
 
+def quantize_groupwise_int4(
+    weight: Tensor, *, group_size: int = 64
+) -> tuple[Tensor, Tensor]:
+    """Symmetric signed INT4 quantization packed along the input dimension."""
+
+    if weight.ndim < 2 or not weight.is_floating_point():
+        raise ValueError("INT4 weights must be floating point with rank at least two")
+    if group_size < 2 or group_size % 2 or weight.shape[-1] % group_size:
+        raise ValueError("INT4 group size must be even and divide the input width")
+    grouped = weight.float().reshape(*weight.shape[:-1], -1, group_size)
+    scales = grouped.abs().amax(-1).div(7.0).clamp_min(1e-8)
+    quantized = torch.round(grouped / scales[..., None]).clamp(-7, 7).to(torch.int8)
+    unsigned = (quantized + 8).to(torch.uint8).reshape(*weight.shape[:-1], -1)
+    packed = unsigned[..., 0::2] | (unsigned[..., 1::2] << 4)
+    return packed.contiguous(), scales.to(torch.bfloat16).contiguous()
+
+
+def dequantize_groupwise_int4(
+    packed: Tensor,
+    scales: Tensor,
+    *,
+    group_size: int = 64,
+    dtype: torch.dtype = torch.bfloat16,
+) -> Tensor:
+    """Unpack a groupwise INT4 matrix into the requested compute dtype."""
+
+    if packed.dtype != torch.uint8 or scales.ndim != packed.ndim:
+        raise ValueError("packed INT4/scales geometry is invalid")
+    values = torch.empty(
+        *packed.shape[:-1], packed.shape[-1] * 2,
+        dtype=torch.int8,
+        device=packed.device,
+    )
+    values[..., 0::2] = (packed & 0x0F).to(torch.int8) - 8
+    values[..., 1::2] = ((packed >> 4) & 0x0F).to(torch.int8) - 8
+    groups = scales.shape[-1]
+    if values.shape[-1] != groups * group_size:
+        raise ValueError("packed INT4 width disagrees with scale groups")
+    return (
+        values.reshape(*values.shape[:-1], groups, group_size).to(dtype)
+        * scales.to(dtype)[..., None]
+    ).reshape(*values.shape[:-1], groups * group_size)
+
+
+class PackedInt4TopKExperts(nn.Module):
+    """Complete Qwen expert nonlinearities in groupwise INT4, sparse top-k."""
+
+    def __init__(
+        self,
+        *,
+        hidden_width: int = 2048,
+        intermediate_width: int = 512,
+        experts: int = 256,
+        active_slots: int = 4,
+        group_size: int = 64,
+        device: torch.device | str | None = None,
+    ) -> None:
+        super().__init__()
+        if not 1 <= active_slots <= 8:
+            raise ValueError("INT4 active slots must lie in 1..8")
+        if hidden_width % group_size or intermediate_width % group_size:
+            raise ValueError("INT4 group size must divide both expert input widths")
+        self.hidden_width = int(hidden_width)
+        self.intermediate_width = int(intermediate_width)
+        self.experts = int(experts)
+        self.active_slots = int(active_slots)
+        self.group_size = int(group_size)
+        self.register_buffer(
+            "gate_up_packed",
+            torch.empty(
+                experts,
+                2 * intermediate_width,
+                hidden_width // 2,
+                dtype=torch.uint8,
+                device=device,
+            ),
+        )
+        self.register_buffer(
+            "gate_up_scales",
+            torch.empty(
+                experts,
+                2 * intermediate_width,
+                hidden_width // group_size,
+                dtype=torch.bfloat16,
+                device=device,
+            ),
+        )
+        self.register_buffer(
+            "down_packed",
+            torch.empty(
+                experts,
+                hidden_width,
+                intermediate_width // 2,
+                dtype=torch.uint8,
+                device=device,
+            ),
+        )
+        self.register_buffer(
+            "down_scales",
+            torch.empty(
+                experts,
+                hidden_width,
+                intermediate_width // group_size,
+                dtype=torch.bfloat16,
+                device=device,
+            ),
+        )
+
+    def forward(
+        self, hidden_states: Tensor, top_k_index: Tensor, top_k_weights: Tensor
+    ) -> Tensor:
+        hidden, ids, weights, leading = _validate_routed_inputs(
+            hidden_states,
+            top_k_index,
+            top_k_weights,
+            hidden_width=self.hidden_width,
+            experts=self.experts,
+        )
+        ids = ids[:, : self.active_slots]
+        weights = weights[:, : self.active_slots]
+        output = torch.zeros_like(hidden)
+        for expert_id in torch.unique(ids).tolist():
+            positions = (ids == int(expert_id)).nonzero(as_tuple=False)
+            token_index, slot_index = positions[:, 0], positions[:, 1]
+            gate_up = dequantize_groupwise_int4(
+                self.gate_up_packed[int(expert_id)],
+                self.gate_up_scales[int(expert_id)],
+                group_size=self.group_size,
+                dtype=hidden.dtype,
+            )
+            projected = F.linear(hidden[token_index], gate_up)
+            gate, up = projected.chunk(2, dim=-1)
+            down = dequantize_groupwise_int4(
+                self.down_packed[int(expert_id)],
+                self.down_scales[int(expert_id)],
+                group_size=self.group_size,
+                dtype=hidden.dtype,
+            )
+            value = F.linear(F.silu(gate) * up, down)
+            output[token_index] += value * weights[token_index, slot_index, None]
+        return output.reshape(*leading, self.hidden_width)
+
+
 def shadow_pool_parameter_count(
     *, layers: int = 40, experts: int = 256, hidden_width: int = 2048,
     shadow_width: int = 16,
@@ -409,11 +552,14 @@ def shadow_pool_parameter_count(
 __all__ = [
     "ExactTop1PlusDraftExperts",
     "IndexedShadowExperts",
+    "PackedInt4TopKExperts",
     "RoutedExperts",
     "ShadowExpertConfig",
     "SharedResidualExperts",
     "SwiGLUDraftExpert",
     "shadow_pool_parameter_count",
+    "dequantize_groupwise_int4",
+    "quantize_groupwise_int4",
     "target_neuron_importance",
     "target_selected_expert_outputs",
 ]
