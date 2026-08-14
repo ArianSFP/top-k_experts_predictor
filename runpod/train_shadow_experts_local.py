@@ -31,7 +31,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from harp_rtt.future_state_adapter import FutureTargetStateAdapter  # noqa: E402
 from harp_rtt.dataset import HarpRTTDataset  # noqa: E402
 from harp_rtt.shadow_checkpoint import (  # noqa: E402
     IndexedCheckpoint,
@@ -93,6 +92,68 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+class ShadowFactualStateDataset(Dataset[dict[str, Any]]):
+    """Minimal label-only factual reader for local shadow-expert training."""
+
+    def __init__(self, base: Dataset[Any]) -> None:
+        if isinstance(base, RequestSubset):
+            self.source = base.base
+            self.indices = tuple(int(index) for index in base.indices)
+        elif isinstance(base, HarpRTTDataset):
+            self.source = base
+            self.indices = tuple(range(len(base)))
+        else:
+            raise TypeError("ShadowRoute factual reader requires a frozen HARP dataset")
+        if not isinstance(self.source, HarpRTTDataset):
+            raise TypeError("ShadowRoute factual reader cannot locate HarpRTTDataset")
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        record = self.source.records[self.indices[index]]
+        segment = self.source.segments[record.segment]
+        future = [
+            segment.read_layer_token(
+                "target",
+                row,
+                (
+                    "normalized_target_router_input_a",
+                    "selected_expert_ids",
+                    "selected_execution_weights",
+                    "routed_expert_output_delta_r",
+                ),
+            )
+            for row in record.future_rows
+        ]
+        return {
+            "metadata": {
+                "request_id": str(segment.sequences[record.sequence]["request_id"]),
+                "position": int(record.position),
+            },
+            # Serving inputs are deliberately absent from this layer-local
+            # component probe.  Every tensor below is a train-only teacher.
+            "inputs": {},
+            "targets": {
+                "future_router_inputs": torch.stack(
+                    [row["normalized_target_router_input_a"] for row in future]
+                ),
+                "future_selected_ids": torch.stack(
+                    [row["selected_expert_ids"].to(torch.int64) for row in future]
+                ),
+                "future_execution_weights": torch.stack(
+                    [row["selected_execution_weights"].float() for row in future]
+                ),
+                "future_available": torch.ones((4, 40), dtype=torch.bool),
+                "future_states": {
+                    "routed_expert_output_delta_r": torch.stack(
+                        [row["routed_expert_output_delta_r"] for row in future]
+                    )
+                },
+            },
+        }
+
+
 def write_json_exclusive(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8") as handle:
@@ -131,7 +192,7 @@ def load_split(
     split: str,
     *,
     selected_requests: set[str] | None,
-) -> tuple[FutureTargetStateAdapter, set[str]]:
+) -> tuple[ShadowFactualStateDataset, set[str]]:
     index = getattr(args, f"{split}_index")
     corpus = getattr(args, f"{split}_corpus")
     companion = getattr(args, f"{split}_companion")
@@ -191,14 +252,7 @@ def load_split(
     ):
         raise ValueError(f"ShadowRoute {split} split has invalid row/request counts")
     return (
-        FutureTargetStateAdapter(
-            filtered,
-            roles=(
-                "post_attention_residual_u",
-                "routed_expert_output_delta_r",
-                "post_moe_residual_xplus",
-            ),
-        ),
+        ShadowFactualStateDataset(filtered),
         set(counts),
     )
 
@@ -485,12 +539,16 @@ def main() -> None:
         selected_neurons = model.initialize_from_target_neurons(
             gate_up, down, target_neuron_importance(gate_up, down)
         ).cpu()
-    counts = expert_counts(
-        datasets["train"], layer=args.layer, device=device, workers=args.num_workers
-    )
-    trained_mass = float(
-        counts[counts >= args.minimum_expert_count].sum() / counts.sum().clamp_min(1)
-    )
+    if args.mode == "s2_indexed":
+        counts = expert_counts(
+            datasets["train"], layer=args.layer, device=device, workers=args.num_workers
+        )
+        trained_mass = float(
+            counts[counts >= args.minimum_expert_count].sum() / counts.sum().clamp_min(1)
+        )
+    else:
+        counts = torch.zeros(256, dtype=torch.int64)
+        trained_mass = 1.0
 
     args.output.mkdir(parents=True)
     manifest = {
@@ -524,7 +582,11 @@ def main() -> None:
             parameter.numel() for parameter in model.parameters() if parameter.requires_grad
         ),
         "minimum_expert_count": args.minimum_expert_count,
-        "trained_expert_count": int((counts >= args.minimum_expert_count).sum()),
+        "expert_frequency_gate_applicable": args.mode == "s2_indexed",
+        "trained_expert_count": (
+            int((counts >= args.minimum_expert_count).sum())
+            if args.mode == "s2_indexed" else 256
+        ),
         "trained_selected_slot_mass": trained_mass,
     }
     write_json_exclusive(args.output / "run_manifest.json", manifest)
