@@ -70,7 +70,8 @@ class _Experts(nn.Module):
         self.projection = nn.Linear(4, 4, bias=False)
 
     def forward(self, hidden, _ids, _weights):
-        return self.projection(hidden)
+        # The official Qwen routed expert contract flattens batch/token axes.
+        return self.projection(hidden.reshape(-1, hidden.shape[-1]))
 
 
 class _Mlp(nn.Module):
@@ -90,7 +91,7 @@ class _Layer(nn.Module):
         self.mlp = _Mlp()
 
     def forward(self, hidden):
-        return hidden + self.mlp(hidden)
+        return hidden + self.mlp(hidden).reshape_as(hidden)
 
 
 class _Model(nn.Module):
@@ -114,4 +115,3 @@ def test_training_hooks_preserve_gradients_across_all_layers() -> None:
         assert routed.shape == hidden.shape == (40, 4)
         (logits.square().mean() + routed.square().mean() + hidden.square().mean()).backward()
     assert all(layer.mlp.experts.projection.weight.grad is not None for layer in model.layers)
-

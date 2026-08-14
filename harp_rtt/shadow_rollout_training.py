@@ -148,11 +148,18 @@ class ShadowTrainingHooks(AbstractContextManager):
         logits = torch.stack([self.rows[layer]["router_logits"][0] for layer in range(40)])
         ids = torch.stack([self.rows[layer]["selected_ids"][0] for layer in range(40)])
         weights = torch.stack([self.rows[layer]["selected_weights"][0] for layer in range(40)])
+        def last_token(value: Tensor) -> Tensor:
+            if value.ndim == 2:
+                return value[-1]
+            if value.ndim == 3:
+                return value[0, -1]
+            raise ValueError("ShadowRoute hook state must be [tokens,D] or [B,T,D]")
+
         routed = torch.stack(
-            [self.rows[layer]["routed_delta"][0, -1] for layer in range(40)]
+            [last_token(self.rows[layer]["routed_delta"]) for layer in range(40)]
         )
         hidden = torch.stack(
-            [self.rows[layer]["hidden_state"][0, -1] for layer in range(40)]
+            [last_token(self.rows[layer]["hidden_state"]) for layer in range(40)]
         )
         return logits, ids, weights, routed, hidden
 
