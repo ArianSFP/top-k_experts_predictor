@@ -134,7 +134,7 @@ def test_next_router_agreement_teacher_forcing_and_gradient():
     router_weight = torch.randn(256, 4)
     normalized = next_u * torch.rsqrt(
         next_u.square().mean(-1, keepdim=True) + 1e-6
-    ) * norm_weight
+    ) * (1.0 + norm_weight)
     teacher_logits = torch.nn.functional.linear(normalized, router_weight)
     teacher_ids = torch.argsort(
         teacher_logits, dim=-1, descending=True, stable=True

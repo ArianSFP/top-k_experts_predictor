@@ -603,7 +603,10 @@ def next_router_agreement_loss(
     normalized = values * torch.rsqrt(
         values.square().mean(-1, keepdim=True) + 1e-6
     )
-    normalized = normalized * norm_weight.float()
+    # Qwen3.5-MoE stores an RMSNorm delta and applies ``1 + weight``.
+    # Multiplying by the raw checkpoint tensor rotates the router input into a
+    # near-zero, semantically wrong space.
+    normalized = normalized * (1.0 + norm_weight.float())
     predicted_logits = F.linear(normalized, router_weight.float())
     teacher_probability = torch.softmax(teacher_logits.detach().float(), dim=-1)
     kl_rows = F.kl_div(
