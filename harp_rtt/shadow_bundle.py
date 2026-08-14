@@ -118,19 +118,25 @@ def load_shadow_bundle(
             if not isinstance(counts, torch.Tensor) or minimum < 1:
                 raise ValueError("indexed shadow shard lacks expert coverage contract")
             module.set_trained_counts(counts, minimum=minimum)
-            if fallback_paths is None or module.fallback is None:
-                raise ValueError("indexed shadow bundle requires a complete S1 fallback")
-            fallback = _load_value(
-                fallback_paths[layer],
-                expected_mode="s1_shared",
-                expected_layer=layer,
-                source_commit=source_commit,
-                target_checkpoint_index_sha256=target_checkpoint_index_sha256,
-                allow_unpromoted_diagnostic=allow_unpromoted_diagnostic,
-            )
-            module.fallback.draft_expert.load_state_dict(
-                fallback["model_state_dict"], strict=True
-            )
+            if fallback_paths is None:
+                if not bool(module.trained_experts.all()):
+                    raise ValueError(
+                        "indexed shadow bundle has untrained experts without S1 fallback"
+                    )
+            else:
+                if module.fallback is None:
+                    raise ValueError("indexed shadow module lacks its declared S1 fallback")
+                fallback = _load_value(
+                    fallback_paths[layer],
+                    expected_mode="s1_shared",
+                    expected_layer=layer,
+                    source_commit=source_commit,
+                    target_checkpoint_index_sha256=target_checkpoint_index_sha256,
+                    allow_unpromoted_diagnostic=allow_unpromoted_diagnostic,
+                )
+                module.fallback.draft_expert.load_state_dict(
+                    fallback["model_state_dict"], strict=True
+                )
         else:  # pragma: no cover - installed bundle invariant
             raise TypeError("installed layer is not a ShadowRoute expert")
         module.eval()

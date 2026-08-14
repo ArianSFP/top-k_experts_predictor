@@ -3,6 +3,9 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from harp_rtt.shadow_backbone import InstalledShadowBackbone
+from harp_rtt.shadow_bundle import LOCAL_SCHEMA, load_shadow_bundle
+from harp_rtt.shadow_expert import IndexedShadowExperts, ShadowExpertConfig
 from harp_rtt.shadow_rollout_training import (
     ShadowTrainingHooks,
     cache_to_cpu,
@@ -133,3 +136,82 @@ def test_training_hooks_preserve_gradients_across_all_layers() -> None:
         assert routed.shape == hidden.shape == (40, 4)
         (logits.square().mean() + routed.square().mean() + hidden.square().mean()).backward()
     assert all(layer.mlp.experts.projection.weight.grad is not None for layer in model.layers)
+
+
+def _indexed_bundle(tmp_path, *, trained: bool):
+    modules = tuple(
+        IndexedShadowExperts(
+            ShadowExpertConfig(
+                hidden_width=4,
+                experts=4,
+                exact_k=2,
+                shadow_width=1,
+                target_intermediate_width=2,
+            ),
+            fallback=None,
+        )
+        for _ in range(40)
+    )
+    source = "a" * 40
+    target = "b" * 64
+    counts = torch.ones(4, dtype=torch.int64) if trained else torch.zeros(4, dtype=torch.int64)
+    for layer, module in enumerate(modules):
+        directory = tmp_path / f"layer_{layer:02d}"
+        directory.mkdir()
+        torch.save(
+            {
+                "schema": LOCAL_SCHEMA,
+                "mode": "s2_indexed",
+                "layer": layer,
+                "source_commit": source,
+                "target_checkpoint_index_sha256": target,
+                "model_state_dict": {
+                    name: value.detach().clone()
+                    for name, value in module.state_dict().items()
+                    if name in {"gate_up_proj", "down_proj", "trained_experts"}
+                },
+                "expert_counts": counts,
+                "minimum_expert_count": 1,
+                "closed_loop_authorized": False,
+                "formal_validation_opened": False,
+                "calibration_opened": False,
+                "sealed_test_opened": False,
+            },
+            directory / f"shadow_s2_indexed_layer_{layer:02d}.pt",
+        )
+    installed = InstalledShadowBackbone(
+        model=nn.Identity(),
+        mode="indexed_width16",
+        native_experts=tuple([None] * 40),
+        shadow_experts=modules,
+    )
+    return installed, source, target
+
+
+def test_all_trained_indexed_bundle_does_not_require_fallback(tmp_path) -> None:
+    installed, source, target = _indexed_bundle(tmp_path, trained=True)
+    paths = load_shadow_bundle(
+        installed,
+        tmp_path,
+        source_commit=source,
+        target_checkpoint_index_sha256=target,
+        allow_unpromoted_diagnostic=True,
+    )
+    assert len(paths) == 40
+    assert all(bool(module.trained_experts.all()) for module in installed.shadow_experts)
+
+
+def test_untrained_indexed_bundle_still_requires_fallback(tmp_path) -> None:
+    installed, source, target = _indexed_bundle(tmp_path, trained=False)
+    try:
+        load_shadow_bundle(
+            installed,
+            tmp_path,
+            source_commit=source,
+            target_checkpoint_index_sha256=target,
+            allow_unpromoted_diagnostic=True,
+        )
+    except ValueError as error:
+        assert "without S1 fallback" in str(error)
+    else:  # pragma: no cover - fail-closed contract
+        raise AssertionError("untrained indexed bundle loaded without fallback")

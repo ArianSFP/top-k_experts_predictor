@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--native-companion", type=Path, required=True)
     parser.add_argument("--layer-checkpoint-root", type=Path)
     parser.add_argument("--s1-fallback-root", type=Path)
+    parser.add_argument("--shadow-width", type=int, choices=(16, 32, 64), default=16)
     parser.add_argument(
         "--mode",
         choices=("exact_top1_plus_draft", "shared_width128", "indexed_width16"),
@@ -158,10 +159,10 @@ def main() -> None:
         args.native_parity = True
     elif args.layer_checkpoint_root is None:
         raise ValueError("learned evaluation requires --layer-checkpoint-root")
-    if args.mode == "indexed_width16" and args.s1_fallback_root is None:
-        raise ValueError("S2 evaluation requires the frozen S1 fallback bundle")
-    if args.diagnostic_unpromoted_bundle and args.mode != "exact_top1_plus_draft":
-        raise ValueError("the unpromoted diagnostic override is restricted to S0")
+    if args.diagnostic_unpromoted_bundle and args.mode not in {
+        "exact_top1_plus_draft", "indexed_width16"
+    }:
+        raise ValueError("the unpromoted diagnostic override is restricted to S0/S2")
 
     base_manifest, trees, sequence_tokens = load_base_capture(args.base_capture)
     labels, companion_manifest = load_node_counterfactual_companion(
@@ -186,6 +187,7 @@ def main() -> None:
         "source_commit": args.source_commit,
         "execution_source_commit": args.execution_source_commit,
         "mode": args.mode,
+        "shadow_width": args.shadow_width,
         "trees": len(trees),
         "native_parity_requested": args.native_parity,
         "native_parity_only": args.native_parity_only,
@@ -207,7 +209,7 @@ def main() -> None:
 
     target, _config = load_target(args.model, device=args.device)
     installed = install_shadow_experts(
-        target, args.mode, retain_native=True, shadow_width=16
+        target, args.mode, retain_native=True, shadow_width=args.shadow_width
     )
     if not args.native_parity_only:
         assert args.layer_checkpoint_root is not None
