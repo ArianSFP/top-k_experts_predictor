@@ -42,6 +42,7 @@ from harp_rtt.shadow_training import (
     shadow_route_objective,
     teacher_state_reset_interval,
 )
+from runpod.train_shadow_experts_local import ShadowGeneratedTokenDataset
 
 
 class TinyNativeExperts(nn.Module):
@@ -67,6 +68,41 @@ class ConstantFallback(nn.Module):
     def forward(self, hidden, ids, weights):
         del ids, weights
         return torch.full_like(hidden, self.value)
+
+
+class TinyGeneratedSegment:
+    def __init__(self) -> None:
+        self.target_by_position = {(0, 4): 0, (0, 5): 40, (1, 7): 80}
+        self.sequences = [
+            {"request_id": "train-a", "split": "train"},
+            {"request_id": "holdout-b", "split": "train"},
+        ]
+
+    def read(self, kind, rows, role):
+        assert kind == "target"
+        width = {
+            "normalized_target_router_input_a": 4,
+            "selected_expert_ids": 2,
+            "selected_execution_weights": 2,
+            "routed_expert_output_delta_r": 4,
+        }[role]
+        dtype = torch.int32 if role == "selected_expert_ids" else torch.float32
+        return torch.full((len(rows), width), rows[0], dtype=dtype)
+
+
+def test_generated_token_dataset_is_unique_and_request_allowlisted():
+    base = SimpleNamespace(segments=[TinyGeneratedSegment()])
+    dataset = ShadowGeneratedTokenDataset(
+        base, layer=3, allowed_request_ids={"train-a"}
+    )
+    assert len(dataset) == 2
+    assert dataset.requests == {"train-a"}
+    first = dataset[0]
+    assert first["inputs"] == {}
+    assert first["metadata"]["position"] == 4
+    assert first["targets"]["future_router_inputs"].shape == (1, 4)
+    assert first["targets"]["future_selected_ids"].shape == (1, 2)
+    assert first["targets"]["future_available"].tolist() == [True]
 
 
 def test_exact_top1_plus_draft_uses_only_top1_native():

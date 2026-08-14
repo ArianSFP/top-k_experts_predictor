@@ -72,6 +72,9 @@ def parse_args() -> argparse.Namespace:
         parser.add_argument(f"--{split}-companion", type=Path, required=True)
     parser.add_argument("--partition-manifest", type=Path, required=True)
     parser.add_argument("--reuse-split-manifest", type=Path, required=True)
+    parser.add_argument("--scale-train-index", type=Path)
+    parser.add_argument("--scale-train-corpus", type=Path)
+    parser.add_argument("--outer-split-manifest", type=Path)
     parser.add_argument("--target-model", type=Path, required=True)
     parser.add_argument("--mode", choices=MODES, required=True)
     parser.add_argument("--layer", type=int, choices=range(40), required=True)
@@ -154,6 +157,76 @@ class ShadowFactualStateDataset(Dataset[dict[str, Any]]):
                     "routed_expert_output_delta_r": torch.stack(
                         [row["routed_expert_output_delta_r"] for row in future]
                     )
+                },
+            },
+        }
+
+
+class ShadowGeneratedTokenDataset(Dataset[dict[str, Any]]):
+    """Deduplicated outer-train target tokens for no-recapture distillation."""
+
+    def __init__(
+        self,
+        base: HarpRTTDataset,
+        *,
+        layer: int,
+        allowed_request_ids: set[str],
+    ) -> None:
+        if layer not in range(40):
+            raise ValueError("ShadowRoute generated-token reader layer is out of range")
+        self.layer = int(layer)
+        self.source = base
+        self.rows: list[tuple[int, int, int, int]] = []
+        self.requests: set[str] = set()
+        for segment_index, segment in enumerate(base.segments):
+            for (sequence, position), row in segment.target_by_position.items():
+                metadata = segment.sequences[sequence]
+                request = str(metadata["request_id"])
+                if request not in allowed_request_ids:
+                    continue
+                if str(metadata.get("split")) != "train":
+                    raise PermissionError("scaled ShadowRoute token is not outer-train")
+                self.rows.append((segment_index, sequence, int(position), int(row)))
+                self.requests.add(request)
+        self.rows.sort(key=lambda value: (value[0], value[1], value[2]))
+        if not self.rows:
+            raise ValueError("scaled ShadowRoute corpus contains no permitted tokens")
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        segment_index, sequence, position, row = self.rows[index]
+        segment = self.source.segments[segment_index]
+        roles = (
+            "normalized_target_router_input_a",
+            "selected_expert_ids",
+            "selected_execution_weights",
+            "routed_expert_output_delta_r",
+        )
+        values = {
+            role: segment.read("target", [row + self.layer], role)[0]
+            for role in roles
+        }
+        request = str(segment.sequences[sequence]["request_id"])
+        return {
+            "metadata": {"request_id": request, "position": position},
+            "inputs": {},
+            "targets": {
+                "future_router_inputs": values[
+                    "normalized_target_router_input_a"
+                ].unsqueeze(0),
+                "future_selected_ids": values["selected_expert_ids"].to(
+                    torch.int64
+                ).unsqueeze(0),
+                "future_execution_weights": values[
+                    "selected_execution_weights"
+                ].float().unsqueeze(0),
+                "future_available": torch.ones(1, dtype=torch.bool),
+                "future_states": {
+                    "routed_expert_output_delta_r": values[
+                        "routed_expert_output_delta_r"
+                    ].unsqueeze(0)
                 },
             },
         }
@@ -260,6 +333,96 @@ def load_split(
         ShadowFactualStateDataset(filtered, layer=args.layer),
         set(counts),
     )
+
+
+def dataset_lineage(dataset: Dataset[Any]) -> tuple[set[str], set[str]]:
+    if not isinstance(dataset, ShadowFactualStateDataset):
+        raise TypeError("lineage inspection requires a factual-state dataset")
+    source_requests: set[str] = set()
+    split_groups: set[str] = set()
+    for index in dataset.indices:
+        record = dataset.source.records[index]
+        segment = dataset.source.segments[record.segment]
+        metadata = segment.sequences[record.sequence]
+        source_requests.add(
+            str(metadata.get("source_request_id", metadata["request_id"]))
+        )
+        split_groups.add(str(metadata["split_group_id"]))
+    return source_requests, split_groups
+
+
+def build_scaled_training_dataset(
+    args: argparse.Namespace,
+    *,
+    partition: Mapping[str, Any],
+    tune: Dataset[Any],
+    development: Dataset[Any],
+) -> tuple[ShadowGeneratedTokenDataset, dict[str, Any]]:
+    paths = (
+        args.scale_train_index,
+        args.scale_train_corpus,
+        args.outer_split_manifest,
+    )
+    if any(path is None for path in paths):
+        raise ValueError("scaled training requires index, corpus, and outer manifest")
+    assert args.scale_train_index is not None
+    assert args.scale_train_corpus is not None
+    assert args.outer_split_manifest is not None
+    split_sha = sha256_file(args.outer_split_manifest)
+    if split_sha != str(partition["split_manifest_sha256"]):
+        raise ValueError("scaled corpus split manifest differs from the frozen partition")
+    entries: dict[str, Mapping[str, Any]] = {}
+    with args.outer_split_manifest.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            entry = json.loads(line)
+            request = str(entry["request_id"])
+            if request in entries:
+                raise ValueError("outer split manifest request IDs are not unique")
+            entries[request] = entry
+    holdout_sources: set[str] = set()
+    holdout_groups: set[str] = set()
+    for dataset in (tune, development):
+        sources, groups = dataset_lineage(dataset)
+        holdout_sources.update(sources)
+        holdout_groups.update(groups)
+    missing = sorted(holdout_sources - entries.keys())
+    if missing:
+        raise ValueError(f"outer split manifest lacks holdout lineage {missing[:3]}")
+    blocked_components = {
+        str(entries[request]["dedup_component_id"])
+        for request in holdout_sources
+    }
+    allowed_requests = {
+        request
+        for request, entry in entries.items()
+        if str(entry["split"]) == "train"
+        and str(entry["split_group_id"]) not in holdout_groups
+        and str(entry["dedup_component_id"]) not in blocked_components
+    }
+    if allowed_requests & holdout_sources:
+        raise PermissionError("scaled training includes an exact holdout request")
+    base = HarpRTTDataset(
+        args.scale_train_index,
+        "train",
+        corpus_root=args.scale_train_corpus,
+        max_tree_nodes=1,
+        include_optional_current=False,
+    )
+    dataset = ShadowGeneratedTokenDataset(
+        base, layer=args.layer, allowed_request_ids=allowed_requests
+    )
+    if dataset.requests - allowed_requests:
+        raise PermissionError("scaled token dataset escaped its outer-train allowlist")
+    return dataset, {
+        "outer_split_manifest_sha256": split_sha,
+        "training_tokens": len(dataset),
+        "training_requests": len(dataset.requests),
+        "blocked_holdout_requests": len(holdout_sources),
+        "blocked_dedup_components": len(blocked_components),
+        "token_identity": "segment,sequence,absolute_target_position",
+        "legacy_single_chain_features_used": False,
+        "factual_target_state_reuse_only": True,
+    }
 
 
 def build_student(mode: str, device: torch.device) -> nn.Module:
@@ -564,10 +727,40 @@ def main() -> None:
     }
     datasets: dict[str, Dataset[Any]] = {}
     groups: dict[str, set[str]] = {}
-    for split in ("train", "tune", "development"):
+    scale_requested = any(
+        value is not None
+        for value in (
+            args.scale_train_index,
+            args.scale_train_corpus,
+            args.outer_split_manifest,
+        )
+    )
+    if scale_requested and not all(
+        value is not None
+        for value in (
+            args.scale_train_index,
+            args.scale_train_corpus,
+            args.outer_split_manifest,
+        )
+    ):
+        raise ValueError("scaled training arguments must be supplied together")
+    load_splits = ("tune", "development") if scale_requested else (
+        "train", "tune", "development"
+    )
+    for split in load_splits:
         datasets[split], groups[split] = load_split(
             args, split, selected_requests=selected[split]
         )
+    scale_provenance: dict[str, Any] | None = None
+    if scale_requested:
+        datasets["train"], scale_provenance = build_scaled_training_dataset(
+            args,
+            partition=partition,
+            tune=datasets["tune"],
+            development=datasets["development"],
+        )
+        assert isinstance(datasets["train"], ShadowGeneratedTokenDataset)
+        groups["train"] = set(datasets["train"].requests)
     if any(
         groups[left] & groups[right]
         for left, right in (("train", "tune"), ("train", "development"), ("tune", "development"))
@@ -617,6 +810,7 @@ def main() -> None:
         "counterfactual_payload_loaded": False,
         "partition_schema": partition["schema"],
         "diagnostic_reuse": True,
+        "scaled_outer_train_factual_reuse": scale_provenance,
         "target_state_is_label_only": True,
         "native_target_layer_loaded": True,
         "complete_target_model_loaded": False,
