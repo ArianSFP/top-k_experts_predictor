@@ -33,6 +33,7 @@ class ShadowExpertConfig:
     exact_k: int = 8
     shadow_width: int = 16
     target_intermediate_width: int = 512
+    active_slots: int | None = None
 
     def validate(self) -> None:
         for name in (
@@ -45,6 +46,14 @@ class ShadowExpertConfig:
             raise ValueError("exact_k exceeds the expert count")
         if self.shadow_width > self.target_intermediate_width:
             raise ValueError("shadow width exceeds the target expert width")
+        if self.active_slots is not None and int(self.active_slots) < 1:
+            raise ValueError("active shadow slots must be positive")
+        if self.routed_slots > self.exact_k:
+            raise ValueError("active shadow slots exceed the router top-k width")
+
+    @property
+    def routed_slots(self) -> int:
+        return self.exact_k if self.active_slots is None else int(self.active_slots)
 
     def to_dict(self) -> dict[str, int]:
         self.validate()
@@ -368,6 +377,8 @@ class IndexedShadowExperts(nn.Module):
             hidden_states, top_k_index, top_k_weights,
             hidden_width=cfg.hidden_width, experts=cfg.experts,
         )
+        ids = ids[:, : cfg.routed_slots]
+        weights = weights[:, : cfg.routed_slots]
         values = self.selected_unweighted(hidden, ids).reshape(
             hidden.shape[0], ids.shape[1], cfg.hidden_width
         )

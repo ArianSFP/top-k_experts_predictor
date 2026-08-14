@@ -110,6 +110,13 @@ def load_shadow_bundle(
             expected = {"gate_up_proj", "down_proj", "trained_experts"}
             if set(state) != expected:
                 raise ValueError("indexed shadow shard state is incomplete")
+            declared_width = int(value.get("shadow_width", state["down_proj"].shape[-1]))
+            declared_slots = int(value.get("indexed_active_slots", 8))
+            if (
+                declared_width != module.config.shadow_width
+                or declared_slots != module.config.routed_slots
+            ):
+                raise ValueError("indexed shadow runtime configuration differs from shard")
             with torch.no_grad():
                 module.gate_up_proj.copy_(state["gate_up_proj"].to(module.gate_up_proj))
                 module.down_proj.copy_(state["down_proj"].to(module.down_proj))

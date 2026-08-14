@@ -38,7 +38,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--native-companion", type=Path, required=True)
     parser.add_argument("--layer-checkpoint-root", type=Path)
     parser.add_argument("--s1-fallback-root", type=Path)
-    parser.add_argument("--shadow-width", type=int, choices=(16, 32, 64), default=16)
+    parser.add_argument("--shadow-width", type=int, choices=(16, 32, 64, 96, 128), default=16)
+    parser.add_argument("--indexed-active-slots", type=int, choices=(4, 8), default=8)
     parser.add_argument("--native-exact-slots", type=int, choices=(1, 2, 4, 6, 8))
     parser.add_argument(
         "--mode",
@@ -194,6 +195,7 @@ def main() -> None:
         "mode": args.mode,
         "shadow_width": args.shadow_width,
         "native_exact_slots": args.native_exact_slots,
+        "indexed_active_slots": args.indexed_active_slots,
         "draft_scale": 0.0 if args.native_exact_slots is not None else 1.0,
         "trees": len(trees),
         "native_parity_requested": args.native_parity,
@@ -222,6 +224,7 @@ def main() -> None:
         shadow_width=args.shadow_width,
         exact_slots=(1 if args.native_exact_slots is None else args.native_exact_slots),
         draft_scale=(1.0 if args.native_exact_slots is None else 0.0),
+        indexed_active_slots=args.indexed_active_slots,
     )
     if not args.native_parity_only and args.native_exact_slots is None:
         assert args.layer_checkpoint_root is not None

@@ -39,7 +39,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
-    parser.add_argument("--shadow-width", type=int, choices=(16, 32, 64), default=64)
+    parser.add_argument(
+        "--shadow-width", type=int, choices=(16, 32, 64, 96, 128), default=64
+    )
+    parser.add_argument("--indexed-active-slots", type=int, choices=(4, 8), default=8)
     parser.add_argument("--device", default="cuda")
     return parser.parse_args()
 
@@ -68,6 +71,7 @@ def main() -> None:
         "source_commit": args.source_commit,
         "target_checkpoint_index_sha256": checkpoint.index_sha256,
         "shadow_width": args.shadow_width,
+        "indexed_active_slots": args.indexed_active_slots,
         "layers": 40,
         "experts": 256,
         "optimizer_constructed": False,
@@ -86,7 +90,11 @@ def main() -> None:
             checkpoint, layer, device=args.device, dtype=torch.bfloat16
         )
         module = IndexedShadowExperts(
-            ShadowExpertConfig(shadow_width=args.shadow_width), fallback=None
+            ShadowExpertConfig(
+                shadow_width=args.shadow_width,
+                active_slots=args.indexed_active_slots,
+            ),
+            fallback=None,
         ).to(device=args.device, dtype=torch.bfloat16)
         selected = module.initialize_from_target_neurons(
             gate_up, down, target_neuron_importance(gate_up, down)
@@ -109,6 +117,8 @@ def main() -> None:
             "selected_neurons": selected.cpu(),
             "expert_counts": counts,
             "minimum_expert_count": 1,
+            "shadow_width": args.shadow_width,
+            "indexed_active_slots": args.indexed_active_slots,
             "trained_selected_slot_mass": 1.0,
             "exact_target_neuron_subnetwork": True,
             "diagnostic_only": True,
@@ -136,6 +146,7 @@ def main() -> None:
         "schema": RESULT_SCHEMA,
         "layers": 40,
         "shadow_width": args.shadow_width,
+        "indexed_active_slots": args.indexed_active_slots,
         "selected_neuron_sha256": selected_hashes,
         "optimizer_constructed": False,
         "training_started": False,

@@ -172,6 +172,8 @@ def _indexed_bundle(tmp_path, *, trained: bool):
                 },
                 "expert_counts": counts,
                 "minimum_expert_count": 1,
+                "shadow_width": 1,
+                "indexed_active_slots": 2,
                 "closed_loop_authorized": False,
                 "formal_validation_opened": False,
                 "calibration_opened": False,

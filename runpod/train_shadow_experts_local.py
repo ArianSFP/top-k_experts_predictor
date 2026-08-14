@@ -94,6 +94,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--microbatch-size", type=int, choices=(0, *MICROBATCH_CHOICES), default=0)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--minimum-expert-count", type=int, default=128)
+    parser.add_argument(
+        "--shadow-width", type=int, choices=(16, 32, 64, 96, 128), default=16
+    )
+    parser.add_argument("--indexed-active-slots", type=int, choices=(4, 8), default=8)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--preflight-only", action="store_true")
@@ -510,13 +514,23 @@ def build_scaled_training_dataset(
     }
 
 
-def build_student(mode: str, device: torch.device) -> nn.Module:
+def build_student(
+    mode: str,
+    device: torch.device,
+    *,
+    shadow_width: int = 16,
+    indexed_active_slots: int = 8,
+) -> nn.Module:
     if mode == "s0_exact_top1_plus_draft":
         return SwiGLUDraftExpert(2048, 512).to(device=device, dtype=torch.bfloat16)
     if mode == "s1_shared":
         return SwiGLUDraftExpert(2048, 128).to(device=device, dtype=torch.bfloat16)
     return IndexedShadowExperts(
-        ShadowExpertConfig(shadow_width=16), fallback=None
+        ShadowExpertConfig(
+            shadow_width=shadow_width,
+            active_slots=indexed_active_slots,
+        ),
+        fallback=None,
     ).to(device=device, dtype=torch.bfloat16)
 
 
@@ -677,9 +691,14 @@ def objective(
                 inputs, ids[..., :1], gate_up, down
             )[..., 0, :]
     elif mode == "s2_indexed":
+        assert isinstance(model, IndexedShadowExperts)
+        active_slots = model.config.routed_slots
+        ids = ids[..., :active_slots]
+        weights = weights[..., :active_slots]
         individual_target, _reconstructed = teacher_values(
             inputs, ids, weights, gate_up, down
         )
+        routed_target = _reconstructed
     with torch.autocast(
         device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"
     ):
@@ -889,7 +908,8 @@ def evaluate(
 
 
 def expert_counts(
-    dataset: Dataset[Any], *, layer: int, device: torch.device, workers: int
+    dataset: Dataset[Any], *, layer: int, device: torch.device, workers: int,
+    active_slots: int = 8,
 ) -> Tensor:
     counts = torch.zeros(256, dtype=torch.int64)
     for host in loader(
@@ -898,7 +918,7 @@ def expert_counts(
         _inputs, _routed, ids, _weights, valid, _requests, _states = batch_tensors(
             host, layer=layer, device=device
         )
-        active = ids[valid].detach().cpu().flatten()
+        active = ids[valid][..., :active_slots].detach().cpu().flatten()
         counts += torch.bincount(active, minlength=256)
     return counts
 
@@ -1041,7 +1061,12 @@ def main() -> None:
             256, 2048
         ):
             raise ValueError("next target router geometry changed")
-    model = build_student(args.mode, device)
+    model = build_student(
+        args.mode,
+        device,
+        shadow_width=args.shadow_width,
+        indexed_active_slots=args.indexed_active_slots,
+    )
     initializer_provenance: dict[str, Any] | None = None
     if args.initializer_checkpoint is not None:
         initializer = torch.load(
@@ -1079,7 +1104,8 @@ def main() -> None:
         ).cpu()
     if args.mode == "s2_indexed":
         counts = expert_counts(
-            datasets["train"], layer=args.layer, device=device, workers=args.num_workers
+            datasets["train"], layer=args.layer, device=device, workers=args.num_workers,
+            active_slots=args.indexed_active_slots,
         )
         trained_mass = float(
             counts[counts >= args.minimum_expert_count].sum() / counts.sum().clamp_min(1)
@@ -1127,6 +1153,8 @@ def main() -> None:
             parameter.numel() for parameter in model.parameters() if parameter.requires_grad
         ),
         "minimum_expert_count": args.minimum_expert_count,
+        "shadow_width": args.shadow_width,
+        "indexed_active_slots": args.indexed_active_slots,
         "expert_frequency_gate_applicable": args.mode == "s2_indexed",
         "trained_expert_count": (
             int((counts >= args.minimum_expert_count).sum())
@@ -1333,6 +1361,8 @@ def main() -> None:
         "selected_neurons": selected_neurons,
         "expert_counts": counts,
         "minimum_expert_count": args.minimum_expert_count,
+        "shadow_width": args.shadow_width,
+        "indexed_active_slots": args.indexed_active_slots,
         "trained_selected_slot_mass": trained_mass,
         "best_epoch": best_epoch,
         "selection_metric": (

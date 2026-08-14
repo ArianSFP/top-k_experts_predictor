@@ -71,6 +71,7 @@ def install_shadow_experts(
     shadow_width: int = 16,
     exact_slots: int = 1,
     draft_scale: float = 1.0,
+    indexed_active_slots: int = 8,
 ) -> InstalledShadowBackbone:
     """Replace only routed experts in an already-materialized official model."""
 
@@ -101,7 +102,11 @@ def install_shadow_experts(
                 SwiGLUDraftExpert(2048, 128), experts=256
             )
             replacement = IndexedShadowExperts(
-                ShadowExpertConfig(shadow_width=shadow_width), fallback=fallback
+                ShadowExpertConfig(
+                    shadow_width=shadow_width,
+                    active_slots=indexed_active_slots,
+                ),
+                fallback=fallback,
             ).to(device=device, dtype=dtype)
             native.append(original if retain_native else None)
         layer.mlp.experts = replacement
