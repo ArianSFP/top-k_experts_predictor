@@ -1021,6 +1021,7 @@ def main() -> None:
     )
     next_norm_weight: Tensor | None = None
     next_router_weight: Tensor | None = None
+    initial_router_tune: dict[str, Any] | None = None
     if args.next_router_agreement:
         if args.layer >= 39:
             raise ValueError("layer 39 has no within-token next router")
@@ -1157,7 +1158,7 @@ def main() -> None:
             router_weight=next_router_weight,
             workers=args.num_workers,
         )
-        initial_tune, _rows = evaluate(
+        initial_router_tune, _rows = evaluate(
             model,
             datasets["tune"],
             mode=args.mode,
@@ -1173,7 +1174,7 @@ def main() -> None:
         )
         router_audit = {
             **teacher_audit,
-            "initializer_tune": initial_tune,
+            "initializer_tune": initial_router_tune,
             "minimum_teacher_forced_recall_at_8": 0.98,
             "passed": teacher_audit["teacher_forced_recall_at_8"] >= 0.98,
             "optimizer_constructed": False,
@@ -1226,9 +1227,18 @@ def main() -> None:
         },
     )
     accumulation = math.ceil(EFFECTIVE_BATCH / microbatch)
-    best_value = math.inf
-    best_epoch = 0
-    best_state: dict[str, Tensor] | None = None
+    if args.next_router_agreement:
+        assert initial_router_tune is not None
+        best_value = -float(initial_router_tune["next_router_recall_at_8"])
+        best_epoch = 0
+        best_state: dict[str, Tensor] | None = {
+            name: value.detach().cpu().clone()
+            for name, value in model.state_dict().items()
+        }
+    else:
+        best_value = math.inf
+        best_epoch = 0
+        best_state = None
     stale = 0
     for epoch in range(1, args.epochs + 1):
         model.train()
