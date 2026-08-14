@@ -38,7 +38,7 @@ from harp_rtt.shadow_expert import (
     quantize_groupwise_int4,
     target_selected_expert_outputs,
 )
-from harp_rtt.shadow_route import raw_mtp_prior_mixture
+from harp_rtt.shadow_route import raw_mtp_prior_mixture, shadow_lm_path_posterior
 from harp_rtt.shadow_training import (
     s0_scale_gate,
     selected_expert_distillation_loss,
@@ -377,6 +377,30 @@ def test_raw_mtp_prior_preserves_uncaptured_other_mass():
     assert torch.allclose(output.other_weights[0, 1], torch.tensor(0.5))
     assert torch.allclose(output.mixture_marginals.sum(-1), torch.full((1, 2, 1), 2.0))
     assert output.selected_ids.shape == (1, 2, 1, 2)
+
+
+def test_shadow_lm_posterior_accumulates_causal_edge_probabilities():
+    probabilities = torch.full((1, 4, 6), 0.1)
+    probabilities[0, 0] = torch.tensor([0.1, 0.3, 0.2, 0.1, 0.1, 0.2])
+    probabilities[0, 1] = torch.tensor([0.1, 0.1, 0.1, 0.5, 0.1, 0.1])
+    branch_mask = torch.zeros(1, 4, 4, dtype=torch.bool)
+    branch_mask[0, 1, 1:3] = True
+    branch_mask[0, 2, 3] = True
+    posterior = shadow_lm_path_posterior(
+        probabilities.log(),
+        torch.tensor([[0, 1, 2, 3]]),
+        torch.tensor([[-1, 0, 0, 1]]),
+        torch.tensor([[1, 2, 2, 3]]),
+        torch.ones(1, 4, dtype=torch.bool),
+        branch_mask,
+    )
+    assert torch.allclose(
+        posterior.cumulative_log_probabilities[0].exp(),
+        torch.tensor([1.0, 0.3, 0.2, 0.15]),
+    )
+    assert torch.allclose(
+        posterior.other_probabilities[0], torch.tensor([1.0, 0.5, 0.85, 1.0])
+    )
 
 
 def _valid_tiny_capture():

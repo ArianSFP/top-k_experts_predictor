@@ -20,6 +20,88 @@ class ShadowRouteMixture:
     cardinality_error: Tensor
 
 
+@dataclass(frozen=True)
+class ShadowPathPosterior:
+    cumulative_log_probabilities: Tensor
+    captured_probabilities: Tensor
+    other_probabilities: Tensor
+
+
+def shadow_lm_path_posterior(
+    vocabulary_log_probabilities: Tensor,
+    token_ids: Tensor,
+    parent_indices: Tensor,
+    node_depths: Tensor,
+    node_valid: Tensor,
+    branch_mask: Tensor,
+    *,
+    horizons: int = 4,
+    tolerance: float = 2e-5,
+) -> ShadowPathPosterior:
+    """Causal path posterior from the frozen LM head on shadow states.
+
+    Each node's vocabulary distribution predicts its children.  The exact H1
+    root is conditioned on and therefore has cumulative log probability zero.
+    Only the immutable deployed branch mask contributes captured mass; the
+    residual probability is assigned to OTHER.
+    """
+
+    if vocabulary_log_probabilities.ndim != 3:
+        raise ValueError("shadow vocabulary log probabilities must be [B,N,V]")
+    batch, nodes, vocabulary = vocabulary_log_probabilities.shape
+    expected = (batch, nodes)
+    for name, value in (
+        ("token IDs", token_ids),
+        ("parent indices", parent_indices),
+        ("node depths", node_depths),
+        ("node validity", node_valid),
+    ):
+        if value.shape != expected:
+            raise ValueError(f"shadow {name} disagree with vocabulary predictions")
+    if branch_mask.shape != (batch, horizons, nodes):
+        raise ValueError("shadow branch mask has invalid geometry")
+    valid = node_valid.bool()
+    if not valid[:, 0].all() or not (node_depths[:, 0] == 1).all():
+        raise ValueError("every shadow tree must expose the exact H1 root")
+    if bool(((token_ids < 0) | (token_ids >= vocabulary))[valid].any()):
+        raise ValueError("shadow tree token lies outside the vocabulary")
+    if not torch.isfinite(vocabulary_log_probabilities[valid]).all():
+        raise ValueError("valid shadow vocabulary log probabilities must be finite")
+    cumulative = vocabulary_log_probabilities.new_full((batch, nodes), float("nan"))
+    cumulative[:, 0] = 0.0
+    row = torch.arange(batch, device=vocabulary_log_probabilities.device)
+    for node in range(1, nodes):
+        active = valid[:, node]
+        if not bool(active.any()):
+            continue
+        parent = parent_indices[:, node].long()
+        if bool(((parent < 0) | (parent >= node))[active].any()):
+            raise ValueError("shadow parents must precede their children")
+        parent_safe = parent.clamp_min(0)
+        edge = vocabulary_log_probabilities[
+            row, parent_safe, token_ids[:, node].long().clamp(0, vocabulary - 1)
+        ]
+        value = cumulative[row, parent_safe] + edge
+        if not torch.isfinite(value[active]).all():
+            raise ValueError("shadow path contains an invalid parent probability")
+        cumulative[:, node] = torch.where(active, value, cumulative[:, node])
+    captured = vocabulary_log_probabilities.new_zeros(
+        batch, horizons, nodes, dtype=torch.float32
+    )
+    for horizon in range(2, horizons + 1):
+        selected = branch_mask[:, horizon - 1].bool() & valid & (
+            node_depths == horizon
+        )
+        captured[:, horizon - 1] = torch.where(
+            selected, cumulative.float().exp(), torch.zeros_like(cumulative.float())
+        )
+    mass = captured.sum(-1)
+    if bool((mass > 1.0 + tolerance).any()):
+        raise ValueError("shadow LM captured path mass exceeds one")
+    other = (1.0 - mass).clamp(0.0, 1.0)
+    return ShadowPathPosterior(cumulative, captured, other)
+
+
 def raw_mtp_prior_mixture(
     branch_scores: Tensor,
     node_depths: Tensor,
@@ -94,4 +176,7 @@ def raw_mtp_prior_mixture(
     )
 
 
-__all__ = ["ShadowRouteMixture", "raw_mtp_prior_mixture"]
+__all__ = [
+    "ShadowPathPosterior", "ShadowRouteMixture", "raw_mtp_prior_mixture",
+    "shadow_lm_path_posterior",
+]

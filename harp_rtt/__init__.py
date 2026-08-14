@@ -40,7 +40,12 @@ from .shadow_expert import (
     SharedResidualExperts,
     SwiGLUDraftExpert,
 )
-from .shadow_route import ShadowRouteMixture, raw_mtp_prior_mixture
+from .shadow_route import (
+    ShadowPathPosterior,
+    ShadowRouteMixture,
+    raw_mtp_prior_mixture,
+    shadow_lm_path_posterior,
+)
 from .shadow_training import ShadowLossWeights, shadow_route_objective
 from .schema import (
     CandidateBatch,
@@ -75,6 +80,7 @@ __all__ = [
     "ShadowLossWeights",
     "ShadowNodeResult",
     "ShadowRouteMixture",
+    "ShadowPathPosterior",
     "ShadowTreeResult",
     "ShadowTreeRunner",
     "SharedResidualExperts",
@@ -83,6 +89,7 @@ __all__ = [
     "prepare_delta_batch",
     "prepare_deltaroute_batch",
     "raw_mtp_prior_mixture",
+    "shadow_lm_path_posterior",
     "RouterGeometryAudit",
     "ROUTER_GEOMETRY_SCHEMA",
     "TreeBatch",

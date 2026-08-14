@@ -115,12 +115,16 @@ def run_shadow_tree(
             return_dict=True,
         )
         logits, ids, weights, hidden = hooks.stacked()
+        vocabulary_logits = output.logits[0, -1].float()
         return ShadowNodeResult(
             router_logits=logits,
             selected_ids=ids,
             selected_weights=weights,
             hidden_state=hidden,
             cache=output.past_key_values,
+            vocabulary_log_probabilities=(
+                vocabulary_logits - torch.logsumexp(vocabulary_logits, dim=-1)
+            ).detach(),
         )
 
     return ShadowTreeRunner(step).run(

@@ -17,6 +17,7 @@ class ShadowNodeResult:
     selected_weights: Tensor
     hidden_state: Tensor
     cache: Any
+    vocabulary_log_probabilities: Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ class ShadowTreeResult:
     hidden_states: Tensor
     valid: Tensor
     caches: tuple[Any | None, ...]
+    vocabulary_log_probabilities: Tensor | None = None
 
 
 def clone_hybrid_cache(cache: Any) -> Any:
@@ -119,6 +121,14 @@ class ShadowTreeRunner:
         ids = reference.selected_ids.new_full((token_ids.numel(), layers, k), -1)
         weights = reference.selected_weights.new_zeros(token_ids.numel(), layers, k)
         hidden = reference.hidden_state.new_zeros(token_ids.numel(), layers, hidden_width)
+        vocabulary = None
+        if reference.vocabulary_log_probabilities is not None:
+            if reference.vocabulary_log_probabilities.ndim != 1:
+                raise ValueError("node vocabulary log probabilities must be one-dimensional")
+            vocabulary = reference.vocabulary_log_probabilities.new_full(
+                (token_ids.numel(), reference.vocabulary_log_probabilities.numel()),
+                -torch.inf,
+            )
         for index, result in enumerate(outputs):
             if result.router_logits.shape != (layers, experts):
                 raise ValueError("node router-logit geometry changed within a tree")
@@ -126,12 +136,21 @@ class ShadowTreeRunner:
                 raise ValueError("node route geometry changed within a tree")
             if result.hidden_state.shape != (layers, hidden_width):
                 raise ValueError("node hidden geometry changed within a tree")
+            if (result.vocabulary_log_probabilities is None) != (vocabulary is None):
+                raise ValueError("node vocabulary capture changed within a tree")
             logits[index] = result.router_logits
             ids[index] = result.selected_ids
             weights[index] = result.selected_weights
             hidden[index] = result.hidden_state
+            if vocabulary is not None:
+                assert result.vocabulary_log_probabilities is not None
+                if result.vocabulary_log_probabilities.shape != vocabulary.shape[1:]:
+                    raise ValueError("node vocabulary geometry changed within a tree")
+                vocabulary[index] = result.vocabulary_log_probabilities
         valid = node_mask.bool()[:, None].expand(-1, layers)
-        return ShadowTreeResult(logits, ids, weights, hidden, valid, tuple(caches))
+        return ShadowTreeResult(
+            logits, ids, weights, hidden, valid, tuple(caches), vocabulary
+        )
 
 
 __all__ = [

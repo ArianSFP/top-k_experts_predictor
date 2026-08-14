@@ -23,6 +23,7 @@ for candidate in (str(REPO_ROOT), str(BRIDGE)):
 from harp_rtt.node_counterfactual import load_node_counterfactual_companion  # noqa: E402
 from harp_rtt.exact_k import stable_topk  # noqa: E402
 from harp_rtt.route_ceiling import factual_branch_topk, posterior_native_topk  # noqa: E402
+from harp_rtt.shadow_route import shadow_lm_path_posterior  # noqa: E402
 from harp_rtt.shadow_backbone import exact_prefix_experts, install_shadow_experts  # noqa: E402
 from harp_rtt.shadow_bundle import load_shadow_bundle  # noqa: E402
 from harp_rtt.shadow_checkpoint import IndexedCheckpoint, sha256_file  # noqa: E402
@@ -404,6 +405,7 @@ def main() -> None:
     factual_cells: dict[
         tuple[str, str, str, int], list[torch.Tensor]
     ] = defaultdict(list)
+    root_cells: dict[str, list[torch.Tensor]] = defaultdict(list)
     native_mismatches = 0
     peak_gib = 0.0
     with ShadowRouteHooks(target) as hooks:
@@ -488,6 +490,12 @@ def main() -> None:
                         ceiling_row : ceiling_row + 1
                     ].bool()
                     anchor_ids = stable_topk(anchor_marginals, 8)
+                    root_active = future_valid[0, 0]
+                    root_cells[request].append(
+                        slot_coverage(
+                            node_ids[:, 0], target_ids[:, 0]
+                        )[0][root_active]
+                    )
 
                     conditions: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
                     for condition_name in ("learned", "target", "mtp"):
@@ -500,6 +508,41 @@ def main() -> None:
                             anchor_marginals,
                         )
                         conditions[condition_name] = (predicted_factual, inclusion)
+                    if result.vocabulary_log_probabilities is None:
+                        raise RuntimeError("ShadowRoute factual evaluation lacks LM probabilities")
+                    vocabulary = result.vocabulary_log_probabilities.shape[-1]
+                    vocabulary_logp = torch.full(
+                        (1, 32, vocabulary), -torch.inf, dtype=torch.float32
+                    )
+                    vocabulary_logp[0, :count] = (
+                        result.vocabulary_log_probabilities[:count].float().cpu()
+                    )
+                    lm_token_ids = torch.zeros((1, 32), dtype=torch.long)
+                    lm_parents = torch.full((1, 32), -1, dtype=torch.long)
+                    lm_depths = torch.zeros((1, 32), dtype=torch.long)
+                    lm_valid = torch.zeros((1, 32), dtype=torch.bool)
+                    lm_token_ids[0, :count] = token_ids[:count]
+                    lm_parents[0, :count] = parents[:count]
+                    lm_depths[0, :count] = depth[:count]
+                    lm_valid[0, :count] = True
+                    shadow_posterior = shadow_lm_path_posterior(
+                        vocabulary_logp,
+                        lm_token_ids,
+                        lm_parents,
+                        lm_depths,
+                        lm_valid,
+                        branch_mask,
+                    )
+                    shadow_prediction, shadow_inclusion = posterior_native_topk(
+                        node_ids,
+                        shadow_posterior.captured_probabilities,
+                        shadow_posterior.other_probabilities,
+                        branch_mask,
+                        anchor_marginals,
+                    )
+                    conditions["shadow_lm"] = (
+                        shadow_prediction, shadow_inclusion
+                    )
                     conditions["factual_branch"] = (
                         factual_branch_topk(
                             node_ids,
@@ -549,6 +592,20 @@ def main() -> None:
         factual_rows: list[dict[str, Any]] = []
     else:
         factual_metrics, factual_rows = summarize_factual(factual_cells)
+        per_request_root = [
+            float(torch.cat(root_cells[request]).mean())
+            for request in sorted(root_cells)
+        ]
+        if not per_request_root:
+            raise ValueError("ShadowRoute factual evaluation has no H1 root rows")
+        root_recall = sum(per_request_root) / len(per_request_root)
+        factual_metrics["shadow_root_recall_h1"] = root_recall
+        for condition in ("learned", "target", "mtp", "shadow_lm", "factual_branch"):
+            h2_h4 = factual_metrics.get(f"{condition}_recall_h2_h4")
+            if h2_h4 is not None:
+                factual_metrics[f"{condition}_recall_h1_h4"] = (
+                    root_recall + 3.0 * h2_h4
+                ) / 4.0
     write_rows(args.output / "request_route_predictions.jsonl", rows)
     write_rows(args.output / "request_factual_predictions.jsonl", factual_rows)
     accuracy_gate_met = bool(
