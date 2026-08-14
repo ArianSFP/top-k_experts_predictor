@@ -251,6 +251,87 @@ def summarize_factual(
     return metrics, request_rows
 
 
+def bootstrap_factual_recall(
+    request_rows: list[dict[str, Any]],
+    *,
+    replicates: int = 1_000,
+    seed: int = 42,
+) -> dict[str, Any]:
+    """Complete-request bootstrap for H2--H4 and strict H1--H4 recall."""
+
+    if replicates < 1:
+        raise ValueError("bootstrap replicate count must be positive")
+    root = {
+        str(row["request_id"]): float(row["value"])
+        for row in request_rows
+        if row["condition"] == "shadow_root"
+        and row["metric"] == "recall"
+        and int(row["horizon"]) == 1
+    }
+    conditions = sorted({
+        str(row["condition"])
+        for row in request_rows
+        if row["metric"] == "recall" and int(row["horizon"]) in (2, 3, 4)
+    })
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    result: dict[str, Any] = {
+        "schema": "harp_shadowroute_request_bootstrap_v1",
+        "seed": seed,
+        "replicates": replicates,
+        "conditions": {},
+    }
+    for condition in conditions:
+        by_request: dict[str, dict[int, float]] = {}
+        for row in request_rows:
+            if row["condition"] != condition or row["metric"] != "recall":
+                continue
+            horizon = int(row["horizon"])
+            if horizon in (2, 3, 4):
+                by_request.setdefault(str(row["request_id"]), {})[horizon] = float(
+                    row["value"]
+                )
+        requests = sorted(
+            request
+            for request, horizons in by_request.items()
+            if request in root and set(horizons) == {2, 3, 4}
+        )
+        if not requests:
+            continue
+        values = torch.tensor(
+            [
+                [root[request]]
+                + [by_request[request][horizon] for horizon in (2, 3, 4)]
+                for request in requests
+            ],
+            dtype=torch.float64,
+        )
+        draws = torch.randint(
+            len(requests),
+            (replicates, len(requests)),
+            generator=generator,
+        )
+        sampled = values[draws]
+        h2_h4 = sampled[:, :, 1:].mean(dim=(1, 2))
+        h1_h4 = sampled.mean(dim=(1, 2))
+
+        def interval(samples: torch.Tensor, point: float) -> dict[str, float]:
+            bounds = torch.quantile(
+                samples, torch.tensor([0.025, 0.975], dtype=samples.dtype)
+            )
+            return {
+                "point": point,
+                "lower_95": float(bounds[0]),
+                "upper_95": float(bounds[1]),
+            }
+
+        result["conditions"][condition] = {
+            "request_count": len(requests),
+            "h2_h4": interval(h2_h4, float(values[:, 1:].mean())),
+            "h1_h4": interval(h1_h4, float(values.mean())),
+        }
+    return result
+
+
 def summarize(
     cells: Mapping[tuple[str, int], list[torch.Tensor]]
 ) -> tuple[dict[str, float], list[dict[str, Any]]]:
@@ -623,12 +704,27 @@ def main() -> None:
             raise ValueError("ShadowRoute factual evaluation has no H1 root rows")
         root_recall = sum(per_request_root) / len(per_request_root)
         factual_metrics["shadow_root_recall_h1"] = root_recall
+        factual_rows.extend(
+            {
+                "condition": "shadow_root",
+                "metric": "recall",
+                "request_id": request,
+                "horizon": 1,
+                "value": float(torch.cat(root_cells[request]).mean()),
+            }
+            for request in sorted(root_cells)
+        )
         for condition in ("learned", "target", "mtp", "shadow_lm", "factual_branch"):
             h2_h4 = factual_metrics.get(f"{condition}_recall_h2_h4")
             if h2_h4 is not None:
                 factual_metrics[f"{condition}_recall_h1_h4"] = (
                     root_recall + 3.0 * h2_h4
                 ) / 4.0
+    factual_bootstrap = (
+        {}
+        if ceiling is None
+        else bootstrap_factual_recall(factual_rows, replicates=1_000, seed=42)
+    )
     write_rows(args.output / "request_route_predictions.jsonl", rows)
     write_rows(args.output / "request_factual_predictions.jsonl", factual_rows)
     accuracy_gate_met = bool(
@@ -648,6 +744,7 @@ def main() -> None:
         "promotion_eligible": promotion_eligible,
         "metrics": metrics,
         "factual_metrics": factual_metrics,
+        "factual_bootstrap": factual_bootstrap,
         "native_parity_mismatches": native_mismatches,
         "peak_reserved_gib": peak_gib,
         "gate": {
