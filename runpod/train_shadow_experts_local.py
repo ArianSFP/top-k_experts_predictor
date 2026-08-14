@@ -386,12 +386,18 @@ def build_scaled_training_dataset(
         sources, groups = dataset_lineage(dataset)
         holdout_sources.update(sources)
         holdout_groups.update(groups)
-    missing = sorted(holdout_sources - entries.keys())
-    if missing:
-        raise ValueError(f"outer split manifest lacks holdout lineage {missing[:3]}")
+    manifest_groups = {str(entry["split_group_id"]) for entry in entries.values()}
+    missing_groups = sorted(holdout_groups - manifest_groups)
+    if missing_groups:
+        raise ValueError(
+            f"outer split manifest lacks holdout groups {missing_groups[:3]}"
+        )
+    matched_sources = holdout_sources & entries.keys()
     blocked_components = {
-        str(entries[request]["dedup_component_id"])
-        for request in holdout_sources
+        str(entry["dedup_component_id"])
+        for request, entry in entries.items()
+        if request in matched_sources
+        or str(entry["split_group_id"]) in holdout_groups
     }
     allowed_requests = {
         request
@@ -419,6 +425,8 @@ def build_scaled_training_dataset(
         "training_tokens": len(dataset),
         "training_requests": len(dataset.requests),
         "blocked_holdout_requests": len(holdout_sources),
+        "matched_holdout_source_requests": len(matched_sources),
+        "holdout_split_groups": len(holdout_groups),
         "blocked_dedup_components": len(blocked_components),
         "token_identity": "segment,sequence,absolute_target_position",
         "legacy_single_chain_features_used": False,
