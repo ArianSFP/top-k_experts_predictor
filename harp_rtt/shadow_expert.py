@@ -464,6 +464,7 @@ class PackedInt4TopKExperts(nn.Module):
         self.active_slots = int(active_slots)
         self.group_size = int(group_size)
         self.cache_dequantized = False
+        self.cache_max_experts = 0
         self._gate_up_cache: dict[int, Tensor] = {}
         self._down_cache: dict[int, Tensor] = {}
         self.register_buffer(
@@ -508,10 +509,17 @@ class PackedInt4TopKExperts(nn.Module):
             ),
         )
 
-    def enable_dequantized_cache(self, enabled: bool = True) -> None:
+    def enable_dequantized_cache(
+        self, enabled: bool = True, *, max_experts: int | None = None
+    ) -> None:
         """Cache the exact reference dequantization without changing arithmetic."""
 
         self.cache_dequantized = bool(enabled)
+        if max_experts is None:
+            max_experts = min(8, self.experts)
+        if self.cache_dequantized and not 1 <= max_experts <= self.experts:
+            raise ValueError("INT4 dequantization cache capacity is invalid")
+        self.cache_max_experts = int(max_experts) if self.cache_dequantized else 0
         if not self.cache_dequantized:
             self._gate_up_cache.clear()
             self._down_cache.clear()
@@ -534,6 +542,10 @@ class PackedInt4TopKExperts(nn.Module):
             dtype=dtype,
         )
         if self.cache_dequantized:
+            if len(self._gate_up_cache) >= self.cache_max_experts:
+                oldest = next(iter(self._gate_up_cache))
+                self._gate_up_cache.pop(oldest)
+                self._down_cache.pop(oldest)
             self._gate_up_cache[expert_id] = gate_up
             self._down_cache[expert_id] = down
         return gate_up, down

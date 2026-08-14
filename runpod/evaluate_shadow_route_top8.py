@@ -394,14 +394,12 @@ def main() -> None:
     installed = install_shadow_experts(
         target,
         args.mode,
-        retain_native=args.native_parity,
+        retain_native=True,
         shadow_width=args.shadow_width,
         exact_slots=(1 if args.native_exact_slots is None else args.native_exact_slots),
         draft_scale=(1.0 if args.native_exact_slots is None else 0.0),
         indexed_active_slots=args.indexed_active_slots,
     )
-    if args.mode == "int4_top4" and not args.native_parity and torch.cuda.is_available():
-        torch.cuda.empty_cache()
     if not args.native_parity_only and args.native_exact_slots is None:
         assert args.layer_checkpoint_root is not None
         layer_paths = load_shadow_bundle(
@@ -416,7 +414,7 @@ def main() -> None:
             for module in installed.shadow_experts:
                 if not isinstance(module, PackedInt4TopKExperts):
                     raise TypeError("INT4 cache requested for a non-INT4 module")
-                module.enable_dequantized_cache()
+                module.enable_dequantized_cache(max_experts=8)
         write_json_exclusive(
             args.output / "BUNDLE_AUDIT.json",
             {
