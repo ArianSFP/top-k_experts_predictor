@@ -102,4 +102,12 @@ H3/H4 bottleneck without dropping H1/H2.
 
 ## Result
 
-Pending cache completion, seed-42 training, and adaptive-tree evaluation.
+Completed and rejected. The 20,736-row cache passed its audit and seed 42
+completed ten epochs. Best tuning H2-H4 route Recall@8 was `0.561812`.
+
+On the untouched adaptive-tree development probe, budget-16 H2-H4 C64 reached
+`0.928656` versus `0.914519` for the selected parent, a gain of only `0.014136`.
+H4 reached `0.911301` and H4 prefix-mismatch reached `0.869460`; all failed the
+`0.98/0.97/0.93` candidate gates. Native route recall on the tree was lower than
+the parent (`0.515305` versus `0.560171`). No counterfactual fine-tuning or
+ranker training was authorized.

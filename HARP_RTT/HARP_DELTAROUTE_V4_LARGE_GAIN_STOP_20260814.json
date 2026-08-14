@@ -1,0 +1,29 @@
+{
+  "schema": "harp_deltaroute_v4_large_gain_terminal_v1",
+  "date": "2026-08-14",
+  "branch": "agent/harp-deltaroute-v4",
+  "implementation_through_commit": "b0ab1bcaf7c64aa05a9a28110631d794323019f4",
+  "large_gain_required": 0.1,
+  "native_route_top8": {
+    "learned_posterior_h2_h4": 0.8551376344015201,
+    "target_posterior_h2_h4": 0.9297170010395348,
+    "factual_branch_h2_h4": 0.9406473798056444
+  },
+  "native_learned_posterior_c64": {
+    "h2_h4": 0.9853581739589572,
+    "h4": 0.9822021466679871
+  },
+  "killed_experiments": {
+    "branch_conditioned_absolute_gain": 0.012010027180217486,
+    "branch_direct_absolute_gain": 0.016111412251381907,
+    "contextual_raw_prior_gain": -0.020251468444863956,
+    "contextual_parent_residual_gain": -0.017551681647698082,
+    "token_lookup_h2_h4_recall": 0.3488418459892273
+  },
+  "next_action": "capture_at_least_32000_branch_rich_positions_over_at_least_2000_new_requests",
+  "requires_rtx_pro_6000": true,
+  "training_active": false,
+  "formal_validation_opened": false,
+  "calibration_opened": false,
+  "sealed_test_opened": false
+}
