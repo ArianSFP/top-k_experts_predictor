@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 from contextlib import AbstractContextManager
+from types import MethodType
 from typing import Any, Callable
 
 import torch
@@ -48,7 +49,65 @@ def map_hybrid_cache_tensors(cache: Any, function: Callable[[Tensor], Tensor]) -
             setattr(copied, name, _map_cache_value(value, function))
         copied_layers.append(copied)
     result.layers = copied_layers
+    _install_out_of_place_linear_updates(result)
     return result
+
+
+def _out_of_place_conv_update(
+    self,
+    conv_states: Tensor,
+    state_idx: int = 0,
+    conv_kernel_size: int | None = None,
+    **_kwargs,
+) -> Tensor:
+    """Autograd-safe equivalent of Transformers' inference ``copy_`` update."""
+
+    if not self.is_conv_states_initialized[state_idx]:
+        self.lazy_initialization(
+            conv_states=conv_states,
+            state_idx=state_idx,
+            conv_kernel_size=conv_kernel_size,
+        )
+    if not self.has_previous_state[state_idx]:
+        full = conv_states
+        self.has_previous_state[state_idx] = True
+        if not self.record_past and full.shape[-1] < self.conv_kernel_size[state_idx]:
+            full = torch.nn.functional.pad(
+                full,
+                (self.conv_kernel_size[state_idx] - full.shape[-1], 0),
+                value=0,
+            )
+    else:
+        full = torch.cat([self.conv_states[state_idx], conv_states], dim=-1)
+    self.conv_states[state_idx] = (
+        full
+        if self.record_past
+        else full[..., -self.conv_kernel_size[state_idx] :]
+    )
+    return full
+
+
+def _out_of_place_recurrent_update(
+    self,
+    recurrent_states: Tensor,
+    state_idx: int = 0,
+    **_kwargs,
+) -> Tensor:
+    """Preserve recurrent-state gradients without mutating saved tensors."""
+
+    if not self.is_recurrent_states_initialized[state_idx]:
+        self.lazy_initialization(recurrent_states=recurrent_states, state_idx=state_idx)
+    self.recurrent_states[state_idx] = recurrent_states
+    return recurrent_states
+
+
+def _install_out_of_place_linear_updates(cache: Any) -> None:
+    for layer in cache.layers:
+        if hasattr(layer, "conv_states") and hasattr(layer, "recurrent_states"):
+            layer.update_conv_state = MethodType(_out_of_place_conv_update, layer)
+            layer.update_recurrent_state = MethodType(
+                _out_of_place_recurrent_update, layer
+            )
 
 
 def clone_detached_hybrid_cache(

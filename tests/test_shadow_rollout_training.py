@@ -17,6 +17,10 @@ class _CacheLayer:
         self.conv_states = [torch.randn(1, 8, 4, requires_grad=True)]
         self.recurrent_states = {0: torch.randn(1, 2, 4, 4, requires_grad=True)}
         self.has_previous_state = [True]
+        self.is_conv_states_initialized = [True]
+        self.is_recurrent_states_initialized = [True]
+        self.conv_kernel_size = [4]
+        self.record_past = False
 
 
 class _Cache:
@@ -51,6 +55,20 @@ def test_cache_to_cpu_preserves_structure_and_detaches() -> None:
     assert copied.layers[0].keys.device.type == "cpu"
     assert not copied.layers[0].keys.requires_grad
     assert copied.layers[0].has_previous_state == [True]
+
+
+def test_training_cache_linear_updates_are_out_of_place() -> None:
+    source = _Cache()
+    copied = clone_detached_hybrid_cache(source)
+    old_conv = copied.layers[0].conv_states[0]
+    full = copied.layers[0].update_conv_state(torch.randn(1, 8, 1, requires_grad=True))
+    assert copied.layers[0].conv_states[0].data_ptr() != old_conv.data_ptr()
+    assert full.shape[-1] == 5
+    old_recurrent = copied.layers[0].recurrent_states[0]
+    replacement = torch.randn_like(old_recurrent, requires_grad=True)
+    returned = copied.layers[0].update_recurrent_state(replacement)
+    assert returned is replacement
+    assert copied.layers[0].recurrent_states[0] is replacement
 
 
 class _Gate(nn.Module):
