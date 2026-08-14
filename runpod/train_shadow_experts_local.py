@@ -95,7 +95,10 @@ def parse_args() -> argparse.Namespace:
 class ShadowFactualStateDataset(Dataset[dict[str, Any]]):
     """Minimal label-only factual reader for local shadow-expert training."""
 
-    def __init__(self, base: Dataset[Any]) -> None:
+    def __init__(self, base: Dataset[Any], *, layer: int) -> None:
+        if layer not in range(40):
+            raise ValueError("ShadowRoute factual reader layer is out of range")
+        self.layer = int(layer)
         if isinstance(base, RequestSubset):
             self.source = base.base
             self.indices = tuple(int(index) for index in base.indices)
@@ -113,17 +116,19 @@ class ShadowFactualStateDataset(Dataset[dict[str, Any]]):
     def __getitem__(self, index: int) -> dict[str, Any]:
         record = self.source.records[self.indices[index]]
         segment = self.source.segments[record.segment]
+        roles = (
+            "normalized_target_router_input_a",
+            "selected_expert_ids",
+            "selected_execution_weights",
+            "routed_expert_output_delta_r",
+        )
         future = [
-            segment.read_layer_token(
-                "target",
-                row,
-                (
-                    "normalized_target_router_input_a",
-                    "selected_expert_ids",
-                    "selected_execution_weights",
-                    "routed_expert_output_delta_r",
-                ),
-            )
+            {
+                role: segment.read(
+                    "target", [int(row) + self.layer], role
+                )[0]
+                for role in roles
+            }
             for row in record.future_rows
         ]
         return {
@@ -144,7 +149,7 @@ class ShadowFactualStateDataset(Dataset[dict[str, Any]]):
                 "future_execution_weights": torch.stack(
                     [row["selected_execution_weights"].float() for row in future]
                 ),
-                "future_available": torch.ones((4, 40), dtype=torch.bool),
+                "future_available": torch.ones(4, dtype=torch.bool),
                 "future_states": {
                     "routed_expert_output_delta_r": torch.stack(
                         [row["routed_expert_output_delta_r"] for row in future]
@@ -252,7 +257,7 @@ def load_split(
     ):
         raise ValueError(f"ShadowRoute {split} split has invalid row/request counts")
     return (
-        ShadowFactualStateDataset(filtered),
+        ShadowFactualStateDataset(filtered, layer=args.layer),
         set(counts),
     )
 
@@ -283,12 +288,33 @@ def batch_tensors(
     requests = metadata.get("request_id")
     if not isinstance(requests, list):
         raise ValueError("ShadowRoute batch lacks request IDs")
+    router_inputs = targets["future_router_inputs"]
+    routed = states["routed_expert_output_delta_r"]
+    selected_ids = targets["future_selected_ids"]
+    execution_weights = targets["future_execution_weights"]
+    available = targets["future_available"]
+    # The production local reader emits only the declared target layer.  Keep
+    # the full-grid branch for synthetic/legacy tests and reject ambiguity.
+    if router_inputs.ndim == 4:
+        router_inputs = router_inputs[:, :, layer]
+        routed = routed[:, :, layer]
+        selected_ids = selected_ids[:, :, layer]
+        execution_weights = execution_weights[:, :, layer]
+        available = available[:, :, layer]
+    elif not (
+        router_inputs.ndim == 3
+        and routed.ndim == 3
+        and selected_ids.ndim == 3
+        and execution_weights.ndim == 3
+        and available.ndim == 2
+    ):
+        raise ValueError("ShadowRoute layer-local teacher tensor ranks changed")
     return (
-        targets["future_router_inputs"][:, :, layer],
-        states["routed_expert_output_delta_r"][:, :, layer],
-        targets["future_selected_ids"][:, :, layer],
-        targets["future_execution_weights"][:, :, layer],
-        targets["future_available"][:, :, layer].bool(),
+        router_inputs,
+        routed,
+        selected_ids,
+        execution_weights,
+        available.bool(),
         [str(value) for value in requests],
     )
 
