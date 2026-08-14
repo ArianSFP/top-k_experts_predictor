@@ -21,6 +21,8 @@ for candidate in (str(REPO_ROOT), str(BRIDGE)):
         sys.path.insert(0, candidate)
 
 from harp_rtt.node_counterfactual import load_node_counterfactual_companion  # noqa: E402
+from harp_rtt.exact_k import stable_topk  # noqa: E402
+from harp_rtt.route_ceiling import factual_branch_topk, posterior_native_topk  # noqa: E402
 from harp_rtt.shadow_backbone import exact_prefix_experts, install_shadow_experts  # noqa: E402
 from harp_rtt.shadow_bundle import load_shadow_bundle  # noqa: E402
 from harp_rtt.shadow_checkpoint import IndexedCheckpoint, sha256_file  # noqa: E402
@@ -29,6 +31,7 @@ from harp_rtt.shadow_rollout import ShadowRouteHooks, run_shadow_tree  # noqa: E
 
 SCHEMA = "harp_shadowroute_closed_loop_evaluation_v1"
 RESULT_SCHEMA = "harp_shadowroute_closed_loop_result_v1"
+CEILING_BUNDLE_SCHEMA = "harp_deltaroute_v4_ceiling_bundle_v1"
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,6 +39,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--base-capture", type=Path, required=True)
     parser.add_argument("--native-companion", type=Path, required=True)
+    parser.add_argument(
+        "--ceiling-bundle",
+        type=Path,
+        help=(
+            "optional immutable Stage-0 bundle used to evaluate factual branch "
+            "mixtures with learned, target, and raw-MTP posteriors"
+        ),
+    )
+    parser.add_argument(
+        "--ceiling-parent-sha256",
+        help="required selected-parent checkpoint SHA256 when --ceiling-bundle is used",
+    )
     parser.add_argument("--layer-checkpoint-root", type=Path)
     parser.add_argument("--s1-fallback-root", type=Path)
     parser.add_argument("--shadow-width", type=int, choices=(16, 32, 64, 96, 128), default=16)
@@ -109,6 +124,123 @@ def route_overlap(predicted: torch.Tensor, target: torch.Tensor) -> torch.Tensor
     ).any(-1).float().mean(-1)
 
 
+def slot_coverage(predicted: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    if predicted.shape[:-1] != target.shape[:-1] or target.shape[-1] != 8:
+        raise ValueError("slot coverage requires aligned prediction/target cells")
+    return (
+        target[..., None] == predicted[..., None, :]
+    ).any(-1).float().mean(-1)
+
+
+def load_ceiling_bundle(path: Path, *, parent_sha256: str) -> dict[str, Any]:
+    value = torch.load(path, map_location="cpu", weights_only=True)
+    if not isinstance(value, dict) or value.get("schema") != CEILING_BUNDLE_SCHEMA:
+        raise ValueError("ShadowRoute factual evaluation ceiling-bundle schema mismatch")
+    provenance = value.get("provenance")
+    if not isinstance(provenance, Mapping):
+        raise ValueError("ShadowRoute factual evaluation lacks bundle provenance")
+    if provenance.get("outer_split") != "train":
+        raise PermissionError("ShadowRoute factual evaluation is outer-train only")
+    if provenance.get("parent_checkpoint_sha256") != parent_sha256:
+        raise ValueError("ShadowRoute factual evaluation parent checkpoint mismatch")
+    for key in ("formal_validation_opened", "calibration_opened", "sealed_test_opened"):
+        if provenance.get(key) is not False:
+            raise PermissionError(f"ShadowRoute factual bundle violates {key}")
+    request_ids = value.get("request_ids")
+    if not isinstance(request_ids, list) or not request_ids:
+        raise ValueError("ShadowRoute factual bundle lacks request IDs")
+    expected_rows = len(request_ids)
+    expected = {
+        "anchor_marginals": (expected_rows, 4, 40, 256),
+        "target_ids": (expected_rows, 4, 40, 8),
+        "future_valid": (expected_rows, 4, 40),
+        "node_native_ids": (expected_rows, 32, 40, 8),
+        "branch_mask": (expected_rows, 4, 32),
+        "factual_branch_indices": (expected_rows, 4),
+        "prefix_mismatch": (expected_rows, 4),
+    }
+    for name, shape in expected.items():
+        tensor = value.get(name)
+        if not isinstance(tensor, torch.Tensor) or tuple(tensor.shape) != shape:
+            raise ValueError(f"ShadowRoute factual bundle field {name} has invalid geometry")
+    posteriors = value.get("posteriors")
+    if not isinstance(posteriors, Mapping):
+        raise ValueError("ShadowRoute factual bundle lacks posteriors")
+    for name in ("learned", "target", "mtp"):
+        condition = posteriors.get(name)
+        if not isinstance(condition, Mapping):
+            raise ValueError(f"ShadowRoute factual bundle lacks {name} posterior")
+        if tuple(condition["captured"].shape) != (expected_rows, 4, 32):
+            raise ValueError(f"ShadowRoute {name} captured posterior has invalid geometry")
+        if tuple(condition["other"].shape) != (expected_rows, 4):
+            raise ValueError(f"ShadowRoute {name} OTHER posterior has invalid geometry")
+    return value
+
+
+def resolve_ceiling_row(
+    bundle: Mapping[str, Any],
+    remaining: dict[str, list[int]],
+    *,
+    request_id: str,
+    native_ids: torch.Tensor,
+    native_valid: torch.Tensor,
+) -> int:
+    candidates = remaining.get(request_id, [])
+    if not candidates:
+        raise KeyError(f"ceiling bundle has no unused row for request {request_id!r}")
+    count = native_ids.shape[0]
+    matches: list[int] = []
+    for row in candidates:
+        reference = bundle["node_native_ids"][row, :count].long()
+        if torch.equal(reference[native_valid], native_ids.long()[native_valid]):
+            matches.append(row)
+    if len(matches) != 1:
+        raise ValueError(
+            f"native-route fingerprint join for {request_id!r} produced {len(matches)} rows"
+        )
+    row = matches[0]
+    candidates.remove(row)
+    return row
+
+
+def summarize_factual(
+    cells: Mapping[tuple[str, str, str, int], list[torch.Tensor]],
+) -> tuple[dict[str, float], list[dict[str, Any]]]:
+    request_rows: list[dict[str, Any]] = []
+    for (condition, metric, request, horizon), values in sorted(cells.items()):
+        request_rows.append({
+            "condition": condition,
+            "metric": metric,
+            "request_id": request,
+            "horizon": horizon,
+            "value": float(torch.cat(values).mean()),
+        })
+    metrics: dict[str, float] = {}
+    conditions = sorted({row["condition"] for row in request_rows})
+    kinds = sorted({row["metric"] for row in request_rows})
+    for condition in conditions:
+        for metric in kinds:
+            horizons: list[float] = []
+            complete = True
+            for horizon in (2, 3, 4):
+                values = [
+                    float(row["value"])
+                    for row in request_rows
+                    if row["condition"] == condition
+                    and row["metric"] == metric
+                    and row["horizon"] == horizon
+                ]
+                if not values:
+                    complete = False
+                    break
+                value = sum(values) / len(values)
+                metrics[f"{condition}_{metric}_h{horizon}"] = value
+                horizons.append(value)
+            if complete:
+                metrics[f"{condition}_{metric}_h2_h4"] = sum(horizons) / 3.0
+    return metrics, request_rows
+
+
 def summarize(
     cells: Mapping[tuple[str, int], list[torch.Tensor]]
 ) -> tuple[dict[str, float], list[dict[str, Any]]]:
@@ -169,11 +301,29 @@ def main() -> None:
         "exact_top1_plus_draft", "indexed_width16", "int4_top4"
     }:
         raise ValueError("the unpromoted diagnostic override is restricted to S0/S2/INT4")
+    if (args.ceiling_bundle is None) != (args.ceiling_parent_sha256 is None):
+        raise ValueError(
+            "--ceiling-bundle and --ceiling-parent-sha256 must be provided together"
+        )
+    if args.ceiling_parent_sha256 is not None and (
+        len(args.ceiling_parent_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in args.ceiling_parent_sha256)
+    ):
+        raise ValueError("ceiling parent SHA256 must be 64 lowercase hex characters")
 
     base_manifest, trees, sequence_tokens = load_base_capture(args.base_capture)
     labels, companion_manifest = load_node_counterfactual_companion(
         args.native_companion, split="train", training=True
     )
+    ceiling = None
+    remaining_ceiling_rows: dict[str, list[int]] = {}
+    if args.ceiling_bundle is not None:
+        assert args.ceiling_parent_sha256 is not None
+        ceiling = load_ceiling_bundle(
+            args.ceiling_bundle, parent_sha256=args.ceiling_parent_sha256
+        )
+        for row, request_id in enumerate(ceiling["request_ids"]):
+            remaining_ceiling_rows.setdefault(str(request_id), []).append(row)
     if args.limit is not None:
         trees = trees[: args.limit]
     if not trees:
@@ -204,6 +354,11 @@ def main() -> None:
         "target_checkpoint_index_sha256": checkpoint.index_sha256,
         "base_capture_manifest_sha256": sha256_file(args.base_capture / "run_manifest.json"),
         "native_companion_manifest_sha256": sha256_file(args.native_companion / "manifest.json"),
+        "ceiling_bundle_sha256": (
+            None if args.ceiling_bundle is None else sha256_file(args.ceiling_bundle)
+        ),
+        "ceiling_parent_sha256": args.ceiling_parent_sha256,
+        "factual_mixture_evaluation": ceiling is not None,
         "label_only_native_routes": True,
         "native_routes_used_as_model_inputs": False,
         "optimizer_constructed": False,
@@ -246,6 +401,9 @@ def main() -> None:
         )
 
     cells: dict[tuple[str, int], list[torch.Tensor]] = defaultdict(list)
+    factual_cells: dict[
+        tuple[str, str, str, int], list[torch.Tensor]
+    ] = defaultdict(list)
     native_mismatches = 0
     peak_gib = 0.0
     with ShadowRouteHooks(target) as hooks:
@@ -268,6 +426,15 @@ def main() -> None:
             count = int(native["node_mask"].sum())
             if count != len(nodes):
                 raise ValueError("native companion/base tree node count differs")
+            ceiling_row = None
+            if ceiling is not None:
+                ceiling_row = resolve_ceiling_row(
+                    ceiling,
+                    remaining_ceiling_rows,
+                    request_id=str(tree["request_id"]),
+                    native_ids=native["selected_ids"][:count].long(),
+                    native_valid=native["valid"][:count].bool(),
+                )
 
             if args.native_parity:
                 with exact_prefix_experts(installed):
@@ -301,6 +468,73 @@ def main() -> None:
                     active = valid & (depth[:, None] == horizon)
                     if active.any():
                         cells[(request, horizon)].append(overlap[active])
+                if ceiling is not None:
+                    assert ceiling_row is not None
+                    node_ids = torch.full((1, 32, 40, 8), -1, dtype=torch.long)
+                    node_ids[0, :count] = predicted
+                    anchor_marginals = ceiling["anchor_marginals"][
+                        ceiling_row : ceiling_row + 1
+                    ].float()
+                    target_ids = ceiling["target_ids"][
+                        ceiling_row : ceiling_row + 1
+                    ].long()
+                    future_valid = ceiling["future_valid"][
+                        ceiling_row : ceiling_row + 1
+                    ].bool()
+                    branch_mask = ceiling["branch_mask"][
+                        ceiling_row : ceiling_row + 1
+                    ].bool()
+                    prefix_mismatch = ceiling["prefix_mismatch"][
+                        ceiling_row : ceiling_row + 1
+                    ].bool()
+                    anchor_ids = stable_topk(anchor_marginals, 8)
+
+                    conditions: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+                    for condition_name in ("learned", "target", "mtp"):
+                        posterior = ceiling["posteriors"][condition_name]
+                        predicted_factual, inclusion = posterior_native_topk(
+                            node_ids,
+                            posterior["captured"][ceiling_row : ceiling_row + 1].float(),
+                            posterior["other"][ceiling_row : ceiling_row + 1].float(),
+                            branch_mask,
+                            anchor_marginals,
+                        )
+                        conditions[condition_name] = (predicted_factual, inclusion)
+                    conditions["factual_branch"] = (
+                        factual_branch_topk(
+                            node_ids,
+                            ceiling["factual_branch_indices"][
+                                ceiling_row : ceiling_row + 1
+                            ].long(),
+                            anchor_ids,
+                        ),
+                        torch.empty(0),
+                    )
+
+                    for condition_name, (predicted_factual, inclusion) in conditions.items():
+                        recall = slot_coverage(predicted_factual, target_ids)
+                        coverage64 = (
+                            None
+                            if inclusion.numel() == 0
+                            else slot_coverage(stable_topk(inclusion, 64), target_ids)
+                        )
+                        for horizon in (2, 3, 4):
+                            active = future_valid[0, horizon - 1]
+                            factual_cells[(
+                                condition_name, "recall", request, horizon
+                            )].append(recall[0, horizon - 1][active])
+                            if coverage64 is not None:
+                                factual_cells[(
+                                    condition_name, "candidate64", request, horizon
+                                )].append(coverage64[0, horizon - 1][active])
+                            stratum = (
+                                "mismatch_recall"
+                                if bool(prefix_mismatch[0, horizon - 1])
+                                else "matched_recall"
+                            )
+                            factual_cells[(
+                                condition_name, stratum, request, horizon
+                            )].append(recall[0, horizon - 1][active])
             if torch.cuda.is_available() and str(args.device).startswith("cuda"):
                 peak_gib = max(peak_gib, torch.cuda.max_memory_reserved() / 2**30)
             print(json.dumps({"tree": ordinal + 1, "total": len(trees)}), flush=True)
@@ -310,7 +544,13 @@ def main() -> None:
         rows: list[dict[str, Any]] = []
     else:
         metrics, rows = summarize(cells)
+    if ceiling is None:
+        factual_metrics: dict[str, float] = {}
+        factual_rows: list[dict[str, Any]] = []
+    else:
+        factual_metrics, factual_rows = summarize_factual(factual_cells)
     write_rows(args.output / "request_route_predictions.jsonl", rows)
+    write_rows(args.output / "request_factual_predictions.jsonl", factual_rows)
     accuracy_gate_met = bool(
         args.native_parity_only
         or (
@@ -326,6 +566,7 @@ def main() -> None:
         "diagnostic_unpromoted_bundle": args.diagnostic_unpromoted_bundle,
         "promotion_eligible": promotion_eligible,
         "metrics": metrics,
+        "factual_metrics": factual_metrics,
         "native_parity_mismatches": native_mismatches,
         "peak_reserved_gib": peak_gib,
         "gate": {
@@ -333,6 +574,21 @@ def main() -> None:
             "route_recall_h4_required": 0.80,
             "accuracy_thresholds_met": accuracy_gate_met,
             "passed": bool(accuracy_gate_met and promotion_eligible),
+        },
+        "factual_gate": {
+            "route_recall_h2_h4_required": 0.80,
+            "route_recall_h4_required": 0.75,
+            "accuracy_thresholds_met": bool(
+                ceiling is not None
+                and factual_metrics.get("mtp_recall_h2_h4", -1.0) >= 0.80
+                and factual_metrics.get("mtp_recall_h4", -1.0) >= 0.75
+            ),
+            "passed": bool(
+                ceiling is not None
+                and promotion_eligible
+                and factual_metrics.get("mtp_recall_h2_h4", -1.0) >= 0.80
+                and factual_metrics.get("mtp_recall_h4", -1.0) >= 0.75
+            ),
         },
         "training_started": False,
         "optimizer_constructed": False,
