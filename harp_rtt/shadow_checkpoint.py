@@ -62,6 +62,8 @@ class ShadowTargetContract:
     linear_conv_kernel: int = 4
     rope_theta: float = 10_000_000.0
     partial_rotary_factor: float = 0.25
+    mrope_interleaved: bool = True
+    mrope_section: tuple[int, int, int] = (11, 11, 10)
     rms_norm_epsilon: float = 1e-6
 
     def validate(self) -> None:
@@ -104,16 +106,44 @@ def validate_shadow_target_config(
         if int(found) != int(wanted):
             raise ValueError(f"target config {aliases[0]}={found!r}, expected {wanted!r}")
         observed[aliases[0]] = int(found)
+    rope_parameters = None
+    try:
+        candidate = _value(config, "rope_parameters")
+        if isinstance(candidate, Mapping):
+            rope_parameters = candidate
+    except ValueError:
+        pass
+
+    def normalized_value(*aliases: str) -> Any:
+        try:
+            return _value(config, *aliases)
+        except ValueError:
+            if rope_parameters is not None:
+                for alias in aliases:
+                    if alias in rope_parameters:
+                        return rope_parameters[alias]
+            raise
+
     float_expected = {
         ("rope_theta",): contract.rope_theta,
         ("partial_rotary_factor",): contract.partial_rotary_factor,
         ("rms_norm_eps", "rms_norm_epsilon"): contract.rms_norm_epsilon,
     }
     for aliases, wanted in float_expected.items():
-        found = float(_value(config, *aliases))
+        found = float(normalized_value(*aliases))
         if not math.isclose(found, float(wanted), rel_tol=0.0, abs_tol=1e-12):
             raise ValueError(f"target config {aliases[0]}={found!r}, expected {wanted!r}")
         observed[aliases[0]] = found
+    if rope_parameters is not None:
+        if bool(rope_parameters.get("mrope_interleaved")) is not contract.mrope_interleaved:
+            raise ValueError("target mRoPE interleaving differs from the frozen contract")
+        section = tuple(int(value) for value in rope_parameters.get("mrope_section", ()))
+        if section != contract.mrope_section:
+            raise ValueError("target mRoPE section differs from the frozen contract")
+        if str(rope_parameters.get("rope_type")) != "default":
+            raise ValueError("target RoPE type differs from the frozen contract")
+        observed["mrope_interleaved"] = contract.mrope_interleaved
+        observed["mrope_section"] = contract.mrope_section
     layer_types = tuple(str(value) for value in _value(config, "layer_types"))
     if layer_types != EXPECTED_LAYER_TYPES:
         raise ValueError("target layer_types do not match the frozen 30-linear/10-full pattern")

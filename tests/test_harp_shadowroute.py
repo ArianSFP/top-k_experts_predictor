@@ -323,6 +323,19 @@ def test_exact_target_config_and_routed_inventory():
         "attention_dropout": 0.0,
     }
     validate_shadow_target_config(config, contract)
+    normalized = dict(config)
+    normalized.pop("rope_theta")
+    normalized["rope_parameters"] = {
+        "mrope_interleaved": True,
+        "mrope_section": [11, 11, 10],
+        "partial_rotary_factor": 0.25,
+        "rope_theta": 10_000_000.0,
+        "rope_type": "default",
+    }
+    validate_shadow_target_config(normalized, contract)
+    normalized["rope_parameters"]["mrope_section"] = [10, 11, 11]
+    with pytest.raises(ValueError, match="mRoPE section"):
+        validate_shadow_target_config(normalized, contract)
     config["layer_types"] = tuple(reversed(EXPECTED_LAYER_TYPES))
     with pytest.raises(ValueError, match="layer_types"):
         validate_shadow_target_config(config, contract)
