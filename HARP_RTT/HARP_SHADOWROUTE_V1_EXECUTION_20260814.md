@@ -322,7 +322,11 @@ environment invocation issue, not a test failure.
 ## Terminal artifact state
 
 The full result's internal `SHA256SUMS` verified every manifest, audit, result,
-and request-level prediction file.  The finalized bundle and decisive results
-are mirrored immutably to persistent `/workspace` before pod shutdown.  The
-branch is then pushed and the pod is stopped, not terminated, with
-`runpodctl`.
+and request-level prediction file.  The 17 GiB finalized bundle and decisive
+results were mirrored to:
+
+    /workspace/LLM_prefetch_study/artifacts/harp_rtt/shadowroute_v1_20260814_33002d6
+
+All destination manifests and all 40 INT4 layer shards passed their internal
+checksums after the mirror.  The branch is then pushed and the pod is stopped,
+not terminated, with `runpodctl`.
