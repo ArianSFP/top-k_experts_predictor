@@ -180,11 +180,19 @@ def _native_top8(
     output: Any, posterior: Tensor, parent: Any,
 ) -> Tensor:
     native = output.counterfactual["selected_ids"].long()
+    valid = (
+        output.counterfactual["valid"].bool()
+        & output.counterfactual["node_mask"].bool()[..., None]
+    )
     batch, nodes, layers, k = native.shape
+    safe_native = torch.where(valid[..., None], native, 0)
+    if bool(((safe_native < 0) | (safe_native >= parent.config.experts)).any()):
+        raise ValueError("valid native expert ID lies outside the expert namespace")
     membership = torch.zeros(
         batch, nodes, layers, parent.config.experts,
         device=native.device, dtype=torch.float32,
-    ).scatter_(-1, native, 1.0)
+    ).scatter_(-1, safe_native, 1.0)
+    membership = membership * valid[..., None].float()
     captured = torch.einsum(
         "bhn,bnle->bhle",
         posterior[..., :-1].float() * output.branch_mask.float(), membership,
