@@ -44,6 +44,11 @@ def parse_args() -> argparse.Namespace:
         required=True,
     )
     parser.add_argument("--source-commit", required=True)
+    parser.add_argument(
+        "--execution-source-commit",
+        required=True,
+        help="full Git SHA of the evaluator implementation executing this run",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--native-parity", action="store_true")
@@ -139,10 +144,14 @@ def main() -> None:
         ) from exc
     if args.output.exists():
         raise FileExistsError(f"refusing to overwrite evaluation {args.output}")
-    if len(args.source_commit) != 40 or any(
-        character not in "0123456789abcdef" for character in args.source_commit
+    for field, value in (
+        ("source commit", args.source_commit),
+        ("execution source commit", args.execution_source_commit),
     ):
-        raise ValueError("source commit must be a full lowercase Git SHA")
+        if len(value) != 40 or any(
+            character not in "0123456789abcdef" for character in value
+        ):
+            raise ValueError(f"{field} must be a full lowercase Git SHA")
     if args.limit is not None and args.limit < 1:
         raise ValueError("evaluation limit must be positive")
     if args.native_parity_only:
@@ -175,6 +184,7 @@ def main() -> None:
         "schema": SCHEMA,
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "source_commit": args.source_commit,
+        "execution_source_commit": args.execution_source_commit,
         "mode": args.mode,
         "trees": len(trees),
         "native_parity_requested": args.native_parity,
