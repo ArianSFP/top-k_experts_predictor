@@ -156,6 +156,15 @@ def slot_coverage(predicted: torch.Tensor, target: torch.Tensor) -> torch.Tensor
     ).any(-1).float().mean(-1)
 
 
+def native_parity_mask(
+    valid: torch.Tensor, node_mask: torch.Tensor, count: int
+) -> torch.Tensor:
+    """Select authoritative labels for nodes executed by the runtime budget."""
+    if valid.ndim != 2 or node_mask.ndim != 1:
+        raise ValueError("native parity expects [N,L] validity and [N] node mask")
+    return valid[:count].bool() & node_mask[:count, None].bool()
+
+
 def load_ceiling_bundle(path: Path, *, parent_sha256: str) -> dict[str, Any]:
     value = torch.load(path, map_location="cpu", weights_only=True)
     if not isinstance(value, dict) or value.get("schema") != CEILING_BUNDLE_SCHEMA:
@@ -595,7 +604,11 @@ def main() -> None:
                         installed, hooks, authoritative_prefix=authoritative_prefix,
                         token_ids=token_ids, parent_indices=parents, node_mask=node_mask,
                     )
-                active = native["valid"][:count]
+                # The immutable all-node companion retains valid labels for
+                # nodes omitted by a reduced runtime budget.  Those nodes have
+                # sentinel outputs by design, so parity is defined only over
+                # valid nodes that were actually executed.
+                active = native_parity_mask(native["valid"], node_mask, count)
                 native_mismatches += int(
                     (
                         reference.selected_ids[:count].cpu()[active]
