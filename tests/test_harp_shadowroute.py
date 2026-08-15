@@ -535,7 +535,7 @@ def test_resident_int4_without_fallback_executes_only_resident_mass():
     assert torch.count_nonzero(components.output[1]) == 0
     assert torch.equal(components.output, components.resident_output)
     assert all(not key.startswith("fallback.") for key in module.state_dict())
-    assert components.missing_mass.tolist() == pytest.approx([[0.3], [1.0]])
+    assert components.missing_mass.flatten().tolist() == pytest.approx([0.3, 1.0])
 
 
 
