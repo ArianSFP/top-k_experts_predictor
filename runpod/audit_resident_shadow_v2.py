@@ -61,7 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reuse-split-manifest", type=Path, required=True)
     parser.add_argument("--target-model", type=Path, required=True)
     parser.add_argument("--parent-checkpoint", type=Path, required=True)
-    parser.add_argument("--layer", type=int, choices=REPRESENTATIVE_LAYERS, required=True)
+    parser.add_argument("--layer", type=int, choices=range(39), required=True)
     parser.add_argument(
         "--parent-mode",
         choices=("resident_int4_shared", "resident_int4_only"),
