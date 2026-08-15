@@ -25,7 +25,10 @@ from harp_rtt.exact_k import stable_topk  # noqa: E402
 from harp_rtt.route_ceiling import factual_branch_topk, posterior_native_topk  # noqa: E402
 from harp_rtt.shadow_route import shadow_lm_path_posterior  # noqa: E402
 from harp_rtt.shadow_backbone import exact_prefix_experts, install_shadow_experts  # noqa: E402
-from harp_rtt.shadow_bundle import load_shadow_bundle  # noqa: E402
+from harp_rtt.shadow_bundle import (  # noqa: E402
+    load_shadow_bundle,
+    resident_ids_from_bundle,
+)
 from harp_rtt.shadow_checkpoint import IndexedCheckpoint, sha256_file  # noqa: E402
 from harp_rtt.shadow_expert import PackedInt4TopKExperts  # noqa: E402
 from harp_rtt.shadow_rollout import ShadowRouteHooks, run_shadow_tree  # noqa: E402
@@ -69,6 +72,7 @@ def parse_args() -> argparse.Namespace:
         choices=(
             "basisdraft_all8", "exact_top1_plus_draft", "shared_width128",
             "shared_width512", "indexed_width16", "int4_top4",
+            "resident_int4_shared",
         ),
         required=True,
     )
@@ -400,9 +404,11 @@ def main() -> None:
         raise ValueError("native top-k diagnostic may not load a learned bundle")
     if args.diagnostic_unpromoted_bundle and args.mode not in {
         "basisdraft_all8", "exact_top1_plus_draft", "shared_width512",
-        "indexed_width16", "int4_top4"
+        "indexed_width16", "int4_top4", "resident_int4_shared"
     }:
-        raise ValueError("the unpromoted diagnostic override is restricted to S0/S2/INT4")
+        raise ValueError(
+            "the unpromoted diagnostic override is restricted to shadow controls"
+        )
     if args.cache_int4_experts and args.mode != "int4_top4":
         raise ValueError("INT4 expert caching requires INT4 mode")
     if (args.ceiling_bundle is None) != (args.ceiling_parent_sha256 is None):
@@ -440,6 +446,15 @@ def main() -> None:
             raise PermissionError("closed-loop evaluation is restricted to outer-train")
 
     checkpoint = IndexedCheckpoint(args.model)
+    resident_ids_by_layer = None
+    if args.mode == "resident_int4_shared":
+        assert args.layer_checkpoint_root is not None
+        resident_ids_by_layer = resident_ids_from_bundle(
+            args.layer_checkpoint_root,
+            source_commit=args.source_commit,
+            target_checkpoint_index_sha256=checkpoint.index_sha256,
+            allow_unpromoted_diagnostic=args.diagnostic_unpromoted_bundle,
+        )
     args.output.mkdir(parents=True)
     manifest = {
         "schema": SCHEMA,
@@ -453,6 +468,10 @@ def main() -> None:
         "basis_count": args.basis_count,
         "basis_width": args.basis_width,
         "basis_expert_residual_width": args.basis_expert_residual_width,
+        "resident_count_by_layer": (
+            [int(ids.numel()) for ids in resident_ids_by_layer]
+            if resident_ids_by_layer is not None else None
+        ),
         "draft_scale": 0.0 if args.native_exact_slots is not None else 1.0,
         "trees": len(trees),
         "node_budget": int(args.node_budget),
@@ -498,6 +517,7 @@ def main() -> None:
         basis_count=args.basis_count,
         basis_width=args.basis_width,
         basis_expert_residual_width=args.basis_expert_residual_width,
+        resident_ids_by_layer=resident_ids_by_layer,
     )
     if not args.native_parity_only and args.native_exact_slots is None:
         assert args.layer_checkpoint_root is not None
