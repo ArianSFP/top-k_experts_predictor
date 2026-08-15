@@ -31,11 +31,13 @@ from harp_rtt.shadow_expert import (
     ExactTop1PlusDraftExperts,
     IndexedShadowExperts,
     PackedInt4TopKExperts,
+    PackedInt4ResidentExperts,
     RouteConditionedBasisExperts,
     ShadowExpertConfig,
     SharedResidualExperts,
     SwiGLUDraftExpert,
     basisdraft_parameter_count,
+    resident_int4_storage_bytes,
     shadow_pool_parameter_count,
     target_neuron_importance,
     dequantize_groupwise_int4,
@@ -398,6 +400,46 @@ def test_target_selected_expert_top1_fast_path_matches_manual_swiglu():
                 torch.nn.functional.silu(gate) * up, down[expert]
             )
     assert torch.allclose(outputs, expected, atol=1e-6, rtol=1e-6)
+
+
+def test_resident_int4_uses_exact_residents_and_mass_scaled_fallback():
+    torch.manual_seed(17)
+    gate_up = torch.randn(4, 4, 4)
+    down = torch.randn(4, 4, 2)
+    draft = SwiGLUDraftExpert(4, 2)
+    fallback = SharedResidualExperts(draft, experts=4)
+    module = PackedInt4ResidentExperts.from_target(
+        torch.tensor([0, 2]), fallback, gate_up, down,
+        exact_k=2, group_size=2,
+    )
+    hidden = torch.randn(3, 4)
+    ids = torch.tensor([[0, 1], [3, 1], [2, 0]])
+    weights = torch.tensor([[0.7, 0.3], [0.4, 0.6], [0.55, 0.45]])
+    actual = module(hidden, ids, weights)
+    expected = draft(hidden) * torch.tensor([[0.3], [1.0], [0.0]])
+    for row, slot in ((0, 0), (2, 0), (2, 1)):
+        local_id = int(module.expert_to_resident[ids[row, slot]])
+        selected_gate, selected_down = module._resident_weights(
+            local_id, dtype=hidden.dtype
+        )
+        gate, up = torch.nn.functional.linear(
+            hidden[row], selected_gate
+        ).chunk(2)
+        value = torch.nn.functional.linear(
+            torch.nn.functional.silu(gate) * up, selected_down
+        )
+        expected[row] += weights[row, slot] * value
+    assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-6)
+    assert set(module.state_dict()) >= {
+        "resident_ids", "expert_to_resident", "gate_up_packed", "down_packed"
+    }
+    assert not hasattr(module, "native_experts")
+
+
+def test_resident_int4_storage_matches_five_gib_budget():
+    size = resident_int4_storage_bytes(residents=80)
+    assert size == 5_347_737_600
+    assert size / (1024 ** 3) < 5.0
 
 
 def test_shadow_parameter_counts_match_formal_plan():

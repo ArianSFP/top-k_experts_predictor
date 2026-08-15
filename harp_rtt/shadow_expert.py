@@ -744,6 +744,186 @@ class PackedInt4TopKExperts(nn.Module):
         return output.reshape(*leading, self.hidden_width)
 
 
+class PackedInt4ResidentExperts(nn.Module):
+    """Resident frequent experts with a compact fallback for every miss.
+
+    Unlike the full INT4 control, this module stores only a frozen subset of
+    target experts.  It never consults the target offload store.  Missing
+    selected-weight mass is assigned to the resident shared draft; when the
+    fallback exposes per-expert BasisDraft values, resident slots replace the
+    corresponding approximation exactly.
+    """
+
+    def __init__(
+        self,
+        resident_ids: Tensor,
+        fallback: SharedResidualExperts | RouteConditionedBasisExperts,
+        *,
+        hidden_width: int = 2048,
+        intermediate_width: int = 512,
+        experts: int = 256,
+        exact_k: int = 8,
+        group_size: int = 64,
+        device: torch.device | str | None = None,
+    ) -> None:
+        super().__init__()
+        ids = torch.as_tensor(resident_ids, dtype=torch.long)
+        if ids.ndim != 1 or ids.numel() < 1:
+            raise ValueError("resident expert IDs must be a non-empty vector")
+        if bool(((ids < 0) | (ids >= experts)).any()) or ids.unique().numel() != ids.numel():
+            raise ValueError("resident expert IDs must be unique and in range")
+        if not 1 <= exact_k <= experts:
+            raise ValueError("resident exact-k is invalid")
+        if hidden_width % group_size or intermediate_width % group_size:
+            raise ValueError("INT4 group size must divide both expert input widths")
+        self.hidden_width = int(hidden_width)
+        self.intermediate_width = int(intermediate_width)
+        self.experts = int(experts)
+        self.exact_k = int(exact_k)
+        self.group_size = int(group_size)
+        self.fallback = fallback
+        self.register_buffer("resident_ids", ids.to(device=device))
+        expert_to_resident = torch.full((experts,), -1, dtype=torch.long, device=device)
+        expert_to_resident[self.resident_ids] = torch.arange(
+            ids.numel(), dtype=torch.long, device=device
+        )
+        self.register_buffer("expert_to_resident", expert_to_resident)
+        count = int(ids.numel())
+        self.register_buffer(
+            "gate_up_packed",
+            torch.empty(
+                count, 2 * intermediate_width, hidden_width // 2,
+                dtype=torch.uint8, device=device,
+            ),
+        )
+        self.register_buffer(
+            "gate_up_scales",
+            torch.empty(
+                count, 2 * intermediate_width, hidden_width // group_size,
+                dtype=torch.bfloat16, device=device,
+            ),
+        )
+        self.register_buffer(
+            "down_packed",
+            torch.empty(
+                count, hidden_width, intermediate_width // 2,
+                dtype=torch.uint8, device=device,
+            ),
+        )
+        self.register_buffer(
+            "down_scales",
+            torch.empty(
+                count, hidden_width, intermediate_width // group_size,
+                dtype=torch.bfloat16, device=device,
+            ),
+        )
+
+    @property
+    def resident_count(self) -> int:
+        return int(self.resident_ids.numel())
+
+    @classmethod
+    @torch.no_grad()
+    def from_target(
+        cls,
+        resident_ids: Tensor,
+        fallback: SharedResidualExperts | RouteConditionedBasisExperts,
+        target_gate_up: Tensor,
+        target_down: Tensor,
+        *,
+        exact_k: int = 8,
+        group_size: int = 64,
+    ) -> "PackedInt4ResidentExperts":
+        experts, twice_intermediate, hidden_width = target_gate_up.shape
+        if twice_intermediate % 2:
+            raise ValueError("target gate/up width must be even")
+        intermediate = twice_intermediate // 2
+        if target_down.shape != (experts, hidden_width, intermediate):
+            raise ValueError("target expert tensor shapes disagree")
+        ids = torch.as_tensor(resident_ids, dtype=torch.long, device=target_gate_up.device)
+        module = cls(
+            ids,
+            fallback,
+            hidden_width=hidden_width,
+            intermediate_width=intermediate,
+            experts=experts,
+            exact_k=exact_k,
+            group_size=group_size,
+            device=target_gate_up.device,
+        )
+        gate_packed, gate_scales = quantize_groupwise_int4(
+            target_gate_up.index_select(0, ids), group_size=group_size
+        )
+        down_packed, down_scales = quantize_groupwise_int4(
+            target_down.index_select(0, ids), group_size=group_size
+        )
+        module.gate_up_packed.copy_(gate_packed)
+        module.gate_up_scales.copy_(gate_scales)
+        module.down_packed.copy_(down_packed)
+        module.down_scales.copy_(down_scales)
+        return module
+
+    def _resident_weights(
+        self, local_id: int, *, dtype: torch.dtype
+    ) -> tuple[Tensor, Tensor]:
+        return (
+            dequantize_groupwise_int4(
+                self.gate_up_packed[local_id], self.gate_up_scales[local_id],
+                group_size=self.group_size, dtype=dtype,
+            ),
+            dequantize_groupwise_int4(
+                self.down_packed[local_id], self.down_scales[local_id],
+                group_size=self.group_size, dtype=dtype,
+            ),
+        )
+
+    def forward(
+        self, hidden_states: Tensor, top_k_index: Tensor, top_k_weights: Tensor
+    ) -> Tensor:
+        hidden, ids, weights, leading = _validate_routed_inputs(
+            hidden_states, top_k_index, top_k_weights,
+            hidden_width=self.hidden_width, experts=self.experts,
+        )
+        if ids.shape[-1] != self.exact_k:
+            raise ValueError("resident hybrid requires the complete native top-k route")
+        local_ids = self.expert_to_resident[ids]
+        resident = local_ids >= 0
+        if isinstance(self.fallback, RouteConditionedBasisExperts):
+            fallback_values = self.fallback.selected_unweighted(hidden, ids).reshape(
+                hidden.shape[0], ids.shape[1], self.hidden_width
+            )
+            output = (fallback_values * weights[..., None]).sum(dim=1)
+        else:
+            missing_mass = (weights * (~resident).to(weights)).sum(dim=1, keepdim=True)
+            output = self.fallback(hidden, ids, weights).reshape_as(hidden) * missing_mass
+            fallback_values = None
+        for local_id in torch.unique(local_ids[resident]).tolist():
+            positions = (local_ids == int(local_id)).nonzero(as_tuple=False)
+            token_index, slot_index = positions[:, 0], positions[:, 1]
+            gate_up, down = self._resident_weights(int(local_id), dtype=hidden.dtype)
+            gate, up = F.linear(hidden[token_index], gate_up).chunk(2, dim=-1)
+            exact = F.linear(F.silu(gate) * up, down)
+            if fallback_values is not None:
+                exact = exact - fallback_values[token_index, slot_index]
+            output[token_index] += exact * weights[token_index, slot_index, None]
+        return output.reshape(*leading, self.hidden_width)
+
+
+def resident_int4_storage_bytes(
+    *, layers: int = 40, residents: int = 80, hidden_width: int = 2048,
+    intermediate_width: int = 512, group_size: int = 64,
+) -> int:
+    """Exact packed-weight and BF16-scale bytes, excluding the fallback."""
+
+    values = (layers, residents, hidden_width, intermediate_width, group_size)
+    if any(value < 1 for value in values):
+        raise ValueError("resident INT4 dimensions must be positive")
+    parameters = 3 * hidden_width * intermediate_width
+    packed = parameters // 2
+    scales = 2 * (parameters // group_size)
+    return layers * residents * (packed + scales)
+
+
 def shadow_pool_parameter_count(
     *, layers: int = 40, experts: int = 256, hidden_width: int = 2048,
     shadow_width: int = 16,
@@ -778,6 +958,7 @@ __all__ = [
     "ExactTop1PlusDraftExperts",
     "IndexedShadowExperts",
     "PackedInt4TopKExperts",
+    "PackedInt4ResidentExperts",
     "RouteConditionedBasisExperts",
     "RoutedExperts",
     "ShadowExpertConfig",
@@ -787,6 +968,7 @@ __all__ = [
     "shadow_pool_parameter_count",
     "dequantize_groupwise_int4",
     "quantize_groupwise_int4",
+    "resident_int4_storage_bytes",
     "target_neuron_importance",
     "target_selected_expert_outputs",
 ]
