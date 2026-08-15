@@ -39,18 +39,18 @@ function, not expert identity alone.
 ## Architecture
 
 Every target layer owns `J=16` shared SwiGLU basis functions of width 32 and a
-small coefficient table `c[e,j]` for its 256 target experts. For the exact
+small neuron-coefficient table `c[e,j,r]` for its 256 target experts. For the exact
 router-selected IDs and native execution weights `(e_i,w_i)`, all eight target
 expert effects are approximated without target-expert I/O:
 
 ```text
-alpha[j] = sum_i w_i * c[e_i,j]
-delta_routed = sum_j alpha[j] * Basis[j](router_input)
+alpha[j,r] = sum_i w_i * c[e_i,j,r]
+delta_routed = sum_j Down[j](alpha[j] * BasisActivation[j](router_input))
 ```
 
 The basis pool contains 125,829,120 weights and the coefficient tables contain
-163,840 weights: 125,992,960 parameters total, approximately 240.3 MiB BF16.
-INT8 is approximately 120.2 MiB and group-64 INT4 about 64 MiB after BF16 has
+5,242,880 weights: 131,072,000 parameters total, exactly 250 MiB BF16.
+INT8 is approximately 125 MiB and group-64 INT4 about 67 MiB after BF16 has
 passed. The coefficient table remains BF16.
 
 The initializer splits each successful width-512 S0 expert into sixteen
@@ -131,4 +131,3 @@ reserved for a result close enough to change the promotion decision.
 - RTX PRO 6000 96 GB (or H100 NVL/H200): exact-backbone closed-loop evaluation
   only after the component gate passes.
 - No new target or MTP capture is authorised by this stage.
-

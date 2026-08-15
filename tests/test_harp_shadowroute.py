@@ -228,7 +228,7 @@ def test_basisdraft_preserves_expert_identity_weights_and_gradients():
         module.down_proj.fill_(1.0)
         module.expert_coefficients.copy_(torch.tensor([
             [1.0, 0.0], [0.0, 1.0], [2.0, 0.0], [0.0, 3.0]
-        ]))
+        ])[..., None])
     hidden = torch.ones(1, 3, requires_grad=True)
     ids = torch.tensor([[0, 3]])
     weights = torch.tensor([[0.25, 0.75]])
@@ -397,7 +397,7 @@ def test_shadow_parameter_counts_match_formal_plan():
     assert shadow_pool_parameter_count(
         layers=40, experts=1, hidden_width=2048, shadow_width=128
     ) == 31_457_280
-    assert basisdraft_parameter_count() == 125_992_960
+    assert basisdraft_parameter_count() == 131_072_000
 
 
 def test_tree_runner_isolates_siblings_and_processes_h1_once():

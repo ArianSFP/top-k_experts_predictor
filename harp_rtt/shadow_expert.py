@@ -322,7 +322,7 @@ class RouteConditionedBasisExperts(nn.Module):
             config.basis_width,
         ))
         self.expert_coefficients = nn.Parameter(torch.ones(
-            config.experts, config.basis_count
+            config.experts, config.basis_count, config.basis_width
         ))
         self.reset_parameters()
 
@@ -357,14 +357,12 @@ class RouteConditionedBasisExperts(nn.Module):
             )
         self.expert_coefficients.fill_(1.0)
 
-    def _basis_values(self, hidden: Tensor) -> Tensor:
+    def _basis_activations(self, hidden: Tensor) -> Tensor:
         projection = torch.einsum(
             "bd,jmd->bjm", hidden, self.gate_up_proj
         )
         gate, up = projection.chunk(2, dim=-1)
-        return torch.einsum(
-            "bjw,jdw->bjd", F.silu(gate) * up, self.down_proj
-        )
+        return F.silu(gate) * up
 
     def selected_unweighted(
         self, hidden_states: Tensor, selected_ids: Tensor
@@ -379,9 +377,11 @@ class RouteConditionedBasisExperts(nn.Module):
             hidden_width=cfg.hidden_width,
             experts=cfg.experts,
         )
-        basis = self._basis_values(hidden)
-        coefficients = F.embedding(ids, self.expert_coefficients).to(basis.dtype)
-        values = torch.einsum("bkj,bjd->bkd", coefficients, basis)
+        basis = self._basis_activations(hidden)
+        coefficients = self.expert_coefficients[ids].to(basis.dtype)
+        values = torch.einsum(
+            "bkjw,bjw,jdw->bkd", coefficients, basis, self.down_proj
+        )
         return values.reshape(*leading, ids.shape[-1], cfg.hidden_width)
 
     def forward(
@@ -397,10 +397,10 @@ class RouteConditionedBasisExperts(nn.Module):
         )
         if ids.shape[-1] != cfg.exact_k:
             raise ValueError("BasisDraft requires the complete native top-k route")
-        coefficients = F.embedding(ids, self.expert_coefficients).to(hidden.dtype)
-        alpha = (coefficients * weights[..., None]).sum(dim=1)
-        basis = self._basis_values(hidden)
-        routed = torch.einsum("bj,bjd->bd", alpha, basis)
+        coefficients = self.expert_coefficients[ids].to(hidden.dtype)
+        alpha = (coefficients * weights[..., None, None]).sum(dim=1)
+        basis = self._basis_activations(hidden)
+        routed = torch.einsum("bjw,bjw,jdw->bd", alpha, basis, self.down_proj)
         return routed.reshape(*leading, cfg.hidden_width)
 
 
@@ -730,7 +730,7 @@ def basisdraft_parameter_count(
     if any(value < 1 for value in values):
         raise ValueError("BasisDraft dimensions must be positive")
     per_layer_basis = 3 * basis_count * hidden_width * basis_width
-    per_layer_coefficients = experts * basis_count
+    per_layer_coefficients = experts * basis_count * basis_width
     return layers * (per_layer_basis + per_layer_coefficients)
 
 

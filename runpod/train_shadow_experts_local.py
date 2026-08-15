@@ -729,10 +729,12 @@ def objective(
             active_slots = model.config.exact_k
         ids = ids[..., :active_slots]
         weights = weights[..., :active_slots]
-        individual_target, _reconstructed = teacher_values(
-            inputs, ids, weights, gate_up, down
-        )
-        routed_target = _reconstructed
+        individual_target: Tensor | None = None
+        if mode != "basisdraft_all8" or individual_loss_weight > 0:
+            individual_target, _reconstructed = teacher_values(
+                inputs, ids, weights, gate_up, down
+            )
+            routed_target = _reconstructed
     with torch.autocast(
         device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"
     ):
@@ -745,11 +747,15 @@ def objective(
             individual_loss = predicted.sum() * 0.0
         elif mode == "basisdraft_all8":
             assert isinstance(model, RouteConditionedBasisExperts)
-            predicted_individual = model.selected_unweighted(inputs, ids)
-            predicted = (predicted_individual * weights[..., None].to(inputs)).sum(-2)
-            individual_loss = selected_expert_distillation_loss(
-                predicted_individual, individual_target, weights, valid
-            )
+            predicted = model(inputs, ids, weights)
+            if individual_loss_weight > 0:
+                assert individual_target is not None
+                predicted_individual = model.selected_unweighted(inputs, ids)
+                individual_loss = selected_expert_distillation_loss(
+                    predicted_individual, individual_target, weights, valid
+                )
+            else:
+                individual_loss = predicted.sum() * 0.0
         else:
             assert isinstance(model, IndexedShadowExperts)
             predicted_individual = model.selected_unweighted(inputs, ids)
