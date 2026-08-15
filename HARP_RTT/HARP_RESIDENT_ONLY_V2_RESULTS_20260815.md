@@ -184,4 +184,3 @@ Run the exact-cache closed-loop evaluation in this order:
 The PRO run is essential because the 3090 metric is teacher-forced one-layer
 agreement. It strongly predicts a large gain, but only exact hybrid-cache
 closed-loop execution can measure compounding trajectory error.
-
