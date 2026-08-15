@@ -94,7 +94,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--basis-coefficients-only",
         action="store_true",
-        help="freeze the nonlinear basis and train only expert coefficients",
+        help=(
+            "freeze the shared nonlinear basis while training route-specific "
+            "coefficients and expert residual adapters"
+        ),
     )
     parser.add_argument("--target-model", type=Path, required=True)
     parser.add_argument("--mode", choices=MODES, required=True)
@@ -116,6 +119,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--indexed-active-slots", type=int, choices=(4, 8), default=8)
     parser.add_argument("--basis-count", type=int, choices=(8, 16, 32), default=16)
     parser.add_argument("--basis-width", type=int, choices=(16, 32, 64), default=32)
+    parser.add_argument(
+        "--basis-expert-residual-width", type=int,
+        choices=(2, 4, 8, 16), default=2,
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--preflight-only", action="store_true")
@@ -540,6 +547,7 @@ def build_student(
     indexed_active_slots: int = 8,
     basis_count: int = 16,
     basis_width: int = 32,
+    basis_expert_residual_width: int = 2,
 ) -> nn.Module:
     if mode == "s0_exact_top1_plus_draft":
         return SwiGLUDraftExpert(2048, 512).to(device=device, dtype=torch.bfloat16)
@@ -551,6 +559,7 @@ def build_student(
         return RouteConditionedBasisExperts(BasisDraftConfig(
             basis_count=basis_count,
             basis_width=basis_width,
+            expert_residual_width=basis_expert_residual_width,
         )).to(device=device, dtype=torch.bfloat16)
     return IndexedShadowExperts(
         ShadowExpertConfig(
@@ -1137,6 +1146,7 @@ def main() -> None:
         indexed_active_slots=args.indexed_active_slots,
         basis_count=args.basis_count,
         basis_width=args.basis_width,
+        basis_expert_residual_width=args.basis_expert_residual_width,
     )
     initializer_provenance: dict[str, Any] | None = None
     if args.initializer_checkpoint is not None:
@@ -1249,6 +1259,7 @@ def main() -> None:
         "indexed_active_slots": args.indexed_active_slots,
         "basis_count": args.basis_count,
         "basis_width": args.basis_width,
+        "basis_expert_residual_width": args.basis_expert_residual_width,
         "expert_frequency_gate_applicable": args.mode == "s2_indexed",
         "trained_expert_count": (
             int((counts >= args.minimum_expert_count).sum())
@@ -1471,6 +1482,7 @@ def main() -> None:
         "indexed_active_slots": args.indexed_active_slots,
         "basis_count": args.basis_count,
         "basis_width": args.basis_width,
+        "basis_expert_residual_width": args.basis_expert_residual_width,
         "trained_selected_slot_mass": trained_mass,
         "best_epoch": best_epoch,
         "selection_metric": (

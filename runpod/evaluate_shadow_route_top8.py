@@ -59,6 +59,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--indexed-active-slots", type=int, choices=(4, 8), default=8)
     parser.add_argument("--basis-count", type=int, choices=(8, 16, 32), default=16)
     parser.add_argument("--basis-width", type=int, choices=(16, 32, 64), default=32)
+    parser.add_argument(
+        "--basis-expert-residual-width", type=int,
+        choices=(2, 4, 8, 16), default=2,
+    )
     parser.add_argument("--native-exact-slots", type=int, choices=(1, 2, 4, 6, 8))
     parser.add_argument(
         "--mode",
@@ -448,6 +452,7 @@ def main() -> None:
         "indexed_active_slots": args.indexed_active_slots,
         "basis_count": args.basis_count,
         "basis_width": args.basis_width,
+        "basis_expert_residual_width": args.basis_expert_residual_width,
         "draft_scale": 0.0 if args.native_exact_slots is not None else 1.0,
         "trees": len(trees),
         "node_budget": int(args.node_budget),
@@ -492,6 +497,7 @@ def main() -> None:
         indexed_active_slots=args.indexed_active_slots,
         basis_count=args.basis_count,
         basis_width=args.basis_width,
+        basis_expert_residual_width=args.basis_expert_residual_width,
     )
     if not args.native_parity_only and args.native_exact_slots is None:
         assert args.layer_checkpoint_root is not None

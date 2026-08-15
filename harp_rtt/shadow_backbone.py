@@ -84,6 +84,7 @@ def install_shadow_experts(
     indexed_active_slots: int = 8,
     basis_count: int = 16,
     basis_width: int = 32,
+    basis_expert_residual_width: int = 2,
 ) -> InstalledShadowBackbone:
     """Replace only routed experts in an already-materialized official model."""
 
@@ -99,6 +100,7 @@ def install_shadow_experts(
             replacement = RouteConditionedBasisExperts(BasisDraftConfig(
                 basis_count=basis_count,
                 basis_width=basis_width,
+                expert_residual_width=basis_expert_residual_width,
             )).to(device=device, dtype=dtype)
             native.append(original if retain_native else None)
         elif mode == "exact_top1_plus_draft":
@@ -164,6 +166,7 @@ def build_selective_shadow_text_model(
     shadow_width: int = 16,
     basis_count: int = 16,
     basis_width: int = 32,
+    basis_expert_residual_width: int = 2,
 ) -> tuple[nn.Module, SelectiveLoadReport]:
     """Build the exact non-expert text stack without native expert allocation."""
 
@@ -189,6 +192,7 @@ def build_selective_shadow_text_model(
             replacement = RouteConditionedBasisExperts(BasisDraftConfig(
                 basis_count=basis_count,
                 basis_width=basis_width,
+                expert_residual_width=basis_expert_residual_width,
             ))
         elif mode in {"shared_width128", "shared_width512"}:
             width = 128 if mode == "shared_width128" else 512

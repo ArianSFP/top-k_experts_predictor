@@ -249,6 +249,7 @@ def test_basisdraft_bundle_loads_all_layers_without_native_experts(tmp_path) -> 
                 "model_state_dict": state,
                 "basis_count": 2,
                 "basis_width": 1,
+                "basis_expert_residual_width": 2,
                 "closed_loop_authorized": True,
                 "formal_validation_opened": False,
                 "calibration_opened": False,

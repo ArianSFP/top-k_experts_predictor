@@ -757,13 +757,17 @@ def shadow_pool_parameter_count(
 def basisdraft_parameter_count(
     *, layers: int = 40, experts: int = 256, hidden_width: int = 2048,
     basis_count: int = 16, basis_width: int = 32,
+    expert_residual_width: int = 2,
 ) -> int:
-    values = (layers, experts, hidden_width, basis_count, basis_width)
+    values = (
+        layers, experts, hidden_width, basis_count, basis_width,
+        expert_residual_width,
+    )
     if any(value < 1 for value in values):
         raise ValueError("BasisDraft dimensions must be positive")
     per_layer_basis = 3 * basis_count * hidden_width * basis_width
     per_layer_coefficients = experts * basis_count * basis_width
-    per_layer_residual = 3 * experts * hidden_width * 2
+    per_layer_residual = 3 * experts * hidden_width * expert_residual_width
     return layers * (
         per_layer_basis + per_layer_coefficients + per_layer_residual
     )

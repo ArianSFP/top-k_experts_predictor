@@ -121,6 +121,8 @@ def load_shadow_bundle(
             if (
                 int(value.get("basis_count", -1)) != module.config.basis_count
                 or int(value.get("basis_width", -1)) != module.config.basis_width
+                or int(value.get("basis_expert_residual_width", -1))
+                != module.config.expert_residual_width
             ):
                 raise ValueError("BasisDraft runtime configuration differs from shard")
             module.load_state_dict(state, strict=True)

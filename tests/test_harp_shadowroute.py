@@ -406,6 +406,7 @@ def test_shadow_parameter_counts_match_formal_plan():
         layers=40, experts=1, hidden_width=2048, shadow_width=128
     ) == 31_457_280
     assert basisdraft_parameter_count() == 256_901_120
+    assert basisdraft_parameter_count(expert_residual_width=16) == 1_137_704_960
 
 
 def test_tree_runner_isolates_siblings_and_processes_h1_once():
