@@ -4,8 +4,20 @@ import torch
 from torch import nn
 
 from harp_rtt.shadow_backbone import InstalledShadowBackbone
-from harp_rtt.shadow_bundle import LOCAL_SCHEMA, load_shadow_bundle
-from harp_rtt.shadow_expert import IndexedShadowExperts, ShadowExpertConfig
+from harp_rtt.shadow_bundle import (
+    LOCAL_SCHEMA,
+    load_shadow_bundle,
+    resident_ids_from_bundle,
+)
+from harp_rtt.shadow_expert import (
+    BasisDraftConfig,
+    IndexedShadowExperts,
+    PackedInt4ResidentExperts,
+    RouteConditionedBasisExperts,
+    ShadowExpertConfig,
+    SharedResidualExperts,
+    SwiGLUDraftExpert,
+)
 from harp_rtt.shadow_rollout_training import (
     ShadowTrainingHooks,
     cache_to_cpu,
@@ -217,3 +229,120 @@ def test_untrained_indexed_bundle_still_requires_fallback(tmp_path) -> None:
         assert "without S1 fallback" in str(error)
     else:  # pragma: no cover - fail-closed contract
         raise AssertionError("untrained indexed bundle loaded without fallback")
+
+
+def test_basisdraft_bundle_loads_all_layers_without_native_experts(tmp_path) -> None:
+    config = BasisDraftConfig(
+        hidden_width=4, experts=4, exact_k=2, basis_count=2, basis_width=1
+    )
+    modules = tuple(RouteConditionedBasisExperts(config) for _ in range(40))
+    source = "c" * 40
+    target = "d" * 64
+    references = []
+    for layer, module in enumerate(modules):
+        directory = tmp_path / f"basis_{layer:02d}"
+        directory.mkdir()
+        state = {
+            name: value.detach().clone() for name, value in module.state_dict().items()
+        }
+        references.append(state)
+        torch.save(
+            {
+                "schema": LOCAL_SCHEMA,
+                "mode": "basisdraft_all8",
+                "layer": layer,
+                "source_commit": source,
+                "target_checkpoint_index_sha256": target,
+                "model_state_dict": state,
+                "basis_count": 2,
+                "basis_width": 1,
+                "basis_expert_residual_width": 2,
+                "closed_loop_authorized": True,
+                "formal_validation_opened": False,
+                "calibration_opened": False,
+                "sealed_test_opened": False,
+            },
+            directory / f"shadow_basisdraft_all8_layer_{layer:02d}.pt",
+        )
+        with torch.no_grad():
+            module.gate_up_proj.zero_()
+    installed = InstalledShadowBackbone(
+        model=nn.Identity(),
+        mode="basisdraft_all8",
+        native_experts=tuple([None] * 40),
+        shadow_experts=modules,
+    )
+    paths = load_shadow_bundle(
+        installed,
+        tmp_path,
+        source_commit=source,
+        target_checkpoint_index_sha256=target,
+    )
+    assert len(paths) == 40
+    assert torch.equal(modules[7].gate_up_proj, references[7]["gate_up_proj"])
+    assert all(not hasattr(module, "native_experts") for module in modules)
+
+
+def test_resident_bundle_binds_namespace_and_loads_without_native_experts(tmp_path) -> None:
+    source = "e" * 40
+    target = "f" * 64
+    resident_ids = torch.tensor([0, 2])
+    gate_up = torch.randn(4, 4, 4)
+    down = torch.randn(4, 4, 2)
+    modules = []
+    references = []
+    for layer in range(40):
+        module = PackedInt4ResidentExperts.from_target(
+            resident_ids,
+            SharedResidualExperts(SwiGLUDraftExpert(4, 2), experts=4),
+            gate_up,
+            down,
+            exact_k=2,
+            group_size=2,
+        )
+        state = {
+            name: value.detach().clone() for name, value in module.state_dict().items()
+        }
+        references.append(state)
+        directory = tmp_path / f"resident_{layer:02d}"
+        directory.mkdir()
+        torch.save(
+            {
+                "schema": LOCAL_SCHEMA,
+                "mode": "resident_int4_shared",
+                "layer": layer,
+                "source_commit": source,
+                "target_checkpoint_index_sha256": target,
+                "model_state_dict": state,
+                "resident_expert_ids": resident_ids,
+                "resident_count": 2,
+                "closed_loop_authorized": True,
+                "formal_validation_opened": False,
+                "calibration_opened": False,
+                "sealed_test_opened": False,
+            },
+            directory / f"shadow_resident_int4_shared_layer_{layer:02d}.pt",
+        )
+        module.gate_up_packed.zero_()
+        modules.append(module)
+    ids = resident_ids_from_bundle(
+        tmp_path,
+        source_commit=source,
+        target_checkpoint_index_sha256=target,
+    )
+    assert len(ids) == 40 and torch.equal(ids[13], resident_ids)
+    installed = InstalledShadowBackbone(
+        model=nn.Identity(),
+        mode="resident_int4_shared",
+        native_experts=tuple([None] * 40),
+        shadow_experts=tuple(modules),
+    )
+    paths = load_shadow_bundle(
+        installed,
+        tmp_path,
+        source_commit=source,
+        target_checkpoint_index_sha256=target,
+    )
+    assert len(paths) == 40
+    assert torch.equal(modules[13].gate_up_packed, references[13]["gate_up_packed"])
+    assert all(not hasattr(module, "native_experts") for module in modules)

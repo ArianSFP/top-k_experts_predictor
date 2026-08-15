@@ -60,6 +60,36 @@ class ShadowExpertConfig:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class BasisDraftConfig:
+    """Geometry for the resident route-conditioned functional basis."""
+
+    hidden_width: int = 2048
+    experts: int = 256
+    exact_k: int = 8
+    basis_count: int = 16
+    basis_width: int = 32
+    expert_residual_width: int = 2
+
+    def validate(self) -> None:
+        for name in (
+            "hidden_width", "experts", "exact_k", "basis_count", "basis_width",
+            "expert_residual_width",
+        ):
+            if int(getattr(self, name)) < 1:
+                raise ValueError(f"{name} must be positive")
+        if self.exact_k > self.experts:
+            raise ValueError("exact_k exceeds the expert count")
+
+    @property
+    def total_intermediate_width(self) -> int:
+        return self.basis_count * self.basis_width
+
+    def to_dict(self) -> dict[str, int]:
+        self.validate()
+        return asdict(self)
+
+
 def _validate_routed_inputs(
     hidden_states: Tensor,
     top_k_index: Tensor,
@@ -266,6 +296,144 @@ class SharedResidualExperts(nn.Module):
             hidden_width=self.draft_expert.hidden_width, experts=self.experts,
         )
         return self.draft_expert(hidden).reshape(*leading, hidden.shape[-1])
+
+
+class RouteConditionedBasisExperts(nn.Module):
+    """All-resident functional basis for the complete weighted routed sum.
+
+    For selected route ``(e_i,w_i)`` this forms
+    ``alpha_j = sum_i w_i*c[e_i,j]`` and returns
+    ``sum_j alpha_j*B_j(x)``. It never owns or reads a target expert.
+    """
+
+    def __init__(
+        self,
+        config: BasisDraftConfig = BasisDraftConfig(),
+    ) -> None:
+        super().__init__()
+        config.validate()
+        self.config = config
+        self.gate_up_proj = nn.Parameter(torch.empty(
+            config.basis_count,
+            2 * config.basis_width,
+            config.hidden_width,
+        ))
+        self.down_proj = nn.Parameter(torch.empty(
+            config.basis_count,
+            config.hidden_width,
+            config.basis_width,
+        ))
+        self.expert_coefficients = nn.Parameter(torch.ones(
+            config.experts, config.basis_count, config.basis_width
+        ))
+        self.expert_gate_up_proj = nn.Parameter(torch.empty(
+            config.experts,
+            2 * config.expert_residual_width,
+            config.hidden_width,
+        ))
+        self.expert_down_proj = nn.Parameter(torch.zeros(
+            config.experts,
+            config.hidden_width,
+            config.expert_residual_width,
+        ))
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        bound = 1.0 / math.sqrt(self.config.hidden_width)
+        nn.init.uniform_(self.gate_up_proj, -bound, bound)
+        nn.init.uniform_(self.down_proj, -bound, bound)
+        nn.init.ones_(self.expert_coefficients)
+        nn.init.uniform_(self.expert_gate_up_proj, -bound, bound)
+        nn.init.zeros_(self.expert_down_proj)
+
+    @torch.no_grad()
+    def initialize_from_shared(self, draft: SwiGLUDraftExpert) -> None:
+        """Split a route-agnostic expert into equivalent basis blocks."""
+
+        cfg = self.config
+        if (
+            draft.hidden_width != cfg.hidden_width
+            or draft.intermediate_width != cfg.total_intermediate_width
+        ):
+            raise ValueError("shared draft geometry cannot initialize BasisDraft")
+        gate, up = draft.gate_up_proj.weight.detach().chunk(2, dim=0)
+        for basis in range(cfg.basis_count):
+            start = basis * cfg.basis_width
+            stop = start + cfg.basis_width
+            self.gate_up_proj[basis, : cfg.basis_width].copy_(
+                gate[start:stop].to(self.gate_up_proj)
+            )
+            self.gate_up_proj[basis, cfg.basis_width :].copy_(
+                up[start:stop].to(self.gate_up_proj)
+            )
+            self.down_proj[basis].copy_(
+                draft.down_proj.weight.detach()[:, start:stop].to(self.down_proj)
+            )
+        self.expert_coefficients.fill_(1.0)
+
+    def _basis_activations(self, hidden: Tensor) -> Tensor:
+        projection = torch.einsum(
+            "bd,jmd->bjm", hidden, self.gate_up_proj
+        )
+        gate, up = projection.chunk(2, dim=-1)
+        return F.silu(gate) * up
+
+    def _selected_expert_residuals(self, hidden: Tensor, ids: Tensor) -> Tensor:
+        values = hidden.new_zeros(
+            hidden.shape[0], ids.shape[1], self.config.hidden_width
+        )
+        for expert_id in torch.unique(ids).tolist():
+            positions = (ids == int(expert_id)).nonzero(as_tuple=False)
+            token_index, slot_index = positions[:, 0], positions[:, 1]
+            gate, up = F.linear(
+                hidden[token_index], self.expert_gate_up_proj[int(expert_id)]
+            ).chunk(2, -1)
+            values[token_index, slot_index] = F.linear(
+                F.silu(gate) * up, self.expert_down_proj[int(expert_id)]
+            )
+        return values
+
+    def selected_unweighted(
+        self, hidden_states: Tensor, selected_ids: Tensor
+    ) -> Tensor:
+        """Return selected expert approximations for label-only distillation."""
+
+        cfg = self.config
+        hidden, ids, _weights, leading = _validate_routed_inputs(
+            hidden_states,
+            selected_ids,
+            torch.ones_like(selected_ids, dtype=hidden_states.dtype),
+            hidden_width=cfg.hidden_width,
+            experts=cfg.experts,
+        )
+        basis = self._basis_activations(hidden)
+        coefficients = self.expert_coefficients[ids].to(basis.dtype)
+        values = torch.einsum(
+            "bkjw,bjw,jdw->bkd", coefficients, basis, self.down_proj
+        )
+        values = values + self._selected_expert_residuals(hidden, ids)
+        return values.reshape(*leading, ids.shape[-1], cfg.hidden_width)
+
+    def forward(
+        self, hidden_states: Tensor, top_k_index: Tensor, top_k_weights: Tensor
+    ) -> Tensor:
+        cfg = self.config
+        hidden, ids, weights, leading = _validate_routed_inputs(
+            hidden_states,
+            top_k_index,
+            top_k_weights,
+            hidden_width=cfg.hidden_width,
+            experts=cfg.experts,
+        )
+        if ids.shape[-1] != cfg.exact_k:
+            raise ValueError("BasisDraft requires the complete native top-k route")
+        coefficients = self.expert_coefficients[ids].to(hidden.dtype)
+        alpha = (coefficients * weights[..., None, None]).sum(dim=1)
+        basis = self._basis_activations(hidden)
+        routed = torch.einsum("bjw,bjw,jdw->bd", alpha, basis, self.down_proj)
+        residuals = self._selected_expert_residuals(hidden, ids)
+        routed = routed + (residuals * weights[..., None]).sum(dim=1)
+        return routed.reshape(*leading, cfg.hidden_width)
 
 
 class IndexedShadowExperts(nn.Module):
@@ -576,6 +744,186 @@ class PackedInt4TopKExperts(nn.Module):
         return output.reshape(*leading, self.hidden_width)
 
 
+class PackedInt4ResidentExperts(nn.Module):
+    """Resident frequent experts with a compact fallback for every miss.
+
+    Unlike the full INT4 control, this module stores only a frozen subset of
+    target experts.  It never consults the target offload store.  Missing
+    selected-weight mass is assigned to the resident shared draft; when the
+    fallback exposes per-expert BasisDraft values, resident slots replace the
+    corresponding approximation exactly.
+    """
+
+    def __init__(
+        self,
+        resident_ids: Tensor,
+        fallback: SharedResidualExperts | RouteConditionedBasisExperts,
+        *,
+        hidden_width: int = 2048,
+        intermediate_width: int = 512,
+        experts: int = 256,
+        exact_k: int = 8,
+        group_size: int = 64,
+        device: torch.device | str | None = None,
+    ) -> None:
+        super().__init__()
+        ids = torch.as_tensor(resident_ids, dtype=torch.long)
+        if ids.ndim != 1 or ids.numel() < 1:
+            raise ValueError("resident expert IDs must be a non-empty vector")
+        if bool(((ids < 0) | (ids >= experts)).any()) or ids.unique().numel() != ids.numel():
+            raise ValueError("resident expert IDs must be unique and in range")
+        if not 1 <= exact_k <= experts:
+            raise ValueError("resident exact-k is invalid")
+        if hidden_width % group_size or intermediate_width % group_size:
+            raise ValueError("INT4 group size must divide both expert input widths")
+        self.hidden_width = int(hidden_width)
+        self.intermediate_width = int(intermediate_width)
+        self.experts = int(experts)
+        self.exact_k = int(exact_k)
+        self.group_size = int(group_size)
+        self.fallback = fallback
+        self.register_buffer("resident_ids", ids.to(device=device))
+        expert_to_resident = torch.full((experts,), -1, dtype=torch.long, device=device)
+        expert_to_resident[self.resident_ids] = torch.arange(
+            ids.numel(), dtype=torch.long, device=device
+        )
+        self.register_buffer("expert_to_resident", expert_to_resident)
+        count = int(ids.numel())
+        self.register_buffer(
+            "gate_up_packed",
+            torch.empty(
+                count, 2 * intermediate_width, hidden_width // 2,
+                dtype=torch.uint8, device=device,
+            ),
+        )
+        self.register_buffer(
+            "gate_up_scales",
+            torch.empty(
+                count, 2 * intermediate_width, hidden_width // group_size,
+                dtype=torch.bfloat16, device=device,
+            ),
+        )
+        self.register_buffer(
+            "down_packed",
+            torch.empty(
+                count, hidden_width, intermediate_width // 2,
+                dtype=torch.uint8, device=device,
+            ),
+        )
+        self.register_buffer(
+            "down_scales",
+            torch.empty(
+                count, hidden_width, intermediate_width // group_size,
+                dtype=torch.bfloat16, device=device,
+            ),
+        )
+
+    @property
+    def resident_count(self) -> int:
+        return int(self.resident_ids.numel())
+
+    @classmethod
+    @torch.no_grad()
+    def from_target(
+        cls,
+        resident_ids: Tensor,
+        fallback: SharedResidualExperts | RouteConditionedBasisExperts,
+        target_gate_up: Tensor,
+        target_down: Tensor,
+        *,
+        exact_k: int = 8,
+        group_size: int = 64,
+    ) -> "PackedInt4ResidentExperts":
+        experts, twice_intermediate, hidden_width = target_gate_up.shape
+        if twice_intermediate % 2:
+            raise ValueError("target gate/up width must be even")
+        intermediate = twice_intermediate // 2
+        if target_down.shape != (experts, hidden_width, intermediate):
+            raise ValueError("target expert tensor shapes disagree")
+        ids = torch.as_tensor(resident_ids, dtype=torch.long, device=target_gate_up.device)
+        module = cls(
+            ids,
+            fallback,
+            hidden_width=hidden_width,
+            intermediate_width=intermediate,
+            experts=experts,
+            exact_k=exact_k,
+            group_size=group_size,
+            device=target_gate_up.device,
+        )
+        gate_packed, gate_scales = quantize_groupwise_int4(
+            target_gate_up.index_select(0, ids), group_size=group_size
+        )
+        down_packed, down_scales = quantize_groupwise_int4(
+            target_down.index_select(0, ids), group_size=group_size
+        )
+        module.gate_up_packed.copy_(gate_packed)
+        module.gate_up_scales.copy_(gate_scales)
+        module.down_packed.copy_(down_packed)
+        module.down_scales.copy_(down_scales)
+        return module
+
+    def _resident_weights(
+        self, local_id: int, *, dtype: torch.dtype
+    ) -> tuple[Tensor, Tensor]:
+        return (
+            dequantize_groupwise_int4(
+                self.gate_up_packed[local_id], self.gate_up_scales[local_id],
+                group_size=self.group_size, dtype=dtype,
+            ),
+            dequantize_groupwise_int4(
+                self.down_packed[local_id], self.down_scales[local_id],
+                group_size=self.group_size, dtype=dtype,
+            ),
+        )
+
+    def forward(
+        self, hidden_states: Tensor, top_k_index: Tensor, top_k_weights: Tensor
+    ) -> Tensor:
+        hidden, ids, weights, leading = _validate_routed_inputs(
+            hidden_states, top_k_index, top_k_weights,
+            hidden_width=self.hidden_width, experts=self.experts,
+        )
+        if ids.shape[-1] != self.exact_k:
+            raise ValueError("resident hybrid requires the complete native top-k route")
+        local_ids = self.expert_to_resident[ids]
+        resident = local_ids >= 0
+        if isinstance(self.fallback, RouteConditionedBasisExperts):
+            fallback_values = self.fallback.selected_unweighted(hidden, ids).reshape(
+                hidden.shape[0], ids.shape[1], self.hidden_width
+            )
+            output = (fallback_values * weights[..., None]).sum(dim=1)
+        else:
+            missing_mass = (weights * (~resident).to(weights)).sum(dim=1, keepdim=True)
+            output = self.fallback(hidden, ids, weights).reshape_as(hidden) * missing_mass
+            fallback_values = None
+        for local_id in torch.unique(local_ids[resident]).tolist():
+            positions = (local_ids == int(local_id)).nonzero(as_tuple=False)
+            token_index, slot_index = positions[:, 0], positions[:, 1]
+            gate_up, down = self._resident_weights(int(local_id), dtype=hidden.dtype)
+            gate, up = F.linear(hidden[token_index], gate_up).chunk(2, dim=-1)
+            exact = F.linear(F.silu(gate) * up, down)
+            if fallback_values is not None:
+                exact = exact - fallback_values[token_index, slot_index]
+            output[token_index] += exact * weights[token_index, slot_index, None]
+        return output.reshape(*leading, self.hidden_width)
+
+
+def resident_int4_storage_bytes(
+    *, layers: int = 40, residents: int = 80, hidden_width: int = 2048,
+    intermediate_width: int = 512, group_size: int = 64,
+) -> int:
+    """Exact packed-weight and BF16-scale bytes, excluding the fallback."""
+
+    values = (layers, residents, hidden_width, intermediate_width, group_size)
+    if any(value < 1 for value in values):
+        raise ValueError("resident INT4 dimensions must be positive")
+    parameters = 3 * hidden_width * intermediate_width
+    packed = parameters // 2
+    scales = 2 * (parameters // group_size)
+    return layers * residents * (packed + scales)
+
+
 def shadow_pool_parameter_count(
     *, layers: int = 40, experts: int = 256, hidden_width: int = 2048,
     shadow_width: int = 16,
@@ -586,17 +934,41 @@ def shadow_pool_parameter_count(
     return 3 * layers * experts * hidden_width * shadow_width
 
 
+def basisdraft_parameter_count(
+    *, layers: int = 40, experts: int = 256, hidden_width: int = 2048,
+    basis_count: int = 16, basis_width: int = 32,
+    expert_residual_width: int = 2,
+) -> int:
+    values = (
+        layers, experts, hidden_width, basis_count, basis_width,
+        expert_residual_width,
+    )
+    if any(value < 1 for value in values):
+        raise ValueError("BasisDraft dimensions must be positive")
+    per_layer_basis = 3 * basis_count * hidden_width * basis_width
+    per_layer_coefficients = experts * basis_count * basis_width
+    per_layer_residual = 3 * experts * hidden_width * expert_residual_width
+    return layers * (
+        per_layer_basis + per_layer_coefficients + per_layer_residual
+    )
+
+
 __all__ = [
+    "BasisDraftConfig",
     "ExactTop1PlusDraftExperts",
     "IndexedShadowExperts",
     "PackedInt4TopKExperts",
+    "PackedInt4ResidentExperts",
+    "RouteConditionedBasisExperts",
     "RoutedExperts",
     "ShadowExpertConfig",
     "SharedResidualExperts",
     "SwiGLUDraftExpert",
+    "basisdraft_parameter_count",
     "shadow_pool_parameter_count",
     "dequantize_groupwise_int4",
     "quantize_groupwise_int4",
+    "resident_int4_storage_bytes",
     "target_neuron_importance",
     "target_selected_expert_outputs",
 ]

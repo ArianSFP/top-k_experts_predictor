@@ -11,17 +11,22 @@ from .shadow_backbone import InstalledShadowBackbone
 from .shadow_expert import (
     ExactTop1PlusDraftExperts,
     IndexedShadowExperts,
+    PackedInt4ResidentExperts,
     PackedInt4TopKExperts,
+    RouteConditionedBasisExperts,
     SharedResidualExperts,
 )
 
 
 LOCAL_SCHEMA = "harp_shadowroute_local_expert_layer_v1"
 CHECKPOINT_MODE = {
+    "basisdraft_all8": "basisdraft_all8",
     "exact_top1_plus_draft": "s0_exact_top1_plus_draft",
     "shared_width128": "s1_shared",
+    "shared_width512": "s1_shared_width512",
     "indexed_width16": "s2_indexed",
     "int4_top4": "int4_top4",
+    "resident_int4_shared": "resident_int4_shared",
 }
 
 
@@ -75,6 +80,35 @@ def _load_value(
     return value
 
 
+def resident_ids_from_bundle(
+    root: str | Path,
+    *,
+    source_commit: str,
+    target_checkpoint_index_sha256: str,
+    allow_unpromoted_diagnostic: bool = False,
+) -> tuple[torch.Tensor, ...]:
+    """Read the frozen per-layer resident namespace before model construction."""
+
+    paths = discover_layer_checkpoints(root, "resident_int4_shared")
+    result = []
+    for layer, path in enumerate(paths):
+        value = _load_value(
+            path,
+            expected_mode="resident_int4_shared",
+            expected_layer=layer,
+            source_commit=source_commit,
+            target_checkpoint_index_sha256=target_checkpoint_index_sha256,
+            allow_unpromoted_diagnostic=allow_unpromoted_diagnostic,
+        )
+        ids = value.get("resident_expert_ids")
+        if not isinstance(ids, torch.Tensor) or ids.ndim != 1:
+            raise ValueError("resident hybrid shard lacks its expert namespace")
+        if int(value.get("resident_count", -1)) != ids.numel():
+            raise ValueError("resident hybrid count differs from its expert namespace")
+        result.append(ids.long())
+    return tuple(result)
+
+
 def load_shadow_bundle(
     installed: InstalledShadowBackbone,
     root: str | Path,
@@ -108,6 +142,36 @@ def load_shadow_bundle(
             module.draft_expert.load_state_dict(state, strict=True)
         elif isinstance(module, SharedResidualExperts):
             module.draft_expert.load_state_dict(state, strict=True)
+        elif isinstance(module, RouteConditionedBasisExperts):
+            expected = {
+                "gate_up_proj", "down_proj", "expert_coefficients",
+                "expert_gate_up_proj", "expert_down_proj",
+            }
+            if set(state) != expected:
+                raise ValueError("BasisDraft layer shard state is incomplete")
+            if (
+                int(value.get("basis_count", -1)) != module.config.basis_count
+                or int(value.get("basis_width", -1)) != module.config.basis_width
+                or int(value.get("basis_expert_residual_width", -1))
+                != module.config.expert_residual_width
+            ):
+                raise ValueError("BasisDraft runtime configuration differs from shard")
+            module.load_state_dict(state, strict=True)
+        elif isinstance(module, PackedInt4ResidentExperts):
+            expected = {
+                "resident_ids", "expert_to_resident",
+                "gate_up_packed", "gate_up_scales", "down_packed", "down_scales",
+                "fallback.draft_expert.gate_up_proj.weight",
+                "fallback.draft_expert.down_proj.weight",
+            }
+            if set(state) != expected:
+                raise ValueError("resident INT4 hybrid shard state is incomplete")
+            ids = value.get("resident_expert_ids")
+            if not isinstance(ids, torch.Tensor) or not torch.equal(
+                ids.long(), module.resident_ids.cpu()
+            ):
+                raise ValueError("resident INT4 runtime namespace differs from shard")
+            module.load_state_dict(state, strict=True)
         elif isinstance(module, IndexedShadowExperts):
             expected = {"gate_up_proj", "down_proj", "trained_experts"}
             if set(state) != expected:
@@ -174,4 +238,5 @@ __all__ = [
     "LOCAL_SCHEMA",
     "discover_layer_checkpoints",
     "load_shadow_bundle",
+    "resident_ids_from_bundle",
 ]

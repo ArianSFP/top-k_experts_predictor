@@ -25,7 +25,10 @@ from harp_rtt.exact_k import stable_topk  # noqa: E402
 from harp_rtt.route_ceiling import factual_branch_topk, posterior_native_topk  # noqa: E402
 from harp_rtt.shadow_route import shadow_lm_path_posterior  # noqa: E402
 from harp_rtt.shadow_backbone import exact_prefix_experts, install_shadow_experts  # noqa: E402
-from harp_rtt.shadow_bundle import load_shadow_bundle  # noqa: E402
+from harp_rtt.shadow_bundle import (  # noqa: E402
+    load_shadow_bundle,
+    resident_ids_from_bundle,
+)
 from harp_rtt.shadow_checkpoint import IndexedCheckpoint, sha256_file  # noqa: E402
 from harp_rtt.shadow_expert import PackedInt4TopKExperts  # noqa: E402
 from harp_rtt.shadow_rollout import ShadowRouteHooks, run_shadow_tree  # noqa: E402
@@ -57,10 +60,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--s1-fallback-root", type=Path)
     parser.add_argument("--shadow-width", type=int, choices=(16, 32, 64, 96, 128), default=16)
     parser.add_argument("--indexed-active-slots", type=int, choices=(4, 8), default=8)
+    parser.add_argument("--basis-count", type=int, choices=(8, 16, 32), default=16)
+    parser.add_argument("--basis-width", type=int, choices=(16, 32, 64), default=32)
+    parser.add_argument(
+        "--basis-expert-residual-width", type=int,
+        choices=(2, 4, 8, 16), default=2,
+    )
     parser.add_argument("--native-exact-slots", type=int, choices=(1, 2, 4, 6, 8))
     parser.add_argument(
         "--mode",
-        choices=("exact_top1_plus_draft", "shared_width128", "indexed_width16", "int4_top4"),
+        choices=(
+            "basisdraft_all8", "exact_top1_plus_draft", "shared_width128",
+            "shared_width512", "indexed_width16", "int4_top4",
+            "resident_int4_shared",
+        ),
         required=True,
     )
     parser.add_argument("--source-commit", required=True)
@@ -71,6 +84,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--node-budget", choices=("4", "8", "16", "32"), default="16")
     parser.add_argument("--native-parity", action="store_true")
     parser.add_argument(
         "--cache-int4-experts",
@@ -389,9 +403,12 @@ def main() -> None:
     if args.native_exact_slots is not None and args.layer_checkpoint_root is not None:
         raise ValueError("native top-k diagnostic may not load a learned bundle")
     if args.diagnostic_unpromoted_bundle and args.mode not in {
-        "exact_top1_plus_draft", "indexed_width16", "int4_top4"
+        "basisdraft_all8", "exact_top1_plus_draft", "shared_width512",
+        "indexed_width16", "int4_top4", "resident_int4_shared"
     }:
-        raise ValueError("the unpromoted diagnostic override is restricted to S0/S2/INT4")
+        raise ValueError(
+            "the unpromoted diagnostic override is restricted to shadow controls"
+        )
     if args.cache_int4_experts and args.mode != "int4_top4":
         raise ValueError("INT4 expert caching requires INT4 mode")
     if (args.ceiling_bundle is None) != (args.ceiling_parent_sha256 is None):
@@ -429,6 +446,15 @@ def main() -> None:
             raise PermissionError("closed-loop evaluation is restricted to outer-train")
 
     checkpoint = IndexedCheckpoint(args.model)
+    resident_ids_by_layer = None
+    if args.mode == "resident_int4_shared":
+        assert args.layer_checkpoint_root is not None
+        resident_ids_by_layer = resident_ids_from_bundle(
+            args.layer_checkpoint_root,
+            source_commit=args.source_commit,
+            target_checkpoint_index_sha256=checkpoint.index_sha256,
+            allow_unpromoted_diagnostic=args.diagnostic_unpromoted_bundle,
+        )
     args.output.mkdir(parents=True)
     manifest = {
         "schema": SCHEMA,
@@ -439,8 +465,16 @@ def main() -> None:
         "shadow_width": args.shadow_width,
         "native_exact_slots": args.native_exact_slots,
         "indexed_active_slots": args.indexed_active_slots,
+        "basis_count": args.basis_count,
+        "basis_width": args.basis_width,
+        "basis_expert_residual_width": args.basis_expert_residual_width,
+        "resident_count_by_layer": (
+            [int(ids.numel()) for ids in resident_ids_by_layer]
+            if resident_ids_by_layer is not None else None
+        ),
         "draft_scale": 0.0 if args.native_exact_slots is not None else 1.0,
         "trees": len(trees),
+        "node_budget": int(args.node_budget),
         "native_parity_requested": args.native_parity,
         "native_parity_only": args.native_parity_only,
         "diagnostic_unpromoted_bundle": args.diagnostic_unpromoted_bundle,
@@ -480,6 +514,10 @@ def main() -> None:
         exact_slots=(1 if args.native_exact_slots is None else args.native_exact_slots),
         draft_scale=(1.0 if args.native_exact_slots is None else 0.0),
         indexed_active_slots=args.indexed_active_slots,
+        basis_count=args.basis_count,
+        basis_width=args.basis_width,
+        basis_expert_residual_width=args.basis_expert_residual_width,
+        resident_ids_by_layer=resident_ids_by_layer,
     )
     if not args.native_parity_only and args.native_exact_slots is None:
         assert args.layer_checkpoint_root is not None
@@ -511,6 +549,7 @@ def main() -> None:
     ] = defaultdict(list)
     root_cells: dict[str, list[torch.Tensor]] = defaultdict(list)
     native_mismatches = 0
+    executed_nodes = 0
     peak_gib = 0.0
     with ShadowRouteHooks(target) as hooks:
         for ordinal, tree in enumerate(trees):
@@ -527,11 +566,18 @@ def main() -> None:
                 -1 if node.parent_local_index is None else node.parent_local_index
                 for node in nodes
             ], dtype=torch.int64)
-            node_mask = torch.ones(len(nodes), dtype=torch.bool)
             native = labels[(str(tree["request_id"]), position)]
             count = int(native["node_mask"].sum())
             if count != len(nodes):
                 raise ValueError("native companion/base tree node count differs")
+            if args.node_budget == "32":
+                node_mask = torch.ones(len(nodes), dtype=torch.bool)
+            else:
+                budget_index = {"4": 0, "8": 1, "16": 2}[args.node_budget]
+                node_mask = native["budget_node_masks"][budget_index, :count].bool()
+            if not bool(node_mask[0]):
+                raise ValueError("runtime node budget removed the exact H1 root")
+            executed_nodes += int(node_mask.sum())
             ceiling_row = None
             if ceiling is not None:
                 ceiling_row = resolve_ceiling_row(
@@ -571,7 +617,7 @@ def main() -> None:
                 overlap = route_overlap(predicted, truth)
                 request = str(tree["source_request_id"] or tree["request_id"])
                 for horizon in (2, 3, 4):
-                    active = valid & (depth[:, None] == horizon)
+                    active = valid & node_mask[:, None] & (depth[:, None] == horizon)
                     if active.any():
                         cells[(request, horizon)].append(overlap[active])
                 if ceiling is not None:
@@ -590,6 +636,9 @@ def main() -> None:
                     branch_mask = ceiling["branch_mask"][
                         ceiling_row : ceiling_row + 1
                     ].bool()
+                    runtime_node_mask = torch.zeros((1, 32), dtype=torch.bool)
+                    runtime_node_mask[0, :count] = node_mask
+                    branch_mask = branch_mask & runtime_node_mask[:, None]
                     prefix_mismatch = ceiling["prefix_mismatch"][
                         ceiling_row : ceiling_row + 1
                     ].bool()
@@ -604,10 +653,14 @@ def main() -> None:
                     conditions: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
                     for condition_name in ("learned", "target", "mtp"):
                         posterior = ceiling["posteriors"][condition_name]
+                        captured = posterior["captured"][
+                            ceiling_row : ceiling_row + 1
+                        ].float() * branch_mask.float()
+                        other = (1.0 - captured.sum(-1)).clamp(0.0, 1.0)
                         predicted_factual, inclusion = posterior_native_topk(
                             node_ids,
-                            posterior["captured"][ceiling_row : ceiling_row + 1].float(),
-                            posterior["other"][ceiling_row : ceiling_row + 1].float(),
+                            captured,
+                            other,
                             branch_mask,
                             anchor_marginals,
                         )
@@ -628,7 +681,7 @@ def main() -> None:
                     lm_token_ids[0, :count] = token_ids[:count]
                     lm_parents[0, :count] = parents[:count]
                     lm_depths[0, :count] = depth[:count]
-                    lm_valid[0, :count] = True
+                    lm_valid[0, :count] = node_mask
                     shadow_posterior = shadow_lm_path_posterior(
                         vocabulary_logp,
                         lm_token_ids,
@@ -647,12 +700,19 @@ def main() -> None:
                     conditions["shadow_lm"] = (
                         shadow_prediction, shadow_inclusion
                     )
+                    factual_indices = ceiling["factual_branch_indices"][
+                        ceiling_row : ceiling_row + 1
+                    ].long().clone()
+                    for horizon in range(factual_indices.shape[1]):
+                        index = int(factual_indices[0, horizon])
+                        if index < count and not bool(node_mask[index]):
+                            # A factual branch outside the deployed node budget
+                            # is uncaptured at runtime and must take OTHER.
+                            factual_indices[0, horizon] = node_ids.shape[1]
                     conditions["factual_branch"] = (
                         factual_branch_topk(
                             node_ids,
-                            ceiling["factual_branch_indices"][
-                                ceiling_row : ceiling_row + 1
-                            ].long(),
+                            factual_indices,
                             anchor_ids,
                         ),
                         torch.empty(0),
@@ -747,6 +807,8 @@ def main() -> None:
         "factual_bootstrap": factual_bootstrap,
         "native_parity_mismatches": native_mismatches,
         "peak_reserved_gib": peak_gib,
+        "executed_nodes": executed_nodes,
+        "mean_executed_nodes_per_tree": executed_nodes / len(trees),
         "gate": {
             "route_recall_h2_h4_required": 0.85,
             "route_recall_h4_required": 0.80,

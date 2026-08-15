@@ -40,8 +40,12 @@ from harp_rtt.shadow_checkpoint import (  # noqa: E402
     sha256_file,
 )
 from harp_rtt.shadow_expert import (  # noqa: E402
+    BasisDraftConfig,
     IndexedShadowExperts,
+    PackedInt4ResidentExperts,
+    RouteConditionedBasisExperts,
     ShadowExpertConfig,
+    SharedResidualExperts,
     SwiGLUDraftExpert,
     target_neuron_importance,
     target_selected_expert_outputs,
@@ -61,7 +65,14 @@ from runpod.train_harp_delta_v3 import (  # noqa: E402
 
 SCHEMA = "harp_shadowroute_local_expert_layer_v1"
 RESULT_SCHEMA = "harp_shadowroute_local_expert_layer_result_v1"
-MODES = ("s0_exact_top1_plus_draft", "s1_shared", "s2_indexed")
+MODES = (
+    "s0_exact_top1_plus_draft",
+    "s1_shared",
+    "s1_shared_width512",
+    "s2_indexed",
+    "basisdraft_all8",
+    "resident_int4_shared",
+)
 EFFECTIVE_BATCH = 32
 MICROBATCH_CHOICES = (32, 16, 8, 4, 2, 1)
 
@@ -80,6 +91,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--initializer-checkpoint", type=Path)
     parser.add_argument("--next-router-agreement", action="store_true")
     parser.add_argument("--router-agreement-weight", type=float, default=0.1)
+    parser.add_argument("--aggregate-loss-weight", type=float, default=1.0)
+    parser.add_argument("--individual-loss-weight", type=float, default=1.0)
+    parser.add_argument("--cosine-loss-weight", type=float, default=0.1)
+    parser.add_argument(
+        "--basis-coefficients-only",
+        action="store_true",
+        help=(
+            "freeze the shared nonlinear basis while training route-specific "
+            "coefficients and expert residual adapters"
+        ),
+    )
     parser.add_argument("--target-model", type=Path, required=True)
     parser.add_argument("--mode", choices=MODES, required=True)
     parser.add_argument("--layer", type=int, choices=range(40), required=True)
@@ -98,6 +120,19 @@ def parse_args() -> argparse.Namespace:
         "--shadow-width", type=int, choices=(16, 32, 64, 96, 128), default=16
     )
     parser.add_argument("--indexed-active-slots", type=int, choices=(4, 8), default=8)
+    parser.add_argument("--basis-count", type=int, choices=(8, 16, 32), default=16)
+    parser.add_argument("--basis-width", type=int, choices=(16, 32, 64), default=32)
+    parser.add_argument(
+        "--basis-expert-residual-width", type=int,
+        choices=(2, 4, 8, 16), default=2,
+    )
+    parser.add_argument(
+        "--resident-count", type=int,
+        choices=(32, 48, 64, 80, 92, 96), default=80,
+    )
+    parser.add_argument("--resident-eval-only", action="store_true")
+    parser.add_argument("--resident-export-only", action="store_true")
+    parser.add_argument("--resident-allocation-plan", type=Path)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--preflight-only", action="store_true")
@@ -520,11 +555,24 @@ def build_student(
     *,
     shadow_width: int = 16,
     indexed_active_slots: int = 8,
+    basis_count: int = 16,
+    basis_width: int = 32,
+    basis_expert_residual_width: int = 2,
 ) -> nn.Module:
     if mode == "s0_exact_top1_plus_draft":
         return SwiGLUDraftExpert(2048, 512).to(device=device, dtype=torch.bfloat16)
     if mode == "s1_shared":
         return SwiGLUDraftExpert(2048, 128).to(device=device, dtype=torch.bfloat16)
+    if mode == "s1_shared_width512":
+        return SwiGLUDraftExpert(2048, 512).to(device=device, dtype=torch.bfloat16)
+    if mode == "resident_int4_shared":
+        return SwiGLUDraftExpert(2048, 512).to(device=device, dtype=torch.bfloat16)
+    if mode == "basisdraft_all8":
+        return RouteConditionedBasisExperts(BasisDraftConfig(
+            basis_count=basis_count,
+            basis_width=basis_width,
+            expert_residual_width=basis_expert_residual_width,
+        )).to(device=device, dtype=torch.bfloat16)
     return IndexedShadowExperts(
         ShadowExpertConfig(
             shadow_width=shadow_width,
@@ -679,6 +727,9 @@ def objective(
     next_norm_weight: Tensor | None = None,
     next_router_weight: Tensor | None = None,
     router_agreement_weight: float = 0.0,
+    aggregate_loss_weight: float = 1.0,
+    individual_loss_weight: float = 1.0,
+    cosine_loss_weight: float = 0.1,
 ) -> tuple[
     Tensor, dict[str, float], Tensor, Tensor, Tensor, list[str], Tensor | None
 ]:
@@ -690,15 +741,21 @@ def objective(
             top1_target = target_selected_expert_outputs(
                 inputs, ids[..., :1], gate_up, down
             )[..., 0, :]
-    elif mode == "s2_indexed":
-        assert isinstance(model, IndexedShadowExperts)
-        active_slots = model.config.routed_slots
+    elif mode in {"s2_indexed", "basisdraft_all8"}:
+        if mode == "s2_indexed":
+            assert isinstance(model, IndexedShadowExperts)
+            active_slots = model.config.routed_slots
+        else:
+            assert isinstance(model, RouteConditionedBasisExperts)
+            active_slots = model.config.exact_k
         ids = ids[..., :active_slots]
         weights = weights[..., :active_slots]
-        individual_target, _reconstructed = teacher_values(
-            inputs, ids, weights, gate_up, down
-        )
-        routed_target = _reconstructed
+        individual_target: Tensor | None = None
+        if mode != "basisdraft_all8" or individual_loss_weight > 0:
+            individual_target, _reconstructed = teacher_values(
+                inputs, ids, weights, gate_up, down
+            )
+            routed_target = _reconstructed
     with torch.autocast(
         device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"
     ):
@@ -706,9 +763,24 @@ def objective(
             exact_top1 = top1_target * weights[..., 0, None].to(inputs)
             predicted = exact_top1 + model(inputs)
             individual_loss = predicted.sum() * 0.0
-        elif mode == "s1_shared":
+        elif mode in {"s1_shared", "s1_shared_width512"}:
             predicted = model(inputs)
             individual_loss = predicted.sum() * 0.0
+        elif mode == "resident_int4_shared":
+            assert isinstance(model, PackedInt4ResidentExperts)
+            predicted = model(inputs, ids, weights)
+            individual_loss = predicted.sum() * 0.0
+        elif mode == "basisdraft_all8":
+            assert isinstance(model, RouteConditionedBasisExperts)
+            predicted = model(inputs, ids, weights)
+            if individual_loss_weight > 0:
+                assert individual_target is not None
+                predicted_individual = model.selected_unweighted(inputs, ids)
+                individual_loss = selected_expert_distillation_loss(
+                    predicted_individual, individual_target, weights, valid
+                )
+            else:
+                individual_loss = predicted.sum() * 0.0
         else:
             assert isinstance(model, IndexedShadowExperts)
             predicted_individual = model.selected_unweighted(inputs, ids)
@@ -742,8 +814,13 @@ def objective(
         next_overlap = (
             teacher_ids[..., None] == next_ids[..., None, :]
         ).any(-1).float().mean(-1).detach()
-    loss = aggregate + 0.1 * cosine + individual_loss + (
+    loss = (
+        float(aggregate_loss_weight) * aggregate
+        + float(cosine_loss_weight) * cosine
+        + float(individual_loss_weight) * individual_loss
+        + (
         float(router_agreement_weight) * agreement
+        )
     )
     return (
         loss,
@@ -839,6 +916,9 @@ def evaluate(
     next_norm_weight: Tensor | None = None,
     next_router_weight: Tensor | None = None,
     router_agreement_weight: float = 0.0,
+    aggregate_loss_weight: float = 1.0,
+    individual_loss_weight: float = 1.0,
+    cosine_loss_weight: float = 0.1,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     model.eval()
     request_cells: dict[tuple[str, int], list[tuple[float, float, float]]] = defaultdict(list)
@@ -855,6 +935,9 @@ def evaluate(
             next_norm_weight=next_norm_weight,
             next_router_weight=next_router_weight,
             router_agreement_weight=router_agreement_weight,
+            aggregate_loss_weight=aggregate_loss_weight,
+            individual_loss_weight=individual_loss_weight,
+            cosine_loss_weight=cosine_loss_weight,
         )
         if next_overlap is not None:
             next_overlap_sum += float((next_overlap * valid.float()).sum())
@@ -954,6 +1037,9 @@ def autotune(
                 router_agreement_weight=(
                     args.router_agreement_weight if args.next_router_agreement else 0.0
                 ),
+                aggregate_loss_weight=args.aggregate_loss_weight,
+                individual_loss_weight=args.individual_loss_weight,
+                cosine_loss_weight=args.cosine_loss_weight,
             )[0].backward()
             model.zero_grad(set_to_none=True)
             peak = torch.cuda.max_memory_reserved(device) / 2**30 if device.type == "cuda" else 0.0
@@ -982,6 +1068,25 @@ def main() -> None:
         or args.router_agreement_weight <= 0
     ):
         raise ValueError("router-agreement weight must be finite and positive")
+    for name in (
+        "aggregate_loss_weight", "individual_loss_weight", "cosine_loss_weight"
+    ):
+        value = float(getattr(args, name))
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"{name} must be finite and non-negative")
+    if args.basis_coefficients_only and args.mode != "basisdraft_all8":
+        raise ValueError("coefficient-only training requires BasisDraft mode")
+    resident_stage = args.resident_eval_only or args.resident_export_only
+    if args.resident_eval_only and args.resident_export_only:
+        raise ValueError("resident evaluation and export modes are mutually exclusive")
+    if resident_stage != (args.mode == "resident_int4_shared"):
+        raise ValueError(
+            "resident INT4 shared mode requires an optimizer-free eval/export stage"
+        )
+    if args.resident_eval_only and not args.next_router_agreement:
+        raise ValueError("resident hybrid evaluation requires next-router labels")
+    if args.resident_allocation_plan is not None and not resident_stage:
+        raise ValueError("resident allocation plan is valid only for resident stages")
     partition = validate_partition(args.partition_manifest, args.data_profile)
     reuse = validate_reuse_split(args.reuse_split_manifest)
     selected = {
@@ -1066,15 +1171,24 @@ def main() -> None:
         device,
         shadow_width=args.shadow_width,
         indexed_active_slots=args.indexed_active_slots,
+        basis_count=args.basis_count,
+        basis_width=args.basis_width,
+        basis_expert_residual_width=args.basis_expert_residual_width,
     )
     initializer_provenance: dict[str, Any] | None = None
     if args.initializer_checkpoint is not None:
         initializer = torch.load(
             args.initializer_checkpoint, map_location="cpu", weights_only=False
         )
+        expected_mode = (
+            "s1_shared_width512"
+            if args.mode in {"basisdraft_all8", "resident_int4_shared"}
+            and initializer.get("mode") == "s1_shared_width512"
+            else args.mode
+        )
         expected = {
             "schema": SCHEMA,
-            "mode": args.mode,
+            "mode": expected_mode,
             "layer": args.layer,
             "target_checkpoint_index_sha256": checkpoint.index_sha256,
             "formal_validation_opened": False,
@@ -1087,7 +1201,13 @@ def main() -> None:
         state = initializer.get("model_state_dict")
         if not isinstance(state, Mapping):
             raise ValueError("ShadowRoute initializer lacks a model state")
-        model.load_state_dict(state, strict=True)
+        if args.mode == "basisdraft_all8" and expected_mode == "s1_shared_width512":
+            assert isinstance(model, RouteConditionedBasisExperts)
+            shared = SwiGLUDraftExpert(2048, 512)
+            shared.load_state_dict(state, strict=True)
+            model.initialize_from_shared(shared)
+        else:
+            model.load_state_dict(state, strict=True)
         initializer_provenance = {
             "checkpoint_sha256": sha256_file(args.initializer_checkpoint),
             "source_commit": str(initializer["source_commit"]),
@@ -1097,6 +1217,63 @@ def main() -> None:
                 initializer.get("closed_loop_authorized", False)
             ),
         }
+    resident_ids: Tensor | None = None
+    resident_plan_sha256: str | None = None
+    if args.mode == "resident_int4_shared":
+        if args.initializer_checkpoint is None:
+            raise ValueError("resident hybrid requires a frozen shared initializer")
+        assert isinstance(model, SwiGLUDraftExpert)
+        resident_counts = expert_counts(
+            datasets["train"], layer=args.layer, device=device,
+            workers=args.num_workers, active_slots=8,
+        )
+        if args.resident_allocation_plan is None:
+            resident_ids = torch.argsort(
+                resident_counts, descending=True, stable=True
+            )[: args.resident_count].to(device)
+        else:
+            plan = json.loads(args.resident_allocation_plan.read_text(encoding="utf-8"))
+            if plan.get("schema") != "harp_shadowroute_resident_allocation_v1":
+                raise ValueError("resident allocation plan schema changed")
+            expected_plan = {
+                "source_commit": args.source_commit,
+                "partition_manifest_sha256": sha256_file(args.partition_manifest),
+                "reuse_split_manifest_sha256": sha256_file(args.reuse_split_manifest),
+                "selection_uses_train_routes_only": True,
+                "formal_validation_opened": False,
+                "calibration_opened": False,
+                "sealed_test_opened": False,
+            }
+            for field, expected_value in expected_plan.items():
+                if plan.get(field) != expected_value:
+                    raise ValueError(f"resident allocation plan {field} mismatch")
+            ids_by_layer = plan.get("resident_expert_ids_by_layer")
+            if not isinstance(ids_by_layer, list) or len(ids_by_layer) != 40:
+                raise ValueError("resident allocation plan lacks forty layers")
+            resident_ids = torch.as_tensor(
+                ids_by_layer[args.layer], dtype=torch.long, device=device
+            )
+            if (
+                resident_ids.ndim != 1
+                or resident_ids.unique().numel() != resident_ids.numel()
+                or bool(((resident_ids < 0) | (resident_ids >= 256)).any())
+            ):
+                raise ValueError("resident allocation plan contains invalid expert IDs")
+            resident_plan_sha256 = sha256_file(args.resident_allocation_plan)
+        model = PackedInt4ResidentExperts.from_target(
+            resident_ids,
+            SharedResidualExperts(model),
+            gate_up,
+            down,
+            exact_k=8,
+            group_size=64,
+        )
+        model.requires_grad_(False)
+    if args.basis_coefficients_only:
+        assert isinstance(model, RouteConditionedBasisExperts)
+        model.gate_up_proj.requires_grad_(False)
+        model.down_proj.requires_grad_(False)
+        model.expert_coefficients.requires_grad_(True)
     selected_neurons = None
     if isinstance(model, IndexedShadowExperts):
         selected_neurons = model.initialize_from_target_neurons(
@@ -1110,6 +1287,9 @@ def main() -> None:
         trained_mass = float(
             counts[counts >= args.minimum_expert_count].sum() / counts.sum().clamp_min(1)
         )
+    elif args.mode == "resident_int4_shared":
+        counts = resident_counts
+        trained_mass = float(counts[resident_ids.cpu()].sum() / counts.sum().clamp_min(1))
     else:
         counts = torch.zeros(256, dtype=torch.int64)
         trained_mass = 1.0
@@ -1138,6 +1318,10 @@ def main() -> None:
         "router_agreement_weight": (
             args.router_agreement_weight if args.next_router_agreement else 0.0
         ),
+        "aggregate_loss_weight": args.aggregate_loss_weight,
+        "individual_loss_weight": args.individual_loss_weight,
+        "cosine_loss_weight": args.cosine_loss_weight,
+        "basis_coefficients_only": args.basis_coefficients_only,
         "frozen_attention_delta_teacher_forcing": args.next_router_agreement,
         "target_state_is_label_only": True,
         "native_target_layer_loaded": True,
@@ -1155,10 +1339,27 @@ def main() -> None:
         "minimum_expert_count": args.minimum_expert_count,
         "shadow_width": args.shadow_width,
         "indexed_active_slots": args.indexed_active_slots,
+        "basis_count": args.basis_count,
+        "basis_width": args.basis_width,
+        "basis_expert_residual_width": args.basis_expert_residual_width,
+        "resident_count": (
+            int(resident_ids.numel()) if resident_ids is not None else None
+        ),
+        "resident_allocation_plan_sha256": resident_plan_sha256,
+        "resident_expert_ids": (
+            resident_ids.detach().cpu().tolist() if resident_ids is not None else None
+        ),
+        "resident_train_slot_coverage": (
+            trained_mass if args.mode == "resident_int4_shared" else None
+        ),
         "expert_frequency_gate_applicable": args.mode == "s2_indexed",
         "trained_expert_count": (
             int((counts >= args.minimum_expert_count).sum())
-            if args.mode == "s2_indexed" else 256
+            if args.mode == "s2_indexed" else (
+                int(resident_ids.numel())
+                if args.mode == "resident_int4_shared" and resident_ids is not None
+                else 256
+            )
         ),
         "trained_selected_slot_mass": trained_mass,
     }
@@ -1186,7 +1387,7 @@ def main() -> None:
             router_weight=next_router_weight,
             workers=args.num_workers,
         )
-        initial_router_tune, _rows = evaluate(
+        initial_router_tune, initial_tune_rows = evaluate(
             model,
             datasets["tune"],
             mode=args.mode,
@@ -1199,6 +1400,9 @@ def main() -> None:
             next_norm_weight=next_norm_weight,
             next_router_weight=next_router_weight,
             router_agreement_weight=args.router_agreement_weight,
+            aggregate_loss_weight=args.aggregate_loss_weight,
+            individual_loss_weight=args.individual_loss_weight,
+            cosine_loss_weight=args.cosine_loss_weight,
         )
         router_audit = {
             **teacher_audit,
@@ -1212,6 +1416,97 @@ def main() -> None:
         )
         if not router_audit["passed"]:
             raise ValueError("teacher-forced next-router reconstruction failed")
+    else:
+        initial_tune_rows = []
+    if resident_stage:
+        assert isinstance(model, PackedInt4ResidentExperts)
+        if initial_router_tune is None:
+            initial_router_tune, initial_tune_rows = evaluate(
+                model,
+                datasets["tune"],
+                mode=args.mode,
+                layer=args.layer,
+                device=device,
+                gate_up=gate_up,
+                down=down,
+                microbatch=32,
+                workers=args.num_workers,
+                aggregate_loss_weight=args.aggregate_loss_weight,
+                individual_loss_weight=0.0,
+                cosine_loss_weight=args.cosine_loss_weight,
+            )
+        development, development_rows = evaluate(
+            model,
+            datasets["development"],
+            mode=args.mode,
+            layer=args.layer,
+            device=device,
+            gate_up=gate_up,
+            down=down,
+            microbatch=32,
+            workers=args.num_workers,
+            next_norm_weight=next_norm_weight,
+            next_router_weight=next_router_weight,
+            router_agreement_weight=(
+                args.router_agreement_weight if args.next_router_agreement else 0.0
+            ),
+            aggregate_loss_weight=args.aggregate_loss_weight,
+            individual_loss_weight=0.0,
+            cosine_loss_weight=args.cosine_loss_weight,
+        )
+        write_rows(args.output / "tune_residual_predictions.jsonl", initial_tune_rows)
+        write_rows(
+            args.output / "development_residual_predictions.jsonl",
+            development_rows,
+        )
+        checkpoint_path = args.output / f"shadow_{args.mode}_layer_{args.layer:02d}.pt"
+        checkpoint_value = {
+            "schema": SCHEMA,
+            "source_commit": args.source_commit,
+            "mode": args.mode,
+            "layer": args.layer,
+            "seed": args.seed,
+            "model_state_dict": {
+                name: value.detach().cpu() for name, value in model.state_dict().items()
+            },
+            "resident_expert_ids": model.resident_ids.detach().cpu(),
+            "resident_count": model.resident_count,
+            "resident_train_slot_coverage": trained_mass,
+            "initializer": initializer_provenance,
+            "tune": initial_router_tune,
+            "development": development,
+            "target_checkpoint_index_sha256": checkpoint.index_sha256,
+            "partition_manifest_sha256": sha256_file(args.partition_manifest),
+            "diagnostic_only": True,
+            "closed_loop_authorized": False,
+            "formal_validation_opened": False,
+            "calibration_opened": False,
+            "sealed_test_opened": False,
+        }
+        with checkpoint_path.open("xb") as handle:
+            torch.save(checkpoint_value, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        result = {
+            "schema": RESULT_SCHEMA,
+            "mode": args.mode,
+            "layer": args.layer,
+            "resident_count": model.resident_count,
+            "resident_train_slot_coverage": trained_mass,
+            "tune": initial_router_tune,
+            "development": development,
+            "checkpoint_sha256": sha256_file(checkpoint_path),
+            "training_started": False,
+            "optimizer_constructed": False,
+            "closed_loop_evaluation_started": False,
+            "formal_validation_opened": False,
+            "calibration_opened": False,
+            "sealed_test_opened": False,
+        }
+        write_json_exclusive(args.output / "STAGE_RESULT.json", result)
+        write_checksums(args.output)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
     microbatch, trace = autotune(
         model,
         datasets["train"],
@@ -1287,6 +1582,9 @@ def main() -> None:
                 router_agreement_weight=(
                     args.router_agreement_weight if args.next_router_agreement else 0.0
                 ),
+                aggregate_loss_weight=args.aggregate_loss_weight,
+                individual_loss_weight=args.individual_loss_weight,
+                cosine_loss_weight=args.cosine_loss_weight,
             )
             (loss / accumulation).backward()
             total += float(loss.detach())
@@ -1304,6 +1602,9 @@ def main() -> None:
             router_agreement_weight=(
                 args.router_agreement_weight if args.next_router_agreement else 0.0
             ),
+            aggregate_loss_weight=args.aggregate_loss_weight,
+            individual_loss_weight=args.individual_loss_weight,
+            cosine_loss_weight=args.cosine_loss_weight,
         )
         append_jsonl(
             args.output / "metrics.jsonl",
@@ -1338,6 +1639,9 @@ def main() -> None:
         router_agreement_weight=(
             args.router_agreement_weight if args.next_router_agreement else 0.0
         ),
+        aggregate_loss_weight=args.aggregate_loss_weight,
+        individual_loss_weight=args.individual_loss_weight,
+        cosine_loss_weight=args.cosine_loss_weight,
     )
     write_rows(args.output / "development_residual_predictions.jsonl", rows)
     component_gate = bool(
@@ -1363,6 +1667,9 @@ def main() -> None:
         "minimum_expert_count": args.minimum_expert_count,
         "shadow_width": args.shadow_width,
         "indexed_active_slots": args.indexed_active_slots,
+        "basis_count": args.basis_count,
+        "basis_width": args.basis_width,
+        "basis_expert_residual_width": args.basis_expert_residual_width,
         "trained_selected_slot_mass": trained_mass,
         "best_epoch": best_epoch,
         "selection_metric": (

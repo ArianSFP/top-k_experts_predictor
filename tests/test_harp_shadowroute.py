@@ -10,6 +10,7 @@ from torch import nn
 from harp_rtt.shadow_cache import (
     ShadowNodeResult,
     ShadowTreeRunner,
+    compact_visible_tree,
     validate_tree_topology,
 )
 from harp_rtt.shadow_capture import (
@@ -26,12 +27,17 @@ from harp_rtt.shadow_checkpoint import (
     validate_shadow_target_config,
 )
 from harp_rtt.shadow_expert import (
+    BasisDraftConfig,
     ExactTop1PlusDraftExperts,
     IndexedShadowExperts,
     PackedInt4TopKExperts,
+    PackedInt4ResidentExperts,
+    RouteConditionedBasisExperts,
     ShadowExpertConfig,
     SharedResidualExperts,
     SwiGLUDraftExpert,
+    basisdraft_parameter_count,
+    resident_int4_storage_bytes,
     shadow_pool_parameter_count,
     target_neuron_importance,
     dequantize_groupwise_int4,
@@ -39,6 +45,7 @@ from harp_rtt.shadow_expert import (
     target_selected_expert_outputs,
 )
 from harp_rtt.shadow_route import raw_mtp_prior_mixture, shadow_lm_path_posterior
+from harp_rtt.resident_policy import allocate_resident_experts
 from harp_rtt.shadow_training import (
     s0_scale_gate,
     selected_expert_distillation_loss,
@@ -190,6 +197,74 @@ def test_exact_topk_without_draft_uses_requested_native_slots():
     assert torch.equal(module(hidden, ids, weights), expected)
 
 
+def test_basisdraft_split_initializer_exactly_matches_shared_expert():
+    torch.manual_seed(23)
+    shared = SwiGLUDraftExpert(4, 6)
+    basis = RouteConditionedBasisExperts(BasisDraftConfig(
+        hidden_width=4,
+        experts=5,
+        exact_k=3,
+        basis_count=3,
+        basis_width=2,
+    ))
+    basis.initialize_from_shared(shared)
+    assert torch.count_nonzero(basis.expert_down_proj) == 0
+    hidden = torch.randn(7, 4)
+    ids = torch.tensor([
+        [0, 1, 2], [1, 3, 4], [2, 0, 4], [3, 1, 0],
+        [4, 3, 2], [0, 4, 1], [2, 3, 0],
+    ])
+    weights = torch.rand(7, 3)
+    weights = weights / weights.sum(-1, keepdim=True)
+    assert torch.allclose(
+        basis(hidden, ids, weights), shared(hidden), atol=2e-6, rtol=2e-6
+    )
+    assert not hasattr(basis, "native_experts")
+
+
+def test_basisdraft_preserves_expert_identity_weights_and_gradients():
+    config = BasisDraftConfig(
+        hidden_width=3, experts=4, exact_k=2, basis_count=2, basis_width=1
+    )
+    module = RouteConditionedBasisExperts(config)
+    with torch.no_grad():
+        module.gate_up_proj.fill_(1.0)
+        module.down_proj.fill_(1.0)
+        module.expert_gate_up_proj.fill_(0.5)
+        module.expert_down_proj[0].fill_(0.25)
+        module.expert_down_proj[3].fill_(0.5)
+        module.expert_coefficients.copy_(torch.tensor([
+            [1.0, 0.0], [0.0, 1.0], [2.0, 0.0], [0.0, 3.0]
+        ])[..., None])
+    hidden = torch.ones(1, 3, requires_grad=True)
+    ids = torch.tensor([[0, 3]])
+    weights = torch.tensor([[0.25, 0.75]])
+    individual = module.selected_unweighted(hidden, ids)
+    output = module(hidden, ids, weights)
+    assert torch.allclose(
+        output, (individual * weights[..., None]).sum(1), atol=1e-6
+    )
+    swapped = module(hidden, ids.flip(-1), weights)
+    assert not torch.allclose(output, swapped)
+    output.sum().backward()
+    assert module.expert_coefficients.grad is not None
+    assert module.expert_coefficients.grad[0].abs().sum() > 0
+    assert module.expert_coefficients.grad[3].abs().sum() > 0
+    assert module.expert_coefficients.grad[1:3].abs().sum() == 0
+    assert module.expert_down_proj.grad is not None
+    assert module.expert_down_proj.grad[0].abs().sum() > 0
+    assert module.expert_down_proj.grad[3].abs().sum() > 0
+    assert module.expert_down_proj.grad[1:3].abs().sum() == 0
+
+
+def test_basisdraft_rejects_truncated_route():
+    module = RouteConditionedBasisExperts(BasisDraftConfig(
+        hidden_width=3, experts=4, exact_k=2, basis_count=2, basis_width=1
+    ))
+    with pytest.raises(ValueError, match="complete native top-k"):
+        module(torch.ones(1, 3), torch.tensor([[0]]), torch.ones(1, 1))
+
+
 def test_groupwise_int4_round_trip_and_sparse_execution():
     torch.manual_seed(7)
     gate_up = torch.randn(3, 4, 4)
@@ -328,11 +403,78 @@ def test_target_selected_expert_top1_fast_path_matches_manual_swiglu():
     assert torch.allclose(outputs, expected, atol=1e-6, rtol=1e-6)
 
 
+def test_resident_int4_uses_exact_residents_and_mass_scaled_fallback():
+    torch.manual_seed(17)
+    gate_up = torch.randn(4, 4, 4)
+    down = torch.randn(4, 4, 2)
+    draft = SwiGLUDraftExpert(4, 2)
+    fallback = SharedResidualExperts(draft, experts=4)
+    module = PackedInt4ResidentExperts.from_target(
+        torch.tensor([0, 2]), fallback, gate_up, down,
+        exact_k=2, group_size=2,
+    )
+    hidden = torch.randn(3, 4)
+    ids = torch.tensor([[0, 1], [3, 1], [2, 0]])
+    weights = torch.tensor([[0.7, 0.3], [0.4, 0.6], [0.55, 0.45]])
+    actual = module(hidden, ids, weights)
+    expected = draft(hidden) * torch.tensor([[0.3], [1.0], [0.0]])
+    for row, slot in ((0, 0), (2, 0), (2, 1)):
+        local_id = int(module.expert_to_resident[ids[row, slot]])
+        selected_gate, selected_down = module._resident_weights(
+            local_id, dtype=hidden.dtype
+        )
+        gate, up = torch.nn.functional.linear(
+            hidden[row], selected_gate
+        ).chunk(2)
+        value = torch.nn.functional.linear(
+            torch.nn.functional.silu(gate) * up, selected_down
+        )
+        expected[row] += weights[row, slot] * value
+    assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-6)
+    assert set(module.state_dict()) >= {
+        "resident_ids", "expert_to_resident", "gate_up_packed", "down_packed"
+    }
+    assert not hasattr(module, "native_experts")
+
+
+def test_resident_int4_storage_matches_five_gib_budget():
+    size = resident_int4_storage_bytes(residents=80)
+    assert size == 5_347_737_600
+    assert size / (1024 ** 3) < 5.0
+    resident_92 = resident_int4_storage_bytes(residents=92)
+    shared_fallback = 3 * 2048 * 512 * 40 * 2
+    assert (resident_92 + shared_fallback) / (1024 ** 3) < 6.0
+
+
+def test_resident_allocation_spends_global_budget_on_largest_marginal_gain():
+    counts = torch.tensor([
+        [10, 9, 1, 0],
+        [10, 8, 7, 0],
+        [10, 2, 1, 0],
+    ], dtype=torch.int64)
+    allocation = allocate_resident_experts(
+        counts,
+        total_residents=7,
+        minimum_per_layer=1,
+        maximum_per_layer=3,
+    )
+    assert allocation.resident_counts == (2, 3, 2)
+    assert sum(allocation.resident_counts) == 7
+    assert torch.equal(allocation.resident_ids[0], torch.tensor([0, 1]))
+    assert allocation.covered_slots == (19, 25, 12)
+    with pytest.raises(ValueError, match="outside"):
+        allocate_resident_experts(
+            counts, total_residents=2, minimum_per_layer=1, maximum_per_layer=3
+        )
+
+
 def test_shadow_parameter_counts_match_formal_plan():
     assert shadow_pool_parameter_count() == 1_006_632_960
     assert shadow_pool_parameter_count(
         layers=40, experts=1, hidden_width=2048, shadow_width=128
     ) == 31_457_280
+    assert basisdraft_parameter_count() == 256_901_120
+    assert basisdraft_parameter_count(expert_residual_width=16) == 1_137_704_960
 
 
 def test_tree_runner_isolates_siblings_and_processes_h1_once():
@@ -360,6 +502,22 @@ def test_tree_runner_isolates_siblings_and_processes_h1_once():
     assert result.caches[1]["tokens"] == [10, 11, 12]
     assert result.caches[2]["tokens"] == [10, 11, 13]
     assert result.valid.all()
+
+
+def test_compact_visible_tree_remaps_sparse_ancestor_closed_budget():
+    tokens = torch.tensor([10, 11, 12, 13, 14, 15])
+    parents = torch.tensor([-1, 0, 0, 1, 2, 3])
+    visible = torch.tensor([True, True, False, True, False, True])
+    compact_tokens, compact_parents, original = compact_visible_tree(
+        tokens, parents, visible
+    )
+    assert compact_tokens.tolist() == [10, 11, 13, 15]
+    assert compact_parents.tolist() == [-1, 0, 1, 2]
+    assert original.tolist() == [0, 1, 3, 5]
+    invalid = visible.clone()
+    invalid[1] = False
+    with pytest.raises(ValueError, match="ancestor-closed"):
+        compact_visible_tree(tokens, parents, invalid)
 
 
 def test_tree_topology_rejects_sibling_as_future_parent():

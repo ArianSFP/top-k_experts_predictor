@@ -31,6 +31,41 @@ class ShadowTreeResult:
     vocabulary_log_probabilities: Tensor | None = None
 
 
+def compact_visible_tree(
+    token_ids: Tensor,
+    parent_indices: Tensor,
+    node_mask: Tensor,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Compact an arbitrary ancestor-closed mask and remap parent indices."""
+
+    if token_ids.ndim != 1 or parent_indices.shape != token_ids.shape:
+        raise ValueError("tree token IDs and parents must be aligned vectors")
+    if node_mask.shape != token_ids.shape:
+        raise ValueError("tree visibility mask must align with topology")
+    visible = node_mask.bool()
+    if not bool(visible[0]):
+        raise ValueError("visible tree must retain the H1 root")
+    parent = parent_indices.long()
+    if int(parent[0]) != -1:
+        raise ValueError("tree root parent must be -1")
+    original = torch.nonzero(visible, as_tuple=False).flatten()
+    remap = torch.full_like(parent, -1)
+    remap[original] = torch.arange(original.numel(), device=parent.device)
+    compact_parent = torch.full(
+        (original.numel(),), -1, dtype=parent.dtype, device=parent.device
+    )
+    for compact_index, original_index in enumerate(original.tolist()):
+        if original_index == 0:
+            continue
+        original_parent = int(parent[original_index])
+        if not 0 <= original_parent < original_index:
+            raise ValueError("parents must precede children")
+        if not bool(visible[original_parent]):
+            raise ValueError("tree visibility is not ancestor-closed")
+        compact_parent[compact_index] = remap[original_parent]
+    return token_ids[original], compact_parent, original
+
+
 def clone_hybrid_cache(cache: Any) -> Any:
     """Reference sibling-isolation operation.
 
@@ -155,5 +190,5 @@ class ShadowTreeRunner:
 
 __all__ = [
     "ShadowNodeResult", "ShadowTreeResult", "ShadowTreeRunner",
-    "clone_hybrid_cache", "validate_tree_topology",
+    "clone_hybrid_cache", "compact_visible_tree", "validate_tree_topology",
 ]
