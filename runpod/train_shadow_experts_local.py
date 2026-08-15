@@ -1304,7 +1304,7 @@ def main() -> None:
             }:
                 raise ValueError("resident allocation plan schema changed")
             expected_plan = {
-                "source_commit": args.source_commit,
+                "source_commit": str(initializer["source_commit"]),
                 "partition_manifest_sha256": sha256_file(args.partition_manifest),
                 "reuse_split_manifest_sha256": sha256_file(args.reuse_split_manifest),
                 "selection_uses_train_routes_only": True,
