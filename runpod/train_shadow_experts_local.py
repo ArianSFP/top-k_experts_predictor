@@ -88,6 +88,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--initializer-checkpoint", type=Path)
     parser.add_argument("--next-router-agreement", action="store_true")
     parser.add_argument("--router-agreement-weight", type=float, default=0.1)
+    parser.add_argument("--aggregate-loss-weight", type=float, default=1.0)
+    parser.add_argument("--individual-loss-weight", type=float, default=1.0)
+    parser.add_argument("--cosine-loss-weight", type=float, default=0.1)
+    parser.add_argument(
+        "--basis-coefficients-only",
+        action="store_true",
+        help="freeze the nonlinear basis and train only expert coefficients",
+    )
     parser.add_argument("--target-model", type=Path, required=True)
     parser.add_argument("--mode", choices=MODES, required=True)
     parser.add_argument("--layer", type=int, choices=range(40), required=True)
@@ -698,6 +706,9 @@ def objective(
     next_norm_weight: Tensor | None = None,
     next_router_weight: Tensor | None = None,
     router_agreement_weight: float = 0.0,
+    aggregate_loss_weight: float = 1.0,
+    individual_loss_weight: float = 1.0,
+    cosine_loss_weight: float = 0.1,
 ) -> tuple[
     Tensor, dict[str, float], Tensor, Tensor, Tensor, list[str], Tensor | None
 ]:
@@ -772,8 +783,13 @@ def objective(
         next_overlap = (
             teacher_ids[..., None] == next_ids[..., None, :]
         ).any(-1).float().mean(-1).detach()
-    loss = aggregate + 0.1 * cosine + individual_loss + (
+    loss = (
+        float(aggregate_loss_weight) * aggregate
+        + float(cosine_loss_weight) * cosine
+        + float(individual_loss_weight) * individual_loss
+        + (
         float(router_agreement_weight) * agreement
+        )
     )
     return (
         loss,
@@ -869,6 +885,9 @@ def evaluate(
     next_norm_weight: Tensor | None = None,
     next_router_weight: Tensor | None = None,
     router_agreement_weight: float = 0.0,
+    aggregate_loss_weight: float = 1.0,
+    individual_loss_weight: float = 1.0,
+    cosine_loss_weight: float = 0.1,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     model.eval()
     request_cells: dict[tuple[str, int], list[tuple[float, float, float]]] = defaultdict(list)
@@ -885,6 +904,9 @@ def evaluate(
             next_norm_weight=next_norm_weight,
             next_router_weight=next_router_weight,
             router_agreement_weight=router_agreement_weight,
+            aggregate_loss_weight=aggregate_loss_weight,
+            individual_loss_weight=individual_loss_weight,
+            cosine_loss_weight=cosine_loss_weight,
         )
         if next_overlap is not None:
             next_overlap_sum += float((next_overlap * valid.float()).sum())
@@ -984,6 +1006,9 @@ def autotune(
                 router_agreement_weight=(
                     args.router_agreement_weight if args.next_router_agreement else 0.0
                 ),
+                aggregate_loss_weight=args.aggregate_loss_weight,
+                individual_loss_weight=args.individual_loss_weight,
+                cosine_loss_weight=args.cosine_loss_weight,
             )[0].backward()
             model.zero_grad(set_to_none=True)
             peak = torch.cuda.max_memory_reserved(device) / 2**30 if device.type == "cuda" else 0.0
@@ -1012,6 +1037,14 @@ def main() -> None:
         or args.router_agreement_weight <= 0
     ):
         raise ValueError("router-agreement weight must be finite and positive")
+    for name in (
+        "aggregate_loss_weight", "individual_loss_weight", "cosine_loss_weight"
+    ):
+        value = float(getattr(args, name))
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"{name} must be finite and non-negative")
+    if args.basis_coefficients_only and args.mode != "basisdraft_all8":
+        raise ValueError("coefficient-only training requires BasisDraft mode")
     partition = validate_partition(args.partition_manifest, args.data_profile)
     reuse = validate_reuse_split(args.reuse_split_manifest)
     selected = {
@@ -1141,6 +1174,11 @@ def main() -> None:
                 initializer.get("closed_loop_authorized", False)
             ),
         }
+    if args.basis_coefficients_only:
+        assert isinstance(model, RouteConditionedBasisExperts)
+        model.gate_up_proj.requires_grad_(False)
+        model.down_proj.requires_grad_(False)
+        model.expert_coefficients.requires_grad_(True)
     selected_neurons = None
     if isinstance(model, IndexedShadowExperts):
         selected_neurons = model.initialize_from_target_neurons(
@@ -1182,6 +1220,10 @@ def main() -> None:
         "router_agreement_weight": (
             args.router_agreement_weight if args.next_router_agreement else 0.0
         ),
+        "aggregate_loss_weight": args.aggregate_loss_weight,
+        "individual_loss_weight": args.individual_loss_weight,
+        "cosine_loss_weight": args.cosine_loss_weight,
+        "basis_coefficients_only": args.basis_coefficients_only,
         "frozen_attention_delta_teacher_forcing": args.next_router_agreement,
         "target_state_is_label_only": True,
         "native_target_layer_loaded": True,
@@ -1245,6 +1287,9 @@ def main() -> None:
             next_norm_weight=next_norm_weight,
             next_router_weight=next_router_weight,
             router_agreement_weight=args.router_agreement_weight,
+            aggregate_loss_weight=args.aggregate_loss_weight,
+            individual_loss_weight=args.individual_loss_weight,
+            cosine_loss_weight=args.cosine_loss_weight,
         )
         router_audit = {
             **teacher_audit,
@@ -1333,6 +1378,9 @@ def main() -> None:
                 router_agreement_weight=(
                     args.router_agreement_weight if args.next_router_agreement else 0.0
                 ),
+                aggregate_loss_weight=args.aggregate_loss_weight,
+                individual_loss_weight=args.individual_loss_weight,
+                cosine_loss_weight=args.cosine_loss_weight,
             )
             (loss / accumulation).backward()
             total += float(loss.detach())
@@ -1350,6 +1398,9 @@ def main() -> None:
             router_agreement_weight=(
                 args.router_agreement_weight if args.next_router_agreement else 0.0
             ),
+            aggregate_loss_weight=args.aggregate_loss_weight,
+            individual_loss_weight=args.individual_loss_weight,
+            cosine_loss_weight=args.cosine_loss_weight,
         )
         append_jsonl(
             args.output / "metrics.jsonl",
@@ -1384,6 +1435,9 @@ def main() -> None:
         router_agreement_weight=(
             args.router_agreement_weight if args.next_router_agreement else 0.0
         ),
+        aggregate_loss_weight=args.aggregate_loss_weight,
+        individual_loss_weight=args.individual_loss_weight,
+        cosine_loss_weight=args.cosine_loss_weight,
     )
     write_rows(args.output / "development_residual_predictions.jsonl", rows)
     component_gate = bool(
