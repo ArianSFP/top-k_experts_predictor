@@ -1,4 +1,8 @@
-from runpod.evaluate_shadow_route_top8 import bootstrap_factual_recall
+import torch
+
+from runpod.evaluate_shadow_route_top8 import (
+    bootstrap_factual_recall, native_parity_mask,
+)
 
 
 def test_shadow_bootstrap_is_complete_request_deterministic() -> None:
@@ -32,3 +36,19 @@ def test_shadow_bootstrap_is_complete_request_deterministic() -> None:
     assert summary["request_count"] == 2
     assert summary["h2_h4"]["point"] == 0.9
     assert summary["h1_h4"]["point"] == 0.9
+
+
+def test_native_parity_excludes_valid_nodes_outside_runtime_budget() -> None:
+    valid = torch.tensor(
+        [[True, True], [True, True], [True, False], [True, True]]
+    )
+    node_mask = torch.tensor([True, True, False, False])
+
+    active = native_parity_mask(valid, node_mask, count=4)
+
+    assert torch.equal(
+        active,
+        torch.tensor(
+            [[True, True], [True, True], [False, False], [False, False]]
+        ),
+    )
