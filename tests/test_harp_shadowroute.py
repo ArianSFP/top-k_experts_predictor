@@ -10,6 +10,7 @@ from torch import nn
 from harp_rtt.shadow_cache import (
     ShadowNodeResult,
     ShadowTreeRunner,
+    compact_visible_tree,
     validate_tree_topology,
 )
 from harp_rtt.shadow_capture import (
@@ -26,12 +27,15 @@ from harp_rtt.shadow_checkpoint import (
     validate_shadow_target_config,
 )
 from harp_rtt.shadow_expert import (
+    BasisDraftConfig,
     ExactTop1PlusDraftExperts,
     IndexedShadowExperts,
     PackedInt4TopKExperts,
+    RouteConditionedBasisExperts,
     ShadowExpertConfig,
     SharedResidualExperts,
     SwiGLUDraftExpert,
+    basisdraft_parameter_count,
     shadow_pool_parameter_count,
     target_neuron_importance,
     dequantize_groupwise_int4,
@@ -190,6 +194,66 @@ def test_exact_topk_without_draft_uses_requested_native_slots():
     assert torch.equal(module(hidden, ids, weights), expected)
 
 
+def test_basisdraft_split_initializer_exactly_matches_shared_expert():
+    torch.manual_seed(23)
+    shared = SwiGLUDraftExpert(4, 6)
+    basis = RouteConditionedBasisExperts(BasisDraftConfig(
+        hidden_width=4,
+        experts=5,
+        exact_k=3,
+        basis_count=3,
+        basis_width=2,
+    ))
+    basis.initialize_from_shared(shared)
+    hidden = torch.randn(7, 4)
+    ids = torch.tensor([
+        [0, 1, 2], [1, 3, 4], [2, 0, 4], [3, 1, 0],
+        [4, 3, 2], [0, 4, 1], [2, 3, 0],
+    ])
+    weights = torch.rand(7, 3)
+    weights = weights / weights.sum(-1, keepdim=True)
+    assert torch.allclose(
+        basis(hidden, ids, weights), shared(hidden), atol=2e-6, rtol=2e-6
+    )
+    assert not hasattr(basis, "native_experts")
+
+
+def test_basisdraft_preserves_expert_identity_weights_and_gradients():
+    config = BasisDraftConfig(
+        hidden_width=3, experts=4, exact_k=2, basis_count=2, basis_width=1
+    )
+    module = RouteConditionedBasisExperts(config)
+    with torch.no_grad():
+        module.gate_up_proj.fill_(1.0)
+        module.down_proj.fill_(1.0)
+        module.expert_coefficients.copy_(torch.tensor([
+            [1.0, 0.0], [0.0, 1.0], [2.0, 0.0], [0.0, 3.0]
+        ]))
+    hidden = torch.ones(1, 3, requires_grad=True)
+    ids = torch.tensor([[0, 3]])
+    weights = torch.tensor([[0.25, 0.75]])
+    individual = module.selected_unweighted(hidden, ids)
+    output = module(hidden, ids, weights)
+    assert torch.allclose(
+        output, (individual * weights[..., None]).sum(1), atol=1e-6
+    )
+    swapped = module(hidden, ids.flip(-1), weights)
+    assert not torch.allclose(output, swapped)
+    output.sum().backward()
+    assert module.expert_coefficients.grad is not None
+    assert module.expert_coefficients.grad[0].abs().sum() > 0
+    assert module.expert_coefficients.grad[3].abs().sum() > 0
+    assert module.expert_coefficients.grad[1:3].abs().sum() == 0
+
+
+def test_basisdraft_rejects_truncated_route():
+    module = RouteConditionedBasisExperts(BasisDraftConfig(
+        hidden_width=3, experts=4, exact_k=2, basis_count=2, basis_width=1
+    ))
+    with pytest.raises(ValueError, match="complete native top-k"):
+        module(torch.ones(1, 3), torch.tensor([[0]]), torch.ones(1, 1))
+
+
 def test_groupwise_int4_round_trip_and_sparse_execution():
     torch.manual_seed(7)
     gate_up = torch.randn(3, 4, 4)
@@ -333,6 +397,7 @@ def test_shadow_parameter_counts_match_formal_plan():
     assert shadow_pool_parameter_count(
         layers=40, experts=1, hidden_width=2048, shadow_width=128
     ) == 31_457_280
+    assert basisdraft_parameter_count() == 125_992_960
 
 
 def test_tree_runner_isolates_siblings_and_processes_h1_once():
@@ -360,6 +425,22 @@ def test_tree_runner_isolates_siblings_and_processes_h1_once():
     assert result.caches[1]["tokens"] == [10, 11, 12]
     assert result.caches[2]["tokens"] == [10, 11, 13]
     assert result.valid.all()
+
+
+def test_compact_visible_tree_remaps_sparse_ancestor_closed_budget():
+    tokens = torch.tensor([10, 11, 12, 13, 14, 15])
+    parents = torch.tensor([-1, 0, 0, 1, 2, 3])
+    visible = torch.tensor([True, True, False, True, False, True])
+    compact_tokens, compact_parents, original = compact_visible_tree(
+        tokens, parents, visible
+    )
+    assert compact_tokens.tolist() == [10, 11, 13, 15]
+    assert compact_parents.tolist() == [-1, 0, 1, 2]
+    assert original.tolist() == [0, 1, 3, 5]
+    invalid = visible.clone()
+    invalid[1] = False
+    with pytest.raises(ValueError, match="ancestor-closed"):
+        compact_visible_tree(tokens, parents, invalid)
 
 
 def test_tree_topology_rejects_sibling_as_future_parent():

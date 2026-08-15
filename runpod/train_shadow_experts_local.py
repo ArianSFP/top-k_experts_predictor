@@ -40,7 +40,9 @@ from harp_rtt.shadow_checkpoint import (  # noqa: E402
     sha256_file,
 )
 from harp_rtt.shadow_expert import (  # noqa: E402
+    BasisDraftConfig,
     IndexedShadowExperts,
+    RouteConditionedBasisExperts,
     ShadowExpertConfig,
     SwiGLUDraftExpert,
     target_neuron_importance,
@@ -61,7 +63,13 @@ from runpod.train_harp_delta_v3 import (  # noqa: E402
 
 SCHEMA = "harp_shadowroute_local_expert_layer_v1"
 RESULT_SCHEMA = "harp_shadowroute_local_expert_layer_result_v1"
-MODES = ("s0_exact_top1_plus_draft", "s1_shared", "s2_indexed")
+MODES = (
+    "s0_exact_top1_plus_draft",
+    "s1_shared",
+    "s1_shared_width512",
+    "s2_indexed",
+    "basisdraft_all8",
+)
 EFFECTIVE_BATCH = 32
 MICROBATCH_CHOICES = (32, 16, 8, 4, 2, 1)
 
@@ -98,6 +106,8 @@ def parse_args() -> argparse.Namespace:
         "--shadow-width", type=int, choices=(16, 32, 64, 96, 128), default=16
     )
     parser.add_argument("--indexed-active-slots", type=int, choices=(4, 8), default=8)
+    parser.add_argument("--basis-count", type=int, choices=(8, 16, 32), default=16)
+    parser.add_argument("--basis-width", type=int, choices=(16, 32, 64), default=32)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--preflight-only", action="store_true")
@@ -520,11 +530,20 @@ def build_student(
     *,
     shadow_width: int = 16,
     indexed_active_slots: int = 8,
+    basis_count: int = 16,
+    basis_width: int = 32,
 ) -> nn.Module:
     if mode == "s0_exact_top1_plus_draft":
         return SwiGLUDraftExpert(2048, 512).to(device=device, dtype=torch.bfloat16)
     if mode == "s1_shared":
         return SwiGLUDraftExpert(2048, 128).to(device=device, dtype=torch.bfloat16)
+    if mode == "s1_shared_width512":
+        return SwiGLUDraftExpert(2048, 512).to(device=device, dtype=torch.bfloat16)
+    if mode == "basisdraft_all8":
+        return RouteConditionedBasisExperts(BasisDraftConfig(
+            basis_count=basis_count,
+            basis_width=basis_width,
+        )).to(device=device, dtype=torch.bfloat16)
     return IndexedShadowExperts(
         ShadowExpertConfig(
             shadow_width=shadow_width,
@@ -690,9 +709,13 @@ def objective(
             top1_target = target_selected_expert_outputs(
                 inputs, ids[..., :1], gate_up, down
             )[..., 0, :]
-    elif mode == "s2_indexed":
-        assert isinstance(model, IndexedShadowExperts)
-        active_slots = model.config.routed_slots
+    elif mode in {"s2_indexed", "basisdraft_all8"}:
+        if mode == "s2_indexed":
+            assert isinstance(model, IndexedShadowExperts)
+            active_slots = model.config.routed_slots
+        else:
+            assert isinstance(model, RouteConditionedBasisExperts)
+            active_slots = model.config.exact_k
         ids = ids[..., :active_slots]
         weights = weights[..., :active_slots]
         individual_target, _reconstructed = teacher_values(
@@ -706,9 +729,16 @@ def objective(
             exact_top1 = top1_target * weights[..., 0, None].to(inputs)
             predicted = exact_top1 + model(inputs)
             individual_loss = predicted.sum() * 0.0
-        elif mode == "s1_shared":
+        elif mode in {"s1_shared", "s1_shared_width512"}:
             predicted = model(inputs)
             individual_loss = predicted.sum() * 0.0
+        elif mode == "basisdraft_all8":
+            assert isinstance(model, RouteConditionedBasisExperts)
+            predicted_individual = model.selected_unweighted(inputs, ids)
+            predicted = (predicted_individual * weights[..., None].to(inputs)).sum(-2)
+            individual_loss = selected_expert_distillation_loss(
+                predicted_individual, individual_target, weights, valid
+            )
         else:
             assert isinstance(model, IndexedShadowExperts)
             predicted_individual = model.selected_unweighted(inputs, ids)
@@ -1066,15 +1096,23 @@ def main() -> None:
         device,
         shadow_width=args.shadow_width,
         indexed_active_slots=args.indexed_active_slots,
+        basis_count=args.basis_count,
+        basis_width=args.basis_width,
     )
     initializer_provenance: dict[str, Any] | None = None
     if args.initializer_checkpoint is not None:
         initializer = torch.load(
             args.initializer_checkpoint, map_location="cpu", weights_only=False
         )
+        expected_mode = (
+            "s1_shared_width512"
+            if args.mode == "basisdraft_all8"
+            and initializer.get("mode") == "s1_shared_width512"
+            else args.mode
+        )
         expected = {
             "schema": SCHEMA,
-            "mode": args.mode,
+            "mode": expected_mode,
             "layer": args.layer,
             "target_checkpoint_index_sha256": checkpoint.index_sha256,
             "formal_validation_opened": False,
@@ -1087,7 +1125,13 @@ def main() -> None:
         state = initializer.get("model_state_dict")
         if not isinstance(state, Mapping):
             raise ValueError("ShadowRoute initializer lacks a model state")
-        model.load_state_dict(state, strict=True)
+        if args.mode == "basisdraft_all8" and expected_mode == "s1_shared_width512":
+            assert isinstance(model, RouteConditionedBasisExperts)
+            shared = SwiGLUDraftExpert(2048, 512)
+            shared.load_state_dict(state, strict=True)
+            model.initialize_from_shared(shared)
+        else:
+            model.load_state_dict(state, strict=True)
         initializer_provenance = {
             "checkpoint_sha256": sha256_file(args.initializer_checkpoint),
             "source_commit": str(initializer["source_commit"]),
@@ -1155,6 +1199,8 @@ def main() -> None:
         "minimum_expert_count": args.minimum_expert_count,
         "shadow_width": args.shadow_width,
         "indexed_active_slots": args.indexed_active_slots,
+        "basis_count": args.basis_count,
+        "basis_width": args.basis_width,
         "expert_frequency_gate_applicable": args.mode == "s2_indexed",
         "trained_expert_count": (
             int((counts >= args.minimum_expert_count).sum())
@@ -1363,6 +1409,8 @@ def main() -> None:
         "minimum_expert_count": args.minimum_expert_count,
         "shadow_width": args.shadow_width,
         "indexed_active_slots": args.indexed_active_slots,
+        "basis_count": args.basis_count,
+        "basis_width": args.basis_width,
         "trained_selected_slot_mass": trained_mass,
         "best_epoch": best_epoch,
         "selection_metric": (

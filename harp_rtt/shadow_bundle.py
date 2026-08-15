@@ -12,14 +12,17 @@ from .shadow_expert import (
     ExactTop1PlusDraftExperts,
     IndexedShadowExperts,
     PackedInt4TopKExperts,
+    RouteConditionedBasisExperts,
     SharedResidualExperts,
 )
 
 
 LOCAL_SCHEMA = "harp_shadowroute_local_expert_layer_v1"
 CHECKPOINT_MODE = {
+    "basisdraft_all8": "basisdraft_all8",
     "exact_top1_plus_draft": "s0_exact_top1_plus_draft",
     "shared_width128": "s1_shared",
+    "shared_width512": "s1_shared_width512",
     "indexed_width16": "s2_indexed",
     "int4_top4": "int4_top4",
 }
@@ -108,6 +111,18 @@ def load_shadow_bundle(
             module.draft_expert.load_state_dict(state, strict=True)
         elif isinstance(module, SharedResidualExperts):
             module.draft_expert.load_state_dict(state, strict=True)
+        elif isinstance(module, RouteConditionedBasisExperts):
+            expected = {
+                "gate_up_proj", "down_proj", "expert_coefficients",
+            }
+            if set(state) != expected:
+                raise ValueError("BasisDraft layer shard state is incomplete")
+            if (
+                int(value.get("basis_count", -1)) != module.config.basis_count
+                or int(value.get("basis_width", -1)) != module.config.basis_width
+            ):
+                raise ValueError("BasisDraft runtime configuration differs from shard")
+            module.load_state_dict(state, strict=True)
         elif isinstance(module, IndexedShadowExperts):
             expected = {"gate_up_proj", "down_proj", "trained_experts"}
             if set(state) != expected:

@@ -9,7 +9,9 @@ import torch
 from torch import Tensor
 
 from .shadow_backbone import InstalledShadowBackbone, exact_prefix_experts, resolve_text_layers
-from .shadow_cache import ShadowNodeResult, ShadowTreeResult, ShadowTreeRunner
+from .shadow_cache import (
+    ShadowNodeResult, ShadowTreeResult, ShadowTreeRunner, compact_visible_tree,
+)
 
 
 class ShadowRouteHooks(AbstractContextManager):
@@ -127,11 +129,50 @@ def run_shadow_tree(
             ).detach(),
         )
 
-    return ShadowTreeRunner(step).run(
+    compact_tokens, compact_parents, original = compact_visible_tree(
+        token_ids.to(parameter.device),
+        parent_indices.to(parameter.device),
+        node_mask.to(parameter.device),
+    )
+    compact = ShadowTreeRunner(step).run(
         root_cache=prefix_cache,
-        token_ids=token_ids.to(parameter.device),
-        parent_indices=parent_indices.to(parameter.device),
-        node_mask=node_mask.to(parameter.device),
+        token_ids=compact_tokens,
+        parent_indices=compact_parents,
+        node_mask=torch.ones_like(compact_tokens, dtype=torch.bool),
+    )
+    if original.numel() == token_ids.numel():
+        return compact
+    nodes = token_ids.numel()
+    logits = compact.router_logits.new_zeros(
+        nodes, *compact.router_logits.shape[1:]
+    )
+    ids = compact.selected_ids.new_full(
+        (nodes, *compact.selected_ids.shape[1:]), -1
+    )
+    weights = compact.selected_weights.new_zeros(
+        nodes, *compact.selected_weights.shape[1:]
+    )
+    hidden = compact.hidden_states.new_zeros(
+        nodes, *compact.hidden_states.shape[1:]
+    )
+    logits[original] = compact.router_logits
+    ids[original] = compact.selected_ids
+    weights[original] = compact.selected_weights
+    hidden[original] = compact.hidden_states
+    vocabulary = None
+    if compact.vocabulary_log_probabilities is not None:
+        vocabulary = compact.vocabulary_log_probabilities.new_full(
+            (nodes, compact.vocabulary_log_probabilities.shape[-1]), -torch.inf
+        )
+        vocabulary[original] = compact.vocabulary_log_probabilities
+    caches: list[Any | None] = [None] * nodes
+    for compact_index, original_index in enumerate(original.tolist()):
+        caches[original_index] = compact.caches[compact_index]
+    valid = node_mask.bool().to(logits.device)[:, None].expand(
+        -1, logits.shape[1]
+    )
+    return ShadowTreeResult(
+        logits, ids, weights, hidden, valid, tuple(caches), vocabulary
     )
 
 

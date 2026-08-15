@@ -5,7 +5,12 @@ from torch import nn
 
 from harp_rtt.shadow_backbone import InstalledShadowBackbone
 from harp_rtt.shadow_bundle import LOCAL_SCHEMA, load_shadow_bundle
-from harp_rtt.shadow_expert import IndexedShadowExperts, ShadowExpertConfig
+from harp_rtt.shadow_expert import (
+    BasisDraftConfig,
+    IndexedShadowExperts,
+    RouteConditionedBasisExperts,
+    ShadowExpertConfig,
+)
 from harp_rtt.shadow_rollout_training import (
     ShadowTrainingHooks,
     cache_to_cpu,
@@ -217,3 +222,54 @@ def test_untrained_indexed_bundle_still_requires_fallback(tmp_path) -> None:
         assert "without S1 fallback" in str(error)
     else:  # pragma: no cover - fail-closed contract
         raise AssertionError("untrained indexed bundle loaded without fallback")
+
+
+def test_basisdraft_bundle_loads_all_layers_without_native_experts(tmp_path) -> None:
+    config = BasisDraftConfig(
+        hidden_width=4, experts=4, exact_k=2, basis_count=2, basis_width=1
+    )
+    modules = tuple(RouteConditionedBasisExperts(config) for _ in range(40))
+    source = "c" * 40
+    target = "d" * 64
+    references = []
+    for layer, module in enumerate(modules):
+        directory = tmp_path / f"basis_{layer:02d}"
+        directory.mkdir()
+        state = {
+            name: value.detach().clone() for name, value in module.state_dict().items()
+        }
+        references.append(state)
+        torch.save(
+            {
+                "schema": LOCAL_SCHEMA,
+                "mode": "basisdraft_all8",
+                "layer": layer,
+                "source_commit": source,
+                "target_checkpoint_index_sha256": target,
+                "model_state_dict": state,
+                "basis_count": 2,
+                "basis_width": 1,
+                "closed_loop_authorized": True,
+                "formal_validation_opened": False,
+                "calibration_opened": False,
+                "sealed_test_opened": False,
+            },
+            directory / f"shadow_basisdraft_all8_layer_{layer:02d}.pt",
+        )
+        with torch.no_grad():
+            module.gate_up_proj.zero_()
+    installed = InstalledShadowBackbone(
+        model=nn.Identity(),
+        mode="basisdraft_all8",
+        native_experts=tuple([None] * 40),
+        shadow_experts=modules,
+    )
+    paths = load_shadow_bundle(
+        installed,
+        tmp_path,
+        source_commit=source,
+        target_checkpoint_index_sha256=target,
+    )
+    assert len(paths) == 40
+    assert torch.equal(modules[7].gate_up_proj, references[7]["gate_up_proj"])
+    assert all(not hasattr(module, "native_experts") for module in modules)

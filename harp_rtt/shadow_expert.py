@@ -60,6 +60,34 @@ class ShadowExpertConfig:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class BasisDraftConfig:
+    """Geometry for the resident route-conditioned functional basis."""
+
+    hidden_width: int = 2048
+    experts: int = 256
+    exact_k: int = 8
+    basis_count: int = 16
+    basis_width: int = 32
+
+    def validate(self) -> None:
+        for name in (
+            "hidden_width", "experts", "exact_k", "basis_count", "basis_width"
+        ):
+            if int(getattr(self, name)) < 1:
+                raise ValueError(f"{name} must be positive")
+        if self.exact_k > self.experts:
+            raise ValueError("exact_k exceeds the expert count")
+
+    @property
+    def total_intermediate_width(self) -> int:
+        return self.basis_count * self.basis_width
+
+    def to_dict(self) -> dict[str, int]:
+        self.validate()
+        return asdict(self)
+
+
 def _validate_routed_inputs(
     hidden_states: Tensor,
     top_k_index: Tensor,
@@ -266,6 +294,114 @@ class SharedResidualExperts(nn.Module):
             hidden_width=self.draft_expert.hidden_width, experts=self.experts,
         )
         return self.draft_expert(hidden).reshape(*leading, hidden.shape[-1])
+
+
+class RouteConditionedBasisExperts(nn.Module):
+    """All-resident functional basis for the complete weighted routed sum.
+
+    For selected route ``(e_i,w_i)`` this forms
+    ``alpha_j = sum_i w_i*c[e_i,j]`` and returns
+    ``sum_j alpha_j*B_j(x)``. It never owns or reads a target expert.
+    """
+
+    def __init__(
+        self,
+        config: BasisDraftConfig = BasisDraftConfig(),
+    ) -> None:
+        super().__init__()
+        config.validate()
+        self.config = config
+        self.gate_up_proj = nn.Parameter(torch.empty(
+            config.basis_count,
+            2 * config.basis_width,
+            config.hidden_width,
+        ))
+        self.down_proj = nn.Parameter(torch.empty(
+            config.basis_count,
+            config.hidden_width,
+            config.basis_width,
+        ))
+        self.expert_coefficients = nn.Parameter(torch.ones(
+            config.experts, config.basis_count
+        ))
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        bound = 1.0 / math.sqrt(self.config.hidden_width)
+        nn.init.uniform_(self.gate_up_proj, -bound, bound)
+        nn.init.uniform_(self.down_proj, -bound, bound)
+        nn.init.ones_(self.expert_coefficients)
+
+    @torch.no_grad()
+    def initialize_from_shared(self, draft: SwiGLUDraftExpert) -> None:
+        """Split a route-agnostic expert into equivalent basis blocks."""
+
+        cfg = self.config
+        if (
+            draft.hidden_width != cfg.hidden_width
+            or draft.intermediate_width != cfg.total_intermediate_width
+        ):
+            raise ValueError("shared draft geometry cannot initialize BasisDraft")
+        gate, up = draft.gate_up_proj.weight.detach().chunk(2, dim=0)
+        for basis in range(cfg.basis_count):
+            start = basis * cfg.basis_width
+            stop = start + cfg.basis_width
+            self.gate_up_proj[basis, : cfg.basis_width].copy_(
+                gate[start:stop].to(self.gate_up_proj)
+            )
+            self.gate_up_proj[basis, cfg.basis_width :].copy_(
+                up[start:stop].to(self.gate_up_proj)
+            )
+            self.down_proj[basis].copy_(
+                draft.down_proj.weight.detach()[:, start:stop].to(self.down_proj)
+            )
+        self.expert_coefficients.fill_(1.0)
+
+    def _basis_values(self, hidden: Tensor) -> Tensor:
+        projection = torch.einsum(
+            "bd,jmd->bjm", hidden, self.gate_up_proj
+        )
+        gate, up = projection.chunk(2, dim=-1)
+        return torch.einsum(
+            "bjw,jdw->bjd", F.silu(gate) * up, self.down_proj
+        )
+
+    def selected_unweighted(
+        self, hidden_states: Tensor, selected_ids: Tensor
+    ) -> Tensor:
+        """Return selected expert approximations for label-only distillation."""
+
+        cfg = self.config
+        hidden, ids, _weights, leading = _validate_routed_inputs(
+            hidden_states,
+            selected_ids,
+            torch.ones_like(selected_ids, dtype=hidden_states.dtype),
+            hidden_width=cfg.hidden_width,
+            experts=cfg.experts,
+        )
+        basis = self._basis_values(hidden)
+        coefficients = F.embedding(ids, self.expert_coefficients).to(basis.dtype)
+        values = torch.einsum("bkj,bjd->bkd", coefficients, basis)
+        return values.reshape(*leading, ids.shape[-1], cfg.hidden_width)
+
+    def forward(
+        self, hidden_states: Tensor, top_k_index: Tensor, top_k_weights: Tensor
+    ) -> Tensor:
+        cfg = self.config
+        hidden, ids, weights, leading = _validate_routed_inputs(
+            hidden_states,
+            top_k_index,
+            top_k_weights,
+            hidden_width=cfg.hidden_width,
+            experts=cfg.experts,
+        )
+        if ids.shape[-1] != cfg.exact_k:
+            raise ValueError("BasisDraft requires the complete native top-k route")
+        coefficients = F.embedding(ids, self.expert_coefficients).to(hidden.dtype)
+        alpha = (coefficients * weights[..., None]).sum(dim=1)
+        basis = self._basis_values(hidden)
+        routed = torch.einsum("bj,bjd->bd", alpha, basis)
+        return routed.reshape(*leading, cfg.hidden_width)
 
 
 class IndexedShadowExperts(nn.Module):
@@ -586,14 +722,29 @@ def shadow_pool_parameter_count(
     return 3 * layers * experts * hidden_width * shadow_width
 
 
+def basisdraft_parameter_count(
+    *, layers: int = 40, experts: int = 256, hidden_width: int = 2048,
+    basis_count: int = 16, basis_width: int = 32,
+) -> int:
+    values = (layers, experts, hidden_width, basis_count, basis_width)
+    if any(value < 1 for value in values):
+        raise ValueError("BasisDraft dimensions must be positive")
+    per_layer_basis = 3 * basis_count * hidden_width * basis_width
+    per_layer_coefficients = experts * basis_count
+    return layers * (per_layer_basis + per_layer_coefficients)
+
+
 __all__ = [
+    "BasisDraftConfig",
     "ExactTop1PlusDraftExperts",
     "IndexedShadowExperts",
     "PackedInt4TopKExperts",
+    "RouteConditionedBasisExperts",
     "RoutedExperts",
     "ShadowExpertConfig",
     "SharedResidualExperts",
     "SwiGLUDraftExpert",
+    "basisdraft_parameter_count",
     "shadow_pool_parameter_count",
     "dequantize_groupwise_int4",
     "quantize_groupwise_int4",
