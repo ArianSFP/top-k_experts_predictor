@@ -143,6 +143,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--resident-control-rank", type=int, choices=(32, 64, 128), default=128
     )
+    parser.add_argument("--resident-tail-zero-init", action="store_true")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--preflight-only", action="store_true")
@@ -1133,6 +1134,11 @@ def main() -> None:
         )
     if args.mode == "resident_int4_tail_control" and resident_stage:
         raise ValueError("resident v2 is a trainable stage, not a v1 export")
+    if args.resident_tail_zero_init and (
+        args.mode != "resident_int4_tail_control"
+        or args.resident_v2_phase not in {"tail", "joint"}
+    ):
+        raise ValueError("zero-tail initialization requires a trainable v2 tail")
     if args.resident_eval_only and not args.next_router_agreement:
         raise ValueError("resident hybrid evaluation requires next-router labels")
     if args.resident_allocation_plan is not None and args.mode not in {
@@ -1363,6 +1369,9 @@ def main() -> None:
             )
             if set(incompatible.missing_keys) != expected_missing or incompatible.unexpected_keys:
                 raise ValueError("resident v2 parent state is not exactly compatible")
+            if args.resident_tail_zero_init:
+                with torch.no_grad():
+                    model.fallback.draft_expert.down_proj.weight.zero_()
             model.requires_grad_(False)
             if args.resident_v2_phase in {"tail", "joint"}:
                 model.fallback.requires_grad_(True)
@@ -1450,6 +1459,10 @@ def main() -> None:
         "resident_allocation_plan_sha256": resident_plan_sha256,
         "resident_v2_phase": (
             args.resident_v2_phase
+            if args.mode == "resident_int4_tail_control" else None
+        ),
+        "resident_tail_zero_init": (
+            args.resident_tail_zero_init
             if args.mode == "resident_int4_tail_control" else None
         ),
         "resident_control_rank": (
@@ -1794,6 +1807,10 @@ def main() -> None:
         ),
         "resident_v2_phase": (
             args.resident_v2_phase
+            if args.mode == "resident_int4_tail_control" else None
+        ),
+        "resident_tail_zero_init": (
+            args.resident_tail_zero_init
             if args.mode == "resident_int4_tail_control" else None
         ),
         "resident_control_rank": (
