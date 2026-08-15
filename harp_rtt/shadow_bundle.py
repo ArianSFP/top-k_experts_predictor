@@ -92,12 +92,14 @@ def resident_ids_from_bundle(
 ) -> tuple[torch.Tensor, ...]:
     """Read the frozen per-layer resident namespace before model construction."""
 
-    paths = discover_layer_checkpoints(root, "resident_int4_shared")
+    if mode not in {"resident_int4_only", "resident_int4_shared"}:
+        raise ValueError("resident namespace mode is not deployable")
+    paths = discover_layer_checkpoints(root, mode)
     result = []
     for layer, path in enumerate(paths):
         value = _load_value(
             path,
-            expected_mode="resident_int4_shared",
+            expected_mode=CHECKPOINT_MODE[mode],
             expected_layer=layer,
             source_commit=source_commit,
             target_checkpoint_index_sha256=target_checkpoint_index_sha256,
@@ -164,9 +166,12 @@ def load_shadow_bundle(
             expected = {
                 "resident_ids", "expert_to_resident",
                 "gate_up_packed", "gate_up_scales", "down_packed", "down_scales",
-                "fallback.draft_expert.gate_up_proj.weight",
-                "fallback.draft_expert.down_proj.weight",
             }
+            if installed.mode != "resident_int4_only":
+                expected |= {
+                    "fallback.draft_expert.gate_up_proj.weight",
+                    "fallback.draft_expert.down_proj.weight",
+                }
             if installed.mode == "resident_int4_tail_control" and layer < 39:
                 expected |= {
                     "router_control.expert_codes.weight",

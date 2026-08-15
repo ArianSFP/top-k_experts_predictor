@@ -72,7 +72,7 @@ def parse_args() -> argparse.Namespace:
         choices=(
             "basisdraft_all8", "exact_top1_plus_draft", "shared_width128",
             "shared_width512", "indexed_width16", "int4_top4",
-            "resident_int4_shared",
+            "resident_int4_only", "resident_int4_shared",
         ),
         required=True,
     )
@@ -404,7 +404,7 @@ def main() -> None:
         raise ValueError("native top-k diagnostic may not load a learned bundle")
     if args.diagnostic_unpromoted_bundle and args.mode not in {
         "basisdraft_all8", "exact_top1_plus_draft", "shared_width512",
-        "indexed_width16", "int4_top4", "resident_int4_shared"
+        "indexed_width16", "int4_top4", "resident_int4_only", "resident_int4_shared"
     }:
         raise ValueError(
             "the unpromoted diagnostic override is restricted to shadow controls"
@@ -447,13 +447,14 @@ def main() -> None:
 
     checkpoint = IndexedCheckpoint(args.model)
     resident_ids_by_layer = None
-    if args.mode == "resident_int4_shared":
+    if args.mode in {"resident_int4_only", "resident_int4_shared"}:
         assert args.layer_checkpoint_root is not None
         resident_ids_by_layer = resident_ids_from_bundle(
             args.layer_checkpoint_root,
             source_commit=args.source_commit,
             target_checkpoint_index_sha256=checkpoint.index_sha256,
             allow_unpromoted_diagnostic=args.diagnostic_unpromoted_bundle,
+            mode=args.mode,
         )
     args.output.mkdir(parents=True)
     manifest = {
