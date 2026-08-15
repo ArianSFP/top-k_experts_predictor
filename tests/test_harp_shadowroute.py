@@ -227,6 +227,9 @@ def test_basisdraft_preserves_expert_identity_weights_and_gradients():
     with torch.no_grad():
         module.gate_up_proj.fill_(1.0)
         module.down_proj.fill_(1.0)
+        module.expert_gate_up_proj.fill_(0.5)
+        module.expert_down_proj[0].fill_(0.25)
+        module.expert_down_proj[3].fill_(0.5)
         module.expert_coefficients.copy_(torch.tensor([
             [1.0, 0.0], [0.0, 1.0], [2.0, 0.0], [0.0, 3.0]
         ])[..., None])
@@ -245,6 +248,10 @@ def test_basisdraft_preserves_expert_identity_weights_and_gradients():
     assert module.expert_coefficients.grad[0].abs().sum() > 0
     assert module.expert_coefficients.grad[3].abs().sum() > 0
     assert module.expert_coefficients.grad[1:3].abs().sum() == 0
+    assert module.expert_down_proj.grad is not None
+    assert module.expert_down_proj.grad[0].abs().sum() > 0
+    assert module.expert_down_proj.grad[3].abs().sum() > 0
+    assert module.expert_down_proj.grad[1:3].abs().sum() == 0
 
 
 def test_basisdraft_rejects_truncated_route():

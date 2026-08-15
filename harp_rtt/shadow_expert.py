@@ -378,6 +378,21 @@ class RouteConditionedBasisExperts(nn.Module):
         gate, up = projection.chunk(2, dim=-1)
         return F.silu(gate) * up
 
+    def _selected_expert_residuals(self, hidden: Tensor, ids: Tensor) -> Tensor:
+        values = hidden.new_zeros(
+            hidden.shape[0], ids.shape[1], self.config.hidden_width
+        )
+        for expert_id in torch.unique(ids).tolist():
+            positions = (ids == int(expert_id)).nonzero(as_tuple=False)
+            token_index, slot_index = positions[:, 0], positions[:, 1]
+            gate, up = F.linear(
+                hidden[token_index], self.expert_gate_up_proj[int(expert_id)]
+            ).chunk(2, -1)
+            values[token_index, slot_index] = F.linear(
+                F.silu(gate) * up, self.expert_down_proj[int(expert_id)]
+            )
+        return values
+
     def selected_unweighted(
         self, hidden_states: Tensor, selected_ids: Tensor
     ) -> Tensor:
@@ -396,17 +411,7 @@ class RouteConditionedBasisExperts(nn.Module):
         values = torch.einsum(
             "bkjw,bjw,jdw->bkd", coefficients, basis, self.down_proj
         )
-        residual = torch.zeros_like(values)
-        for expert_id in torch.unique(ids).tolist():
-            positions = (ids == int(expert_id)).nonzero(as_tuple=False)
-            token_index, slot_index = positions[:, 0], positions[:, 1]
-            gate, up = F.linear(
-                hidden[token_index], self.expert_gate_up_proj[int(expert_id)]
-            ).chunk(2, -1)
-            residual[token_index, slot_index] = F.linear(
-                F.silu(gate) * up, self.expert_down_proj[int(expert_id)]
-            )
-        values = values + residual
+        values = values + self._selected_expert_residuals(hidden, ids)
         return values.reshape(*leading, ids.shape[-1], cfg.hidden_width)
 
     def forward(
@@ -426,6 +431,8 @@ class RouteConditionedBasisExperts(nn.Module):
         alpha = (coefficients * weights[..., None, None]).sum(dim=1)
         basis = self._basis_activations(hidden)
         routed = torch.einsum("bjw,bjw,jdw->bd", alpha, basis, self.down_proj)
+        residuals = self._selected_expert_residuals(hidden, ids)
+        routed = routed + (residuals * weights[..., None]).sum(dim=1)
         return routed.reshape(*leading, cfg.hidden_width)
 
 
