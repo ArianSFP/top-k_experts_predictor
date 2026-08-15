@@ -14,6 +14,7 @@ from harp_rtt.shadow_expert import (
     IndexedShadowExperts,
     PackedInt4ResidentExperts,
     RouteConditionedBasisExperts,
+    RouterVisibleTailControl,
     ShadowExpertConfig,
     SharedResidualExperts,
     SwiGLUDraftExpert,
@@ -281,6 +282,81 @@ def test_basisdraft_bundle_loads_all_layers_without_native_experts(tmp_path) -> 
     assert len(paths) == 40
     assert torch.equal(modules[7].gate_up_proj, references[7]["gate_up_proj"])
     assert all(not hasattr(module, "native_experts") for module in modules)
+
+
+
+def test_resident_v2_bundle_loads_control_without_serializing_router(tmp_path) -> None:
+    source = "1" * 40
+    target = "2" * 64
+    resident_ids = torch.tensor([0, 2])
+    gate_up = torch.randn(4, 4, 4)
+    down = torch.randn(4, 4, 2)
+    modules = []
+    references = []
+    for layer in range(40):
+        control = None
+        if layer < 39:
+            control = RouterVisibleTailControl(
+                hidden_width=4, experts=4, rank=2, dtype=torch.float32
+            )
+            control.bind_next_router(torch.randn(4, 4))
+        module = PackedInt4ResidentExperts.from_target(
+            resident_ids,
+            SharedResidualExperts(SwiGLUDraftExpert(4, 2), experts=4),
+            gate_up,
+            down,
+            exact_k=2,
+            group_size=2,
+            router_control=control,
+        )
+        state = {
+            name: value.detach().clone()
+            for name, value in module.state_dict().items()
+        }
+        assert not any("_next_router_weight" in name for name in state)
+        references.append(state)
+        directory = tmp_path / f"resident_v2_{layer:02d}"
+        directory.mkdir()
+        torch.save(
+            {
+                "schema": LOCAL_SCHEMA,
+                "mode": "resident_tail_control_v2",
+                "layer": layer,
+                "source_commit": source,
+                "target_checkpoint_index_sha256": target,
+                "model_state_dict": state,
+                "resident_expert_ids": resident_ids,
+                "resident_count": 2,
+                "closed_loop_authorized": True,
+                "formal_validation_opened": False,
+                "calibration_opened": False,
+                "sealed_test_opened": False,
+            },
+            directory / f"shadow_resident_tail_control_v2_layer_{layer:02d}.pt",
+        )
+        with torch.no_grad():
+            module.fallback.draft_expert.gate_up_proj.weight.zero_()
+            if control is not None:
+                control.expert_codes.weight.fill_(3.0)
+        modules.append(module)
+    installed = InstalledShadowBackbone(
+        model=nn.Identity(),
+        mode="resident_int4_tail_control",
+        native_experts=tuple([None] * 40),
+        shadow_experts=tuple(modules),
+    )
+    paths = load_shadow_bundle(
+        installed,
+        tmp_path,
+        source_commit=source,
+        target_checkpoint_index_sha256=target,
+    )
+    assert len(paths) == 40
+    assert torch.equal(
+        modules[7].router_control.expert_codes.weight,
+        references[7]["router_control.expert_codes.weight"],
+    )
+    assert modules[39].router_control is None
 
 
 def test_resident_bundle_binds_namespace_and_loads_without_native_experts(tmp_path) -> None:

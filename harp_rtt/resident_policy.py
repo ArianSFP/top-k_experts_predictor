@@ -23,6 +23,79 @@ class ResidentAllocation:
         return sum(values) / len(values)
 
 
+
+
+@dataclass(frozen=True)
+class ResidentUtilityAllocation:
+    resident_ids: tuple[Tensor, ...]
+    resident_counts: tuple[int, ...]
+    captured_utility: tuple[float, ...]
+    total_utility: tuple[float, ...]
+
+    @property
+    def mean_utility_coverage(self) -> float:
+        values = [
+            captured / max(total, 1e-12)
+            for captured, total in zip(
+                self.captured_utility, self.total_utility, strict=True
+            )
+        ]
+        return sum(values) / len(values)
+
+
+def allocate_resident_utility(
+    expert_utility: Tensor,
+    *,
+    total_residents: int,
+    minimum_per_layer: int = 64,
+    maximum_per_layer: int = 128,
+) -> ResidentUtilityAllocation:
+    """Spend equal-cost cells on stable, non-negative measured utility."""
+
+    if expert_utility.ndim != 2 or expert_utility.shape[0] < 1:
+        raise ValueError("expert utility must be [layers,experts]")
+    if not expert_utility.is_floating_point():
+        raise TypeError("expert utility must use floating point")
+    if not torch.isfinite(expert_utility).all() or bool((expert_utility < 0).any()):
+        raise ValueError("expert utility must be finite and non-negative")
+    layers, experts = expert_utility.shape
+    if not 1 <= minimum_per_layer <= maximum_per_layer <= experts:
+        raise ValueError("resident per-layer bounds are invalid")
+    if not layers * minimum_per_layer <= total_residents <= layers * maximum_per_layer:
+        raise ValueError("resident total lies outside the per-layer bounds")
+    ranking = torch.argsort(
+        expert_utility, dim=-1, descending=True, stable=True
+    )
+    per_layer = [int(minimum_per_layer)] * layers
+    remaining = int(total_residents - layers * minimum_per_layer)
+    while remaining:
+        candidates = [
+            (
+                float(expert_utility[layer, ranking[layer, per_layer[layer]]]),
+                -layer,
+                layer,
+            )
+            for layer in range(layers)
+            if per_layer[layer] < maximum_per_layer
+        ]
+        if not candidates:
+            raise RuntimeError("resident utility allocation exhausted capacity")
+        # Stable ties prefer the lower layer index.
+        _gain, _tie, best_layer = max(candidates)
+        per_layer[best_layer] += 1
+        remaining -= 1
+    ids = tuple(
+        ranking[layer, :per_layer[layer]].clone() for layer in range(layers)
+    )
+    captured = tuple(
+        float(expert_utility[layer, ids[layer]].sum()) for layer in range(layers)
+    )
+    totals = tuple(float(expert_utility[layer].sum()) for layer in range(layers))
+    return ResidentUtilityAllocation(
+        ids, tuple(per_layer), captured, totals
+    )
+
+
 def allocate_resident_experts(
     expert_counts: Tensor,
     *,
@@ -81,4 +154,9 @@ def allocate_resident_experts(
     return ResidentAllocation(ids, tuple(per_layer), covered, totals)
 
 
-__all__ = ["ResidentAllocation", "allocate_resident_experts"]
+__all__ = [
+    "ResidentAllocation",
+    "ResidentUtilityAllocation",
+    "allocate_resident_experts",
+    "allocate_resident_utility",
+]

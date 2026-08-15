@@ -23,6 +23,7 @@ from .shadow_expert import (
     PackedInt4ResidentExperts,
     PackedInt4TopKExperts,
     RouteConditionedBasisExperts,
+    RouterVisibleTailControl,
     ShadowExpertConfig,
     SharedResidualExperts,
     SwiGLUDraftExpert,
@@ -37,6 +38,7 @@ SHADOW_MODES = (
     "indexed_width16",
     "int4_top4",
     "resident_int4_shared",
+    "resident_int4_tail_control",
 )
 
 
@@ -88,13 +90,14 @@ def install_shadow_experts(
     basis_width: int = 32,
     basis_expert_residual_width: int = 2,
     resident_ids_by_layer: Sequence[torch.Tensor] | None = None,
+    resident_control_rank: int = 128,
 ) -> InstalledShadowBackbone:
     """Replace only routed experts in an already-materialized official model."""
 
     if mode not in SHADOW_MODES:
         raise ValueError(f"unknown ShadowRoute mode {mode!r}")
     validate_shadow_target_config(resolve_text_model(model).config)
-    if mode == "resident_int4_shared" and (
+    if mode in {"resident_int4_shared", "resident_int4_tail_control"} and (
         resident_ids_by_layer is None or len(resident_ids_by_layer) != 40
     ):
         raise ValueError("resident hybrid requires exactly 40 expert-ID vectors")
@@ -125,12 +128,20 @@ def install_shadow_experts(
             draft = SwiGLUDraftExpert(2048, width).to(device=device, dtype=dtype)
             replacement = SharedResidualExperts(draft, experts=256)
             native.append(original if retain_native else None)
-        elif mode == "resident_int4_shared":
+        elif mode in {"resident_int4_shared", "resident_int4_tail_control"}:
             assert resident_ids_by_layer is not None
+            control = (
+                RouterVisibleTailControl(
+                    rank=resident_control_rank, device=device, dtype=dtype
+                )
+                if mode == "resident_int4_tail_control" and layer_id < 39
+                else None
+            )
             replacement = PackedInt4ResidentExperts(
                 resident_ids_by_layer[layer_id],
                 SharedResidualExperts(SwiGLUDraftExpert(2048, 512), experts=256),
                 device=device,
+                router_control=control,
             ).to(device=device, dtype=dtype)
             native.append(original if retain_native else None)
         elif mode == "indexed_width16":
@@ -153,6 +164,14 @@ def install_shadow_experts(
             native.append(original if retain_native else None)
         layer.mlp.experts = replacement
         installed.append(replacement)
+    if mode == "resident_int4_tail_control":
+        layers = resolve_text_layers(model)
+        for layer_id, module in enumerate(installed[:-1]):
+            assert isinstance(module, PackedInt4ResidentExperts)
+            assert module.router_control is not None
+            module.router_control.bind_next_router(
+                layers[layer_id + 1].mlp.gate.weight
+            )
     for parameter in resolve_text_model(model).parameters():
         parameter.requires_grad_(False)
     for module in installed:
@@ -183,12 +202,14 @@ def build_selective_shadow_text_model(
     basis_width: int = 32,
     basis_expert_residual_width: int = 2,
     resident_ids_by_layer: Sequence[torch.Tensor] | None = None,
+    resident_control_rank: int = 128,
 ) -> tuple[nn.Module, SelectiveLoadReport]:
     """Build the exact non-expert text stack without native expert allocation."""
 
     if mode not in {
         "basisdraft_all8", "shared_width128", "shared_width512",
         "indexed_width16", "resident_int4_shared",
+        "resident_int4_tail_control",
     }:
         raise ValueError("selective deployment supports only resident shadow modes")
     try:
@@ -203,7 +224,7 @@ def build_selective_shadow_text_model(
     validate_shadow_target_config(config)
     with torch.device("meta"):
         text_model = Qwen3_5MoeTextModel(config)
-    if mode == "resident_int4_shared" and (
+    if mode in {"resident_int4_shared", "resident_int4_tail_control"} and (
         resident_ids_by_layer is None or len(resident_ids_by_layer) != 40
     ):
         raise ValueError("resident hybrid requires exactly 40 expert-ID vectors")
@@ -219,11 +240,17 @@ def build_selective_shadow_text_model(
             replacement: nn.Module = SharedResidualExperts(
                 SwiGLUDraftExpert(2048, width), experts=256
             )
-        elif mode == "resident_int4_shared":
+        elif mode in {"resident_int4_shared", "resident_int4_tail_control"}:
             assert resident_ids_by_layer is not None
+            control = (
+                RouterVisibleTailControl(rank=resident_control_rank)
+                if mode == "resident_int4_tail_control" and layer_id < 39
+                else None
+            )
             replacement = PackedInt4ResidentExperts(
                 resident_ids_by_layer[layer_id],
                 SharedResidualExperts(SwiGLUDraftExpert(2048, 512), experts=256),
+                router_control=control,
             )
         else:
             replacement = IndexedShadowExperts(
@@ -235,6 +262,14 @@ def build_selective_shadow_text_model(
         layer.mlp.experts = replacement.to(device=device, dtype=torch.bfloat16)
     checkpoint = IndexedCheckpoint(model_path)
     report = load_exact_nonexpert_parameters(text_model, checkpoint, device=device)
+    if mode == "resident_int4_tail_control":
+        for layer_id, layer in enumerate(text_model.layers[:-1]):
+            module = layer.mlp.experts
+            assert isinstance(module, PackedInt4ResidentExperts)
+            assert module.router_control is not None
+            module.router_control.bind_next_router(
+                text_model.layers[layer_id + 1].mlp.gate.weight
+            )
     return text_model, report
 
 

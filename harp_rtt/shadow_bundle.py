@@ -27,6 +27,7 @@ CHECKPOINT_MODE = {
     "indexed_width16": "s2_indexed",
     "int4_top4": "int4_top4",
     "resident_int4_shared": "resident_int4_shared",
+    "resident_int4_tail_control": "resident_tail_control_v2",
 }
 
 
@@ -164,6 +165,12 @@ def load_shadow_bundle(
                 "fallback.draft_expert.gate_up_proj.weight",
                 "fallback.draft_expert.down_proj.weight",
             }
+            if installed.mode == "resident_int4_tail_control" and layer < 39:
+                expected |= {
+                    "router_control.expert_codes.weight",
+                    "router_control.hidden_projection.weight",
+                    "router_control.router_delta_projection.weight",
+                }
             if set(state) != expected:
                 raise ValueError("resident INT4 hybrid shard state is incomplete")
             ids = value.get("resident_expert_ids")

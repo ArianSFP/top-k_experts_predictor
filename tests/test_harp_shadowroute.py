@@ -33,11 +33,13 @@ from harp_rtt.shadow_expert import (
     PackedInt4TopKExperts,
     PackedInt4ResidentExperts,
     RouteConditionedBasisExperts,
+    RouterVisibleTailControl,
     ShadowExpertConfig,
     SharedResidualExperts,
     SwiGLUDraftExpert,
     basisdraft_parameter_count,
     resident_int4_storage_bytes,
+    resident_tail_control_storage_bytes,
     shadow_pool_parameter_count,
     target_neuron_importance,
     dequantize_groupwise_int4,
@@ -45,7 +47,10 @@ from harp_rtt.shadow_expert import (
     target_selected_expert_outputs,
 )
 from harp_rtt.shadow_route import raw_mtp_prior_mixture, shadow_lm_path_posterior
-from harp_rtt.resident_policy import allocate_resident_experts
+from harp_rtt.resident_policy import (
+    allocate_resident_experts,
+    allocate_resident_utility,
+)
 from harp_rtt.shadow_training import (
     s0_scale_gate,
     selected_expert_distillation_loss,
@@ -55,6 +60,7 @@ from harp_rtt.shadow_training import (
 from runpod.train_shadow_experts_local import (
     ShadowGeneratedTokenDataset,
     next_router_agreement_loss,
+    objective,
 )
 
 
@@ -168,6 +174,81 @@ def test_next_router_agreement_teacher_forcing_and_gradient():
     loss.backward()
     assert predicted.grad is not None
     assert torch.isfinite(predicted.grad).all()
+
+
+
+def test_resident_v2_objective_trains_tail_and_missing_route_control():
+    torch.manual_seed(19)
+    hidden = torch.randn(2, 1, 4)
+    ids = torch.tensor([[[0, 1]], [[2, 3]]])
+    weights = torch.tensor([[[0.6, 0.4]], [[0.55, 0.45]]])
+    gate_up = torch.randn(256, 4, 4)
+    down = torch.randn(256, 4, 2)
+    next_router = torch.randn(256, 4)
+    next_norm = torch.randn(4)
+    control = RouterVisibleTailControl(
+        hidden_width=4, experts=256, rank=2, dtype=torch.float32
+    )
+    control.bind_next_router(next_router)
+    model = PackedInt4ResidentExperts.from_target(
+        torch.tensor([0]),
+        SharedResidualExperts(SwiGLUDraftExpert(4, 2), experts=256),
+        gate_up,
+        down,
+        exact_k=2,
+        group_size=2,
+        router_control=control,
+    )
+    routed_target = torch.randn(2, 1, 4)
+    current_u = torch.randn(2, 1, 4)
+    shared = torch.randn(2, 1, 4)
+    current_xplus = current_u + shared + routed_target
+    next_u = current_xplus + torch.randn(2, 1, 4)
+    normalized = next_u * torch.rsqrt(
+        next_u.square().mean(-1, keepdim=True) + 1e-6
+    ) * (1.0 + next_norm)
+    teacher_logits = torch.nn.functional.linear(normalized, next_router)
+    teacher_ids = torch.argsort(
+        teacher_logits, dim=-1, descending=True, stable=True
+    )[..., :8]
+    host = {
+        "metadata": {"request_id": ["a", "b"]},
+        "inputs": {},
+        "targets": {
+            "future_router_inputs": hidden,
+            "future_selected_ids": ids,
+            "future_execution_weights": weights,
+            "future_available": torch.ones(2, 1, dtype=torch.bool),
+            "future_states": {
+                "routed_expert_output_delta_r": routed_target,
+                "post_attention_residual_u": current_u,
+                "post_moe_residual_xplus": current_xplus,
+                "shared_expert_output_delta_s": shared,
+                "next_post_attention_residual_u": next_u,
+                "next_raw_target_router_logits": teacher_logits,
+                "next_selected_expert_ids": teacher_ids,
+            },
+        },
+    }
+    loss, parts, *_ = objective(
+        model,
+        host,
+        mode="resident_int4_tail_control",
+        layer=0,
+        device=torch.device("cpu"),
+        gate_up=gate_up,
+        down=down,
+        next_norm_weight=next_norm,
+        next_router_weight=next_router,
+        router_agreement_weight=1.0,
+        individual_loss_weight=0.0,
+    )
+    assert float(parts["tail_huber"]) > 0
+    assert float(parts["control_huber"]) > 0
+    loss.backward()
+    assert model.fallback.draft_expert.gate_up_proj.weight.grad is not None
+    assert model.router_control is not None
+    assert model.router_control.expert_codes.weight.grad is not None
 
 
 def test_exact_top1_plus_draft_uses_only_top1_native():
@@ -437,6 +518,56 @@ def test_resident_int4_uses_exact_residents_and_mass_scaled_fallback():
     assert not hasattr(module, "native_experts")
 
 
+
+def test_resident_tail_control_is_zero_compatible_identity_sensitive_and_nonowning():
+    torch.manual_seed(29)
+    gate_up = torch.randn(4, 4, 4)
+    down = torch.randn(4, 4, 2)
+    draft = SwiGLUDraftExpert(4, 2)
+    router = torch.randn(4, 4)
+    control = RouterVisibleTailControl(
+        hidden_width=4, experts=4, rank=2, dtype=torch.float32
+    )
+    control.bind_next_router(router)
+    module = PackedInt4ResidentExperts.from_target(
+        torch.tensor([0, 2]),
+        SharedResidualExperts(draft, experts=4),
+        gate_up,
+        down,
+        exact_k=2,
+        group_size=2,
+        router_control=control,
+    )
+    hidden = torch.randn(2, 4, requires_grad=True)
+    ids = torch.tensor([[0, 1], [2, 0]])
+    weights = torch.tensor([[0.6, 0.4], [0.55, 0.45]])
+    components = module.forward_components(hidden, ids, weights)
+    assert torch.count_nonzero(components.control_output) == 0
+    assert torch.equal(
+        components.output,
+        components.resident_output + components.tail_output,
+    )
+    assert "_next_router_weight" not in module.state_dict()
+    assert control._next_router_weight.data_ptr() == router.data_ptr()
+    with torch.no_grad():
+        control.expert_codes.weight[1] = torch.tensor([1.0, -0.5])
+    corrected = module.forward_components(hidden, ids, weights)
+    assert corrected.control_output[0].abs().sum() > 0
+    assert corrected.control_output[1].abs().sum() == 0
+    corrected.output.sum().backward()
+    assert control.expert_codes.weight.grad is not None
+    assert control.expert_codes.weight.grad[1].abs().sum() > 0
+    assert control.expert_codes.weight.grad[[0, 2, 3]].abs().sum() == 0
+
+
+def test_resident_tail_control_storage_stays_below_six_gib():
+    v1_bytes = 6_401_871_784
+    control_bytes = resident_tail_control_storage_bytes(rank=128)
+    assert control_bytes == 25_559_040
+    assert v1_bytes + control_bytes == 6_427_430_824
+    assert v1_bytes + control_bytes < 6 * 2**30
+
+
 def test_resident_int4_storage_matches_five_gib_budget():
     size = resident_int4_storage_bytes(residents=80)
     assert size == 5_347_737_600
@@ -465,6 +596,37 @@ def test_resident_allocation_spends_global_budget_on_largest_marginal_gain():
     with pytest.raises(ValueError, match="outside"):
         allocate_resident_experts(
             counts, total_residents=2, minimum_per_layer=1, maximum_per_layer=3
+        )
+
+
+
+def test_resident_utility_allocation_is_stable_and_equal_budget():
+    utility = torch.tensor([
+        [10.0, 9.0, 1.0, 0.0],
+        [10.0, 8.0, 7.0, 0.0],
+        [10.0, 2.0, 1.0, 0.0],
+    ])
+    allocation = allocate_resident_utility(
+        utility,
+        total_residents=7,
+        minimum_per_layer=1,
+        maximum_per_layer=3,
+    )
+    assert allocation.resident_counts == (2, 3, 2)
+    assert torch.equal(allocation.resident_ids[0], torch.tensor([0, 1]))
+    tied = allocate_resident_utility(
+        torch.ones(2, 3),
+        total_residents=3,
+        minimum_per_layer=1,
+        maximum_per_layer=2,
+    )
+    assert tied.resident_counts == (2, 1)
+    with pytest.raises(ValueError, match="finite"):
+        allocate_resident_utility(
+            torch.tensor([[float("nan"), 1.0]]),
+            total_residents=1,
+            minimum_per_layer=1,
+            maximum_per_layer=1,
         )
 
 
