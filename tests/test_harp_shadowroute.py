@@ -205,6 +205,7 @@ def test_basisdraft_split_initializer_exactly_matches_shared_expert():
         basis_width=2,
     ))
     basis.initialize_from_shared(shared)
+    assert torch.count_nonzero(basis.expert_down_proj) == 0
     hidden = torch.randn(7, 4)
     ids = torch.tensor([
         [0, 1, 2], [1, 3, 4], [2, 0, 4], [3, 1, 0],
@@ -397,7 +398,7 @@ def test_shadow_parameter_counts_match_formal_plan():
     assert shadow_pool_parameter_count(
         layers=40, experts=1, hidden_width=2048, shadow_width=128
     ) == 31_457_280
-    assert basisdraft_parameter_count() == 131_072_000
+    assert basisdraft_parameter_count() == 256_901_120
 
 
 def test_tree_runner_isolates_siblings_and_processes_h1_once():

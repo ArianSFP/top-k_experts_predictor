@@ -114,6 +114,7 @@ def load_shadow_bundle(
         elif isinstance(module, RouteConditionedBasisExperts):
             expected = {
                 "gate_up_proj", "down_proj", "expert_coefficients",
+                "expert_gate_up_proj", "expert_down_proj",
             }
             if set(state) != expected:
                 raise ValueError("BasisDraft layer shard state is incomplete")

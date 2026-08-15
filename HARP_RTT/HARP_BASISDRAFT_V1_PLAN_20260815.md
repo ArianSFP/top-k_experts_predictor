@@ -48,10 +48,12 @@ alpha[j,r] = sum_i w_i * c[e_i,j,r]
 delta_routed = sum_j Down[j](alpha[j] * BasisActivation[j](router_input))
 ```
 
-The basis pool contains 125,829,120 weights and the coefficient tables contain
-5,242,880 weights: 131,072,000 parameters total, exactly 250 MiB BF16.
-INT8 is approximately 125 MiB and group-64 INT4 about 67 MiB after BF16 has
-passed. The coefficient table remains BF16.
+The shared basis pool contains 125,829,120 weights and the neuron-coefficient
+tables contain 5,242,880 weights. The first scalar/neuron-only diagnostics did
+not produce a material routing gain, so v1 also includes a zero-initialised
+expert-specific width-2 residual, adding 125,829,120 weights. The complete
+student is 256,901,120 parameters: approximately 490 MiB BF16, 245 MiB INT8,
+or about 130 MiB group-64 INT4. Coefficients remain BF16.
 
 The initializer splits each successful width-512 S0 expert into sixteen
 contiguous width-32 blocks and sets every expert coefficient to one. This is

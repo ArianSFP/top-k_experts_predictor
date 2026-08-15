@@ -69,10 +69,12 @@ class BasisDraftConfig:
     exact_k: int = 8
     basis_count: int = 16
     basis_width: int = 32
+    expert_residual_width: int = 2
 
     def validate(self) -> None:
         for name in (
-            "hidden_width", "experts", "exact_k", "basis_count", "basis_width"
+            "hidden_width", "experts", "exact_k", "basis_count", "basis_width",
+            "expert_residual_width",
         ):
             if int(getattr(self, name)) < 1:
                 raise ValueError(f"{name} must be positive")
@@ -324,6 +326,16 @@ class RouteConditionedBasisExperts(nn.Module):
         self.expert_coefficients = nn.Parameter(torch.ones(
             config.experts, config.basis_count, config.basis_width
         ))
+        self.expert_gate_up_proj = nn.Parameter(torch.empty(
+            config.experts,
+            2 * config.expert_residual_width,
+            config.hidden_width,
+        ))
+        self.expert_down_proj = nn.Parameter(torch.zeros(
+            config.experts,
+            config.hidden_width,
+            config.expert_residual_width,
+        ))
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -331,6 +343,8 @@ class RouteConditionedBasisExperts(nn.Module):
         nn.init.uniform_(self.gate_up_proj, -bound, bound)
         nn.init.uniform_(self.down_proj, -bound, bound)
         nn.init.ones_(self.expert_coefficients)
+        nn.init.uniform_(self.expert_gate_up_proj, -bound, bound)
+        nn.init.zeros_(self.expert_down_proj)
 
     @torch.no_grad()
     def initialize_from_shared(self, draft: SwiGLUDraftExpert) -> None:
@@ -382,6 +396,17 @@ class RouteConditionedBasisExperts(nn.Module):
         values = torch.einsum(
             "bkjw,bjw,jdw->bkd", coefficients, basis, self.down_proj
         )
+        residual = torch.zeros_like(values)
+        for expert_id in torch.unique(ids).tolist():
+            positions = (ids == int(expert_id)).nonzero(as_tuple=False)
+            token_index, slot_index = positions[:, 0], positions[:, 1]
+            gate, up = F.linear(
+                hidden[token_index], self.expert_gate_up_proj[int(expert_id)]
+            ).chunk(2, -1)
+            residual[token_index, slot_index] = F.linear(
+                F.silu(gate) * up, self.expert_down_proj[int(expert_id)]
+            )
+        values = values + residual
         return values.reshape(*leading, ids.shape[-1], cfg.hidden_width)
 
     def forward(
@@ -731,7 +756,10 @@ def basisdraft_parameter_count(
         raise ValueError("BasisDraft dimensions must be positive")
     per_layer_basis = 3 * basis_count * hidden_width * basis_width
     per_layer_coefficients = experts * basis_count * basis_width
-    return layers * (per_layer_basis + per_layer_coefficients)
+    per_layer_residual = 3 * experts * hidden_width * 2
+    return layers * (
+        per_layer_basis + per_layer_coefficients + per_layer_residual
+    )
 
 
 __all__ = [
