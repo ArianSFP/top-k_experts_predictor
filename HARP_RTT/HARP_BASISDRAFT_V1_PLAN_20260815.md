@@ -2,6 +2,11 @@
 
 Date: 2026-08-15
 
+> **Status:** superseded after execution. Scalar/per-neuron BasisDraft and
+> width-2/width-16 expert residuals produced only 0--1.1 point gains. The
+> successful compact successor is the globally budgeted Resident-Shadow v1
+> documented in `HARP_RESIDENT_SHADOW_V1_HANDOFF_20260815.md`.
+
 ## Objective
 
 Compress the successful HARP-ShadowRoute execution teacher into a resident
