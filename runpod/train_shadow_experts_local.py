@@ -44,6 +44,7 @@ from harp_rtt.shadow_expert import (  # noqa: E402
     IndexedShadowExperts,
     PackedInt4ResidentExperts,
     RouteConditionedBasisExperts,
+    RouterVisibleTailControl,
     ShadowExpertConfig,
     SharedResidualExperts,
     SwiGLUDraftExpert,
@@ -72,6 +73,7 @@ MODES = (
     "s2_indexed",
     "basisdraft_all8",
     "resident_int4_shared",
+    "resident_int4_tail_control",
 )
 EFFECTIVE_BATCH = 32
 MICROBATCH_CHOICES = (32, 16, 8, 4, 2, 1)
@@ -133,6 +135,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resident-eval-only", action="store_true")
     parser.add_argument("--resident-export-only", action="store_true")
     parser.add_argument("--resident-allocation-plan", type=Path)
+    parser.add_argument(
+        "--resident-v2-phase",
+        choices=("tail", "control", "joint"),
+        default="joint",
+    )
+    parser.add_argument(
+        "--resident-control-rank", type=int, choices=(32, 64, 128), default=128
+    )
+    parser.add_argument("--resident-tail-zero-init", action="store_true")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--preflight-only", action="store_true")
@@ -565,7 +576,7 @@ def build_student(
         return SwiGLUDraftExpert(2048, 128).to(device=device, dtype=torch.bfloat16)
     if mode == "s1_shared_width512":
         return SwiGLUDraftExpert(2048, 512).to(device=device, dtype=torch.bfloat16)
-    if mode == "resident_int4_shared":
+    if mode in {"resident_int4_shared", "resident_int4_tail_control"}:
         return SwiGLUDraftExpert(2048, 512).to(device=device, dtype=torch.bfloat16)
     if mode == "basisdraft_all8":
         return RouteConditionedBasisExperts(BasisDraftConfig(
@@ -766,9 +777,10 @@ def objective(
         elif mode in {"s1_shared", "s1_shared_width512"}:
             predicted = model(inputs)
             individual_loss = predicted.sum() * 0.0
-        elif mode == "resident_int4_shared":
+        elif mode in {"resident_int4_shared", "resident_int4_tail_control"}:
             assert isinstance(model, PackedInt4ResidentExperts)
-            predicted = model(inputs, ids, weights)
+            components = model.forward_components(inputs, ids, weights)
+            predicted = components.output
             individual_loss = predicted.sum() * 0.0
         elif mode == "basisdraft_all8":
             assert isinstance(model, RouteConditionedBasisExperts)
@@ -796,6 +808,41 @@ def objective(
         predicted.float(), routed_target.float(), dim=-1, eps=1e-8
     )
     cosine = (cosine_rows * valid.float()).sum() / valid.sum().clamp_min(1)
+    tail_huber = predicted.sum() * 0.0
+    normalized_tail_huber = predicted.sum() * 0.0
+    control_huber = predicted.sum() * 0.0
+    if mode == "resident_int4_tail_control":
+        assert isinstance(model, PackedInt4ResidentExperts)
+        target_tail = routed_target.float() - components.resident_output.detach().float()
+        tail_rows = F.huber_loss(
+            components.tail_output.float(), target_tail,
+            reduction="none", delta=1.0,
+        ).mean(-1)
+        tail_huber = (
+            tail_rows * valid.float()
+        ).sum() / valid.sum().clamp_min(1)
+        mass = components.missing_mass.float()
+        normalized_valid = valid & (mass[..., 0] >= 0.05)
+        normalized_rows = F.huber_loss(
+            components.tail_output.float() / mass.clamp_min(0.05),
+            target_tail / mass.clamp_min(0.05),
+            reduction="none", delta=1.0,
+        ).mean(-1)
+        normalized_tail_huber = (
+            normalized_rows * normalized_valid.float()
+        ).sum() / normalized_valid.sum().clamp_min(1)
+        precontrol = (
+            components.resident_output.detach().float()
+            + components.tail_output.float()
+        )
+        control_target = routed_target.float() - precontrol
+        control_rows = F.huber_loss(
+            components.control_output.float(), control_target,
+            reduction="none", delta=1.0,
+        ).mean(-1)
+        control_huber = (
+            control_rows * valid.float()
+        ).sum() / valid.sum().clamp_min(1)
     agreement = predicted.sum() * 0.0
     agreement_parts: dict[str, Tensor] = {}
     next_overlap: Tensor | None = None
@@ -818,9 +865,8 @@ def objective(
         float(aggregate_loss_weight) * aggregate
         + float(cosine_loss_weight) * cosine
         + float(individual_loss_weight) * individual_loss
-        + (
-        float(router_agreement_weight) * agreement
-        )
+        + float(router_agreement_weight) * agreement
+        + (0.5 * tail_huber + 0.1 * normalized_tail_huber + 0.25 * control_huber)
     )
     return (
         loss,
@@ -829,6 +875,9 @@ def objective(
             "aggregate_cosine_distance": float(cosine.detach()),
             "individual_huber": float(individual_loss.detach()),
             "native_reconstruction_checked_in_epoch_zero": 1.0,
+            "tail_huber": float(tail_huber.detach()),
+            "normalized_tail_huber": float(normalized_tail_huber.detach()),
+            "control_huber": float(control_huber.detach()),
             "next_router_agreement": float(agreement.detach()),
             **{name: float(value.detach()) for name, value in agreement_parts.items()},
             "total": float(loss.detach()),
@@ -1083,10 +1132,25 @@ def main() -> None:
         raise ValueError(
             "resident INT4 shared mode requires an optimizer-free eval/export stage"
         )
+    if args.mode == "resident_int4_tail_control" and resident_stage:
+        raise ValueError("resident v2 is a trainable stage, not a v1 export")
+    if args.resident_tail_zero_init and (
+        args.mode != "resident_int4_tail_control"
+        or args.resident_v2_phase not in {"tail", "joint"}
+    ):
+        raise ValueError("zero-tail initialization requires a trainable v2 tail")
     if args.resident_eval_only and not args.next_router_agreement:
         raise ValueError("resident hybrid evaluation requires next-router labels")
-    if args.resident_allocation_plan is not None and not resident_stage:
-        raise ValueError("resident allocation plan is valid only for resident stages")
+    if args.resident_allocation_plan is not None and args.mode not in {
+        "resident_int4_shared", "resident_int4_tail_control"
+    }:
+        raise ValueError("resident allocation plan is valid only for resident modes")
+    if (
+        args.mode == "resident_int4_tail_control"
+        and args.layer == 39
+        and args.next_router_agreement
+    ):
+        raise ValueError("layer 39 has no next-router control transition")
     partition = validate_partition(args.partition_manifest, args.data_profile)
     reuse = validate_reuse_split(args.reuse_split_manifest)
     selected = {
@@ -1176,15 +1240,20 @@ def main() -> None:
         basis_expert_residual_width=args.basis_expert_residual_width,
     )
     initializer_provenance: dict[str, Any] | None = None
+    deferred_resident_state: Mapping[str, Tensor] | None = None
     if args.initializer_checkpoint is not None:
         initializer = torch.load(
             args.initializer_checkpoint, map_location="cpu", weights_only=False
         )
         expected_mode = (
-            "s1_shared_width512"
-            if args.mode in {"basisdraft_all8", "resident_int4_shared"}
-            and initializer.get("mode") == "s1_shared_width512"
-            else args.mode
+            "resident_int4_shared"
+            if args.mode == "resident_int4_tail_control"
+            else (
+                "s1_shared_width512"
+                if args.mode in {"basisdraft_all8", "resident_int4_shared"}
+                and initializer.get("mode") == "s1_shared_width512"
+                else args.mode
+            )
         )
         expected = {
             "schema": SCHEMA,
@@ -1201,7 +1270,9 @@ def main() -> None:
         state = initializer.get("model_state_dict")
         if not isinstance(state, Mapping):
             raise ValueError("ShadowRoute initializer lacks a model state")
-        if args.mode == "basisdraft_all8" and expected_mode == "s1_shared_width512":
+        if args.mode == "resident_int4_tail_control":
+            deferred_resident_state = state
+        elif args.mode == "basisdraft_all8" and expected_mode == "s1_shared_width512":
             assert isinstance(model, RouteConditionedBasisExperts)
             shared = SwiGLUDraftExpert(2048, 512)
             shared.load_state_dict(state, strict=True)
@@ -1211,7 +1282,7 @@ def main() -> None:
         initializer_provenance = {
             "checkpoint_sha256": sha256_file(args.initializer_checkpoint),
             "source_commit": str(initializer["source_commit"]),
-            "best_epoch": int(initializer["best_epoch"]),
+            "best_epoch": int(initializer.get("best_epoch", 0)),
             "diagnostic_only": bool(initializer.get("diagnostic_only", False)),
             "closed_loop_authorized": bool(
                 initializer.get("closed_loop_authorized", False)
@@ -1219,9 +1290,9 @@ def main() -> None:
         }
     resident_ids: Tensor | None = None
     resident_plan_sha256: str | None = None
-    if args.mode == "resident_int4_shared":
+    if args.mode in {"resident_int4_shared", "resident_int4_tail_control"}:
         if args.initializer_checkpoint is None:
-            raise ValueError("resident hybrid requires a frozen shared initializer")
+            raise ValueError("resident hybrid requires a frozen initializer")
         assert isinstance(model, SwiGLUDraftExpert)
         resident_counts = expert_counts(
             datasets["train"], layer=args.layer, device=device,
@@ -1233,10 +1304,13 @@ def main() -> None:
             )[: args.resident_count].to(device)
         else:
             plan = json.loads(args.resident_allocation_plan.read_text(encoding="utf-8"))
-            if plan.get("schema") != "harp_shadowroute_resident_allocation_v1":
+            if plan.get("schema") not in {
+                "harp_shadowroute_resident_allocation_v1",
+                "harp_shadowroute_resident_allocation_v2",
+            }:
                 raise ValueError("resident allocation plan schema changed")
             expected_plan = {
-                "source_commit": args.source_commit,
+                "source_commit": str(initializer["source_commit"]),
                 "partition_manifest_sha256": sha256_file(args.partition_manifest),
                 "reuse_split_manifest_sha256": sha256_file(args.reuse_split_manifest),
                 "selection_uses_train_routes_only": True,
@@ -1260,6 +1334,16 @@ def main() -> None:
             ):
                 raise ValueError("resident allocation plan contains invalid expert IDs")
             resident_plan_sha256 = sha256_file(args.resident_allocation_plan)
+        control = None
+        if args.mode == "resident_int4_tail_control" and args.layer < 39:
+            if next_router_weight is None:
+                raise ValueError("resident v2 control requires next-router geometry")
+            control = RouterVisibleTailControl(
+                rank=args.resident_control_rank,
+                device=device,
+                dtype=torch.bfloat16,
+            )
+            control.bind_next_router(next_router_weight)
         model = PackedInt4ResidentExperts.from_target(
             resident_ids,
             SharedResidualExperts(model),
@@ -1267,8 +1351,35 @@ def main() -> None:
             down,
             exact_k=8,
             group_size=64,
+            router_control=control,
         )
-        model.requires_grad_(False)
+        if args.mode == "resident_int4_tail_control":
+            if deferred_resident_state is None:
+                raise ValueError("resident v2 lacks the sealed v1 parent state")
+            incompatible = model.load_state_dict(
+                deferred_resident_state, strict=False
+            )
+            expected_missing = (
+                {
+                    "router_control.expert_codes.weight",
+                    "router_control.hidden_projection.weight",
+                    "router_control.router_delta_projection.weight",
+                }
+                if args.layer < 39 else set()
+            )
+            if set(incompatible.missing_keys) != expected_missing or incompatible.unexpected_keys:
+                raise ValueError("resident v2 parent state is not exactly compatible")
+            if args.resident_tail_zero_init:
+                with torch.no_grad():
+                    model.fallback.draft_expert.down_proj.weight.zero_()
+            model.requires_grad_(False)
+            if args.resident_v2_phase in {"tail", "joint"}:
+                model.fallback.requires_grad_(True)
+            if args.layer < 39 and args.resident_v2_phase in {"control", "joint"}:
+                assert model.router_control is not None
+                model.router_control.requires_grad_(True)
+        else:
+            model.requires_grad_(False)
     if args.basis_coefficients_only:
         assert isinstance(model, RouteConditionedBasisExperts)
         model.gate_up_proj.requires_grad_(False)
@@ -1287,7 +1398,7 @@ def main() -> None:
         trained_mass = float(
             counts[counts >= args.minimum_expert_count].sum() / counts.sum().clamp_min(1)
         )
-    elif args.mode == "resident_int4_shared":
+    elif args.mode in {"resident_int4_shared", "resident_int4_tail_control"}:
         counts = resident_counts
         trained_mass = float(counts[resident_ids.cpu()].sum() / counts.sum().clamp_min(1))
     else:
@@ -1346,18 +1457,39 @@ def main() -> None:
             int(resident_ids.numel()) if resident_ids is not None else None
         ),
         "resident_allocation_plan_sha256": resident_plan_sha256,
+        "resident_v2_phase": (
+            args.resident_v2_phase
+            if args.mode == "resident_int4_tail_control" else None
+        ),
+        "resident_tail_zero_init": (
+            args.resident_tail_zero_init
+            if args.mode == "resident_int4_tail_control" else None
+        ),
+        "resident_control_rank": (
+            args.resident_control_rank
+            if args.mode == "resident_int4_tail_control" and args.layer < 39
+            else None
+        ),
+        "resident_v2_loss_weights": (
+            {"tail": 0.5, "normalized_tail": 0.1, "control": 0.25}
+            if args.mode == "resident_int4_tail_control" else None
+        ),
         "resident_expert_ids": (
             resident_ids.detach().cpu().tolist() if resident_ids is not None else None
         ),
         "resident_train_slot_coverage": (
-            trained_mass if args.mode == "resident_int4_shared" else None
+            trained_mass if args.mode in {
+                "resident_int4_shared", "resident_int4_tail_control"
+            } else None
         ),
         "expert_frequency_gate_applicable": args.mode == "s2_indexed",
         "trained_expert_count": (
             int((counts >= args.minimum_expert_count).sum())
             if args.mode == "s2_indexed" else (
                 int(resident_ids.numel())
-                if args.mode == "resident_int4_shared" and resident_ids is not None
+                if args.mode in {
+                    "resident_int4_shared", "resident_int4_tail_control"
+                } and resident_ids is not None
                 else 256
             )
         ),
@@ -1658,10 +1790,34 @@ def main() -> None:
     checkpoint_value = {
         "schema": SCHEMA,
         "source_commit": args.source_commit,
-        "mode": args.mode,
+        "mode": (
+            "resident_tail_control_v2"
+            if args.mode == "resident_int4_tail_control" else args.mode
+        ),
         "layer": args.layer,
         "seed": args.seed,
         "model_state_dict": best_state,
+        "resident_expert_ids": (
+            model.resident_ids.detach().cpu()
+            if isinstance(model, PackedInt4ResidentExperts) else None
+        ),
+        "resident_count": (
+            model.resident_count
+            if isinstance(model, PackedInt4ResidentExperts) else None
+        ),
+        "resident_v2_phase": (
+            args.resident_v2_phase
+            if args.mode == "resident_int4_tail_control" else None
+        ),
+        "resident_tail_zero_init": (
+            args.resident_tail_zero_init
+            if args.mode == "resident_int4_tail_control" else None
+        ),
+        "resident_control_rank": (
+            args.resident_control_rank
+            if args.mode == "resident_int4_tail_control" and args.layer < 39
+            else None
+        ),
         "selected_neurons": selected_neurons,
         "expert_counts": counts,
         "minimum_expert_count": args.minimum_expert_count,
@@ -1686,12 +1842,21 @@ def main() -> None:
         "target_checkpoint_index_sha256": checkpoint.index_sha256,
         "partition_manifest_sha256": sha256_file(args.partition_manifest),
         "diagnostic_only": True,
-        "closed_loop_authorized": component_gate,
+        # A layer-local v2 component result cannot authorize closed-loop use.
+        # Only the aggregate 40-layer promotion artifact may do that after
+        # the predeclared large-gain gate passes.
+        "closed_loop_authorized": bool(
+            component_gate and args.mode != "resident_int4_tail_control"
+        ),
         "formal_validation_opened": False,
         "calibration_opened": False,
         "sealed_test_opened": False,
     }
-    checkpoint_path = args.output / f"shadow_{args.mode}_layer_{args.layer:02d}.pt"
+    checkpoint_mode = (
+        "resident_tail_control_v2"
+        if args.mode == "resident_int4_tail_control" else args.mode
+    )
+    checkpoint_path = args.output / f"shadow_{checkpoint_mode}_layer_{args.layer:02d}.pt"
     with checkpoint_path.open("xb") as handle:
         torch.save(checkpoint_value, handle)
         handle.flush()

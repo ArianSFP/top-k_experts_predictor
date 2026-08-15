@@ -72,7 +72,7 @@ def parse_args() -> argparse.Namespace:
         choices=(
             "basisdraft_all8", "exact_top1_plus_draft", "shared_width128",
             "shared_width512", "indexed_width16", "int4_top4",
-            "resident_int4_shared",
+            "resident_int4_only", "resident_int4_shared",
         ),
         required=True,
     )
@@ -154,6 +154,15 @@ def slot_coverage(predicted: torch.Tensor, target: torch.Tensor) -> torch.Tensor
     return (
         target[..., None] == predicted[..., None, :]
     ).any(-1).float().mean(-1)
+
+
+def native_parity_mask(
+    valid: torch.Tensor, node_mask: torch.Tensor, count: int
+) -> torch.Tensor:
+    """Select authoritative labels for nodes executed by the runtime budget."""
+    if valid.ndim != 2 or node_mask.ndim != 1:
+        raise ValueError("native parity expects [N,L] validity and [N] node mask")
+    return valid[:count].bool() & node_mask[:count, None].bool()
 
 
 def load_ceiling_bundle(path: Path, *, parent_sha256: str) -> dict[str, Any]:
@@ -404,7 +413,7 @@ def main() -> None:
         raise ValueError("native top-k diagnostic may not load a learned bundle")
     if args.diagnostic_unpromoted_bundle and args.mode not in {
         "basisdraft_all8", "exact_top1_plus_draft", "shared_width512",
-        "indexed_width16", "int4_top4", "resident_int4_shared"
+        "indexed_width16", "int4_top4", "resident_int4_only", "resident_int4_shared"
     }:
         raise ValueError(
             "the unpromoted diagnostic override is restricted to shadow controls"
@@ -447,13 +456,14 @@ def main() -> None:
 
     checkpoint = IndexedCheckpoint(args.model)
     resident_ids_by_layer = None
-    if args.mode == "resident_int4_shared":
+    if args.mode in {"resident_int4_only", "resident_int4_shared"}:
         assert args.layer_checkpoint_root is not None
         resident_ids_by_layer = resident_ids_from_bundle(
             args.layer_checkpoint_root,
             source_commit=args.source_commit,
             target_checkpoint_index_sha256=checkpoint.index_sha256,
             allow_unpromoted_diagnostic=args.diagnostic_unpromoted_bundle,
+            mode=args.mode,
         )
     args.output.mkdir(parents=True)
     manifest = {
@@ -594,7 +604,11 @@ def main() -> None:
                         installed, hooks, authoritative_prefix=authoritative_prefix,
                         token_ids=token_ids, parent_indices=parents, node_mask=node_mask,
                     )
-                active = native["valid"][:count]
+                # The immutable all-node companion retains valid labels for
+                # nodes omitted by a reduced runtime budget.  Those nodes have
+                # sentinel outputs by design, so parity is defined only over
+                # valid nodes that were actually executed.
+                active = native_parity_mask(native["valid"], node_mask, count)
                 native_mismatches += int(
                     (
                         reference.selected_ids[:count].cpu()[active]

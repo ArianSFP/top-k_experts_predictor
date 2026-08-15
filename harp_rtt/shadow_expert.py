@@ -744,6 +744,103 @@ class PackedInt4TopKExperts(nn.Module):
         return output.reshape(*leading, self.hidden_width)
 
 
+
+@dataclass(frozen=True)
+class ResidentTailComponents:
+    """Training-only decomposition of one resident-shadow routed result."""
+
+    output: Tensor
+    resident_output: Tensor
+    tail_output: Tensor
+    control_output: Tensor
+    missing_mass: Tensor
+    missing_mask: Tensor
+
+
+class RouterVisibleTailControl(nn.Module):
+    """Missing-route-conditioned correction in the next router row space.
+
+    The frozen next-layer router is held as a non-persistent, non-owning
+    tensor reference. Its 256x2048 matrix is never duplicated in a bundle.
+    """
+
+    def __init__(
+        self,
+        *,
+        hidden_width: int = 2048,
+        experts: int = 256,
+        rank: int = 128,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype = torch.bfloat16,
+    ) -> None:
+        super().__init__()
+        if min(hidden_width, experts, rank) < 1:
+            raise ValueError("router-control dimensions must be positive")
+        self.hidden_width = int(hidden_width)
+        self.experts = int(experts)
+        self.rank = int(rank)
+        self.expert_codes = nn.Embedding(
+            experts, rank, device=device, dtype=dtype
+        )
+        self.hidden_projection = nn.Linear(
+            hidden_width, rank, bias=False, device=device, dtype=dtype
+        )
+        self.router_delta_projection = nn.Linear(
+            rank, experts, bias=False, device=device, dtype=dtype
+        )
+        self.register_buffer(
+            "_next_router_weight",
+            torch.empty(0, device=device, dtype=dtype),
+            persistent=False,
+        )
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        nn.init.zeros_(self.expert_codes.weight)
+        nn.init.kaiming_uniform_(self.hidden_projection.weight, a=math.sqrt(5))
+        nn.init.kaiming_uniform_(
+            self.router_delta_projection.weight, a=math.sqrt(5)
+        )
+
+    @property
+    def router_is_bound(self) -> bool:
+        return self._next_router_weight.shape == (
+            self.experts, self.hidden_width
+        )
+
+    def bind_next_router(self, router_weight: Tensor) -> None:
+        if router_weight.shape != (self.experts, self.hidden_width):
+            raise ValueError("next-router weight has incompatible geometry")
+        if router_weight.device != self.expert_codes.weight.device:
+            raise ValueError("next-router weight is on a different device")
+        # Binding can precede the global backbone freeze. Detach without a
+        # copy: this keeps a non-owning view of the exact resident router,
+        # prevents gradients, and avoids serializing duplicate router bytes.
+        self._next_router_weight = router_weight.detach()
+
+    def forward(
+        self,
+        hidden: Tensor,
+        ids: Tensor,
+        weights: Tensor,
+        missing_mask: Tensor,
+    ) -> Tensor:
+        if not self.router_is_bound:
+            raise RuntimeError("router-visible tail control is not bound")
+        if hidden.ndim != 2 or hidden.shape[-1] != self.hidden_width:
+            raise ValueError("router-control hidden input changed")
+        if ids.shape != weights.shape or missing_mask.shape != ids.shape:
+            raise ValueError("router-control route tensors do not align")
+        missing_weights = weights * missing_mask.to(weights)
+        codes = self.expert_codes(ids)
+        summary = (codes * missing_weights[..., None]).sum(dim=1)
+        content = F.silu(self.hidden_projection(hidden))
+        delta_logits = self.router_delta_projection(content * summary)
+        delta_logits = delta_logits - delta_logits.mean(dim=-1, keepdim=True)
+        return (
+            delta_logits.float() @ self._next_router_weight.float()
+        ).to(hidden.dtype)
+
 class PackedInt4ResidentExperts(nn.Module):
     """Resident frequent experts with a compact fallback for every miss.
 
@@ -757,7 +854,7 @@ class PackedInt4ResidentExperts(nn.Module):
     def __init__(
         self,
         resident_ids: Tensor,
-        fallback: SharedResidualExperts | RouteConditionedBasisExperts,
+        fallback: SharedResidualExperts | RouteConditionedBasisExperts | None,
         *,
         hidden_width: int = 2048,
         intermediate_width: int = 512,
@@ -765,6 +862,7 @@ class PackedInt4ResidentExperts(nn.Module):
         exact_k: int = 8,
         group_size: int = 64,
         device: torch.device | str | None = None,
+        router_control: RouterVisibleTailControl | None = None,
     ) -> None:
         super().__init__()
         ids = torch.as_tensor(resident_ids, dtype=torch.long)
@@ -782,6 +880,7 @@ class PackedInt4ResidentExperts(nn.Module):
         self.exact_k = int(exact_k)
         self.group_size = int(group_size)
         self.fallback = fallback
+        self.router_control = router_control
         self.register_buffer("resident_ids", ids.to(device=device))
         expert_to_resident = torch.full((experts,), -1, dtype=torch.long, device=device)
         expert_to_resident[self.resident_ids] = torch.arange(
@@ -827,12 +926,13 @@ class PackedInt4ResidentExperts(nn.Module):
     def from_target(
         cls,
         resident_ids: Tensor,
-        fallback: SharedResidualExperts | RouteConditionedBasisExperts,
+        fallback: SharedResidualExperts | RouteConditionedBasisExperts | None,
         target_gate_up: Tensor,
         target_down: Tensor,
         *,
         exact_k: int = 8,
         group_size: int = 64,
+        router_control: RouterVisibleTailControl | None = None,
     ) -> "PackedInt4ResidentExperts":
         experts, twice_intermediate, hidden_width = target_gate_up.shape
         if twice_intermediate % 2:
@@ -850,6 +950,7 @@ class PackedInt4ResidentExperts(nn.Module):
             exact_k=exact_k,
             group_size=group_size,
             device=target_gate_up.device,
+            router_control=router_control,
         )
         gate_packed, gate_scales = quantize_groupwise_int4(
             target_gate_up.index_select(0, ids), group_size=group_size
@@ -880,6 +981,15 @@ class PackedInt4ResidentExperts(nn.Module):
     def forward(
         self, hidden_states: Tensor, top_k_index: Tensor, top_k_weights: Tensor
     ) -> Tensor:
+        return self.forward_components(
+            hidden_states, top_k_index, top_k_weights
+        ).output
+
+    def forward_components(
+        self, hidden_states: Tensor, top_k_index: Tensor, top_k_weights: Tensor
+    ) -> ResidentTailComponents:
+        """Expose the deployed resident/tail/control split for training."""
+
         hidden, ids, weights, leading = _validate_routed_inputs(
             hidden_states, top_k_index, top_k_weights,
             hidden_width=self.hidden_width, experts=self.experts,
@@ -888,25 +998,45 @@ class PackedInt4ResidentExperts(nn.Module):
             raise ValueError("resident hybrid requires the complete native top-k route")
         local_ids = self.expert_to_resident[ids]
         resident = local_ids >= 0
+        missing = ~resident
+        missing_mass = (weights * missing.to(weights)).sum(dim=1, keepdim=True)
         if isinstance(self.fallback, RouteConditionedBasisExperts):
             fallback_values = self.fallback.selected_unweighted(hidden, ids).reshape(
                 hidden.shape[0], ids.shape[1], self.hidden_width
             )
-            output = (fallback_values * weights[..., None]).sum(dim=1)
+            tail_output = (
+                fallback_values * weights[..., None] * missing[..., None]
+            ).sum(dim=1)
+        elif self.fallback is None:
+            tail_output = torch.zeros_like(hidden)
         else:
-            missing_mass = (weights * (~resident).to(weights)).sum(dim=1, keepdim=True)
-            output = self.fallback(hidden, ids, weights).reshape_as(hidden) * missing_mass
-            fallback_values = None
+            tail_output = (
+                self.fallback(hidden, ids, weights).reshape_as(hidden)
+                * missing_mass
+            )
+        resident_output = torch.zeros_like(hidden)
         for local_id in torch.unique(local_ids[resident]).tolist():
             positions = (local_ids == int(local_id)).nonzero(as_tuple=False)
             token_index, slot_index = positions[:, 0], positions[:, 1]
             gate_up, down = self._resident_weights(int(local_id), dtype=hidden.dtype)
             gate, up = F.linear(hidden[token_index], gate_up).chunk(2, dim=-1)
             exact = F.linear(F.silu(gate) * up, down)
-            if fallback_values is not None:
-                exact = exact - fallback_values[token_index, slot_index]
-            output[token_index] += exact * weights[token_index, slot_index, None]
-        return output.reshape(*leading, self.hidden_width)
+            resident_output[token_index] += (
+                exact * weights[token_index, slot_index, None]
+            )
+        control_output = torch.zeros_like(hidden)
+        if self.router_control is not None:
+            control_output = self.router_control(hidden, ids, weights, missing)
+        output = resident_output + tail_output + control_output
+        shaped = (*leading, self.hidden_width)
+        return ResidentTailComponents(
+            output=output.reshape(*shaped),
+            resident_output=resident_output.reshape(*shaped),
+            tail_output=tail_output.reshape(*shaped),
+            control_output=control_output.reshape(*shaped),
+            missing_mass=missing_mass.reshape(*leading, 1),
+            missing_mask=missing.reshape(*leading, ids.shape[-1]),
+        )
 
 
 def resident_int4_storage_bytes(
@@ -922,6 +1052,23 @@ def resident_int4_storage_bytes(
     packed = parameters // 2
     scales = 2 * (parameters // group_size)
     return layers * residents * (packed + scales)
+
+
+def resident_tail_control_storage_bytes(
+    *,
+    transitions: int = 39,
+    hidden_width: int = 2048,
+    experts: int = 256,
+    rank: int = 128,
+    bytes_per_parameter: int = 2,
+) -> int:
+    """Serialized C/P/A bytes; the shared next-router is excluded."""
+
+    values = (transitions, hidden_width, experts, rank, bytes_per_parameter)
+    if any(value < 1 for value in values):
+        raise ValueError("tail-control storage dimensions must be positive")
+    per_transition = experts * rank + hidden_width * rank + experts * rank
+    return transitions * per_transition * bytes_per_parameter
 
 
 def shadow_pool_parameter_count(
@@ -959,7 +1106,9 @@ __all__ = [
     "IndexedShadowExperts",
     "PackedInt4TopKExperts",
     "PackedInt4ResidentExperts",
+    "ResidentTailComponents",
     "RouteConditionedBasisExperts",
+    "RouterVisibleTailControl",
     "RoutedExperts",
     "ShadowExpertConfig",
     "SharedResidualExperts",
@@ -969,6 +1118,7 @@ __all__ = [
     "dequantize_groupwise_int4",
     "quantize_groupwise_int4",
     "resident_int4_storage_bytes",
+    "resident_tail_control_storage_bytes",
     "target_neuron_importance",
     "target_selected_expert_outputs",
 ]
