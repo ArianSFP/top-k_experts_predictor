@@ -26,6 +26,7 @@ CHECKPOINT_MODE = {
     "shared_width512": "s1_shared_width512",
     "indexed_width16": "s2_indexed",
     "int4_top4": "int4_top4",
+    "resident_int4_only": "resident_int4_only",
     "resident_int4_shared": "resident_int4_shared",
     "resident_int4_tail_control": "resident_tail_control_v2",
 }
@@ -87,6 +88,7 @@ def resident_ids_from_bundle(
     source_commit: str,
     target_checkpoint_index_sha256: str,
     allow_unpromoted_diagnostic: bool = False,
+    mode: str = "resident_int4_shared",
 ) -> tuple[torch.Tensor, ...]:
     """Read the frozen per-layer resident namespace before model construction."""
 

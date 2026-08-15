@@ -37,6 +37,7 @@ SHADOW_MODES = (
     "shared_width512",
     "indexed_width16",
     "int4_top4",
+    "resident_int4_only",
     "resident_int4_shared",
     "resident_int4_tail_control",
 )
@@ -97,7 +98,11 @@ def install_shadow_experts(
     if mode not in SHADOW_MODES:
         raise ValueError(f"unknown ShadowRoute mode {mode!r}")
     validate_shadow_target_config(resolve_text_model(model).config)
-    if mode in {"resident_int4_shared", "resident_int4_tail_control"} and (
+    if mode in {
+        "resident_int4_only",
+        "resident_int4_shared",
+        "resident_int4_tail_control",
+    } and (
         resident_ids_by_layer is None or len(resident_ids_by_layer) != 40
     ):
         raise ValueError("resident hybrid requires exactly 40 expert-ID vectors")
@@ -128,7 +133,11 @@ def install_shadow_experts(
             draft = SwiGLUDraftExpert(2048, width).to(device=device, dtype=dtype)
             replacement = SharedResidualExperts(draft, experts=256)
             native.append(original if retain_native else None)
-        elif mode in {"resident_int4_shared", "resident_int4_tail_control"}:
+        elif mode in {
+            "resident_int4_only",
+            "resident_int4_shared",
+            "resident_int4_tail_control",
+        }:
             assert resident_ids_by_layer is not None
             control = (
                 RouterVisibleTailControl(
@@ -139,7 +148,11 @@ def install_shadow_experts(
             )
             replacement = PackedInt4ResidentExperts(
                 resident_ids_by_layer[layer_id],
-                SharedResidualExperts(SwiGLUDraftExpert(2048, 512), experts=256),
+                (
+                    None
+                    if mode == "resident_int4_only"
+                    else SharedResidualExperts(SwiGLUDraftExpert(2048, 512), experts=256)
+                ),
                 device=device,
                 router_control=control,
             ).to(device=device, dtype=dtype)
@@ -208,7 +221,7 @@ def build_selective_shadow_text_model(
 
     if mode not in {
         "basisdraft_all8", "shared_width128", "shared_width512",
-        "indexed_width16", "resident_int4_shared",
+        "indexed_width16", "resident_int4_only", "resident_int4_shared",
         "resident_int4_tail_control",
     }:
         raise ValueError("selective deployment supports only resident shadow modes")
@@ -224,7 +237,11 @@ def build_selective_shadow_text_model(
     validate_shadow_target_config(config)
     with torch.device("meta"):
         text_model = Qwen3_5MoeTextModel(config)
-    if mode in {"resident_int4_shared", "resident_int4_tail_control"} and (
+    if mode in {
+        "resident_int4_only",
+        "resident_int4_shared",
+        "resident_int4_tail_control",
+    } and (
         resident_ids_by_layer is None or len(resident_ids_by_layer) != 40
     ):
         raise ValueError("resident hybrid requires exactly 40 expert-ID vectors")
@@ -240,7 +257,11 @@ def build_selective_shadow_text_model(
             replacement: nn.Module = SharedResidualExperts(
                 SwiGLUDraftExpert(2048, width), experts=256
             )
-        elif mode in {"resident_int4_shared", "resident_int4_tail_control"}:
+        elif mode in {
+            "resident_int4_only",
+            "resident_int4_shared",
+            "resident_int4_tail_control",
+        }:
             assert resident_ids_by_layer is not None
             control = (
                 RouterVisibleTailControl(rank=resident_control_rank)
@@ -249,7 +270,11 @@ def build_selective_shadow_text_model(
             )
             replacement = PackedInt4ResidentExperts(
                 resident_ids_by_layer[layer_id],
-                SharedResidualExperts(SwiGLUDraftExpert(2048, 512), experts=256),
+                (
+                    None
+                    if mode == "resident_int4_only"
+                    else SharedResidualExperts(SwiGLUDraftExpert(2048, 512), experts=256)
+                ),
                 router_control=control,
             )
         else:
