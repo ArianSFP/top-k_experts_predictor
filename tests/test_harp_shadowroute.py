@@ -518,6 +518,26 @@ def test_resident_int4_uses_exact_residents_and_mass_scaled_fallback():
     assert not hasattr(module, "native_experts")
 
 
+def test_resident_int4_without_fallback_executes_only_resident_mass():
+    torch.manual_seed(23)
+    gate_up = torch.randn(4, 4, 4)
+    down = torch.randn(4, 4, 2)
+    module = PackedInt4ResidentExperts.from_target(
+        torch.tensor([0, 2]), None, gate_up, down,
+        exact_k=2, group_size=2,
+    )
+    hidden = torch.randn(2, 4)
+    ids = torch.tensor([[0, 1], [3, 1]])
+    weights = torch.tensor([[0.7, 0.3], [0.4, 0.6]])
+    components = module.forward_components(hidden, ids, weights)
+    assert torch.count_nonzero(components.tail_output) == 0
+    assert torch.count_nonzero(components.output[0]) > 0
+    assert torch.count_nonzero(components.output[1]) == 0
+    assert torch.equal(components.output, components.resident_output)
+    assert all(not key.startswith("fallback.") for key in module.state_dict())
+    assert components.missing_mass.tolist() == pytest.approx([[0.3], [1.0]])
+
+
 
 def test_resident_tail_control_is_zero_compatible_identity_sensitive_and_nonowning():
     torch.manual_seed(29)

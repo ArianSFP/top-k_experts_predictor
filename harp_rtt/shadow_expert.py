@@ -854,7 +854,7 @@ class PackedInt4ResidentExperts(nn.Module):
     def __init__(
         self,
         resident_ids: Tensor,
-        fallback: SharedResidualExperts | RouteConditionedBasisExperts,
+        fallback: SharedResidualExperts | RouteConditionedBasisExperts | None,
         *,
         hidden_width: int = 2048,
         intermediate_width: int = 512,
@@ -926,7 +926,7 @@ class PackedInt4ResidentExperts(nn.Module):
     def from_target(
         cls,
         resident_ids: Tensor,
-        fallback: SharedResidualExperts | RouteConditionedBasisExperts,
+        fallback: SharedResidualExperts | RouteConditionedBasisExperts | None,
         target_gate_up: Tensor,
         target_down: Tensor,
         *,
@@ -1007,6 +1007,8 @@ class PackedInt4ResidentExperts(nn.Module):
             tail_output = (
                 fallback_values * weights[..., None] * missing[..., None]
             ).sum(dim=1)
+        elif self.fallback is None:
+            tail_output = torch.zeros_like(hidden)
         else:
             tail_output = (
                 self.fallback(hidden, ids, weights).reshape_as(hidden)
