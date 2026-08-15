@@ -131,6 +131,51 @@ The four-phase mean gain is +9.16 points. This is a large architectural gain
 and justifies constructing the complete bundle. It is not yet an H1--H4
 closed-loop result.
 
+### Complete forty-layer bundle
+
+The complete source-bound bundle was constructed and sealed on the 3090. It
+contains exactly forty resident shards and exactly 3,680 resident
+layer/expert cells. The serialized deployment payload is 6,401,871,784 bytes,
+or **5.9622 GiB**. This is the actual checkpoint footprint, not only a formula.
+
+Thirty-two layers have an authoritative teacher-forced next-router metric.
+Every one of those layers improved over its matched width-512 shared fallback:
+
+| Metric over 32 auditable layers | Shared fallback | Resident hybrid | Gain |
+| --- | ---: | ---: | ---: |
+| Mean next-router Recall@8 | 0.7247 | 0.8172 | **+0.0926** |
+
+The smallest per-layer gain was +5.67 points and the largest was +12.27
+points. The eight layers whose immutable next-router reconstruction audit did
+not pass (7, 16, 30, 34, 35, 37, 38 and 39) were trained and evaluated only on
+the authoritative routed-residual target. No tolerance was relaxed and no
+router metric was fabricated. Their resident tier consistently improved the
+residual reconstruction; for example layer 34 normalized development RMSE
+fell from 1.1475 to 0.4773 and layer 39 from 0.6625 to 0.3826.
+
+The deployment manifest binds:
+
+```text
+training/export source = 6d119b3173f207e7082be21ebad5d09d1051d176
+target checkpoint index = 41b9356101ebf8e7519e150dc811f80c4226e727301fbb032b890f006ed0be83
+allocation plan = 8f8e7d31522557c42669778de26834e751fefa10cd2170249115588ca471ba15
+source bundle result = 3b18f17d347e309c32ff00e1d065a944daf97728026875e334c2c8f6b6b3f98a
+```
+
+The immutable persistent mirror is:
+
+```text
+/workspace/LLM_prefetch_study/artifacts/harp_rtt/
+  resident_shadow_v1_20260815_6d119b3/
+    scientific_bundle/
+    deployment_bundle/
+```
+
+All 687 scientific files and all 42 deployment files passed checksum
+verification after mirroring. `deployment_bundle/` contains only the forty
+runtime checkpoints, frozen allocation plan, deployment manifest and
+checksums. It excludes training predictions and shared-fit diagnostics.
+
 ## Execution contract
 
 - Packed resident tensors are part of the predictor bundle; there is no native
@@ -149,8 +194,8 @@ closed-loop result.
 
 ## Remaining gate
 
-The 3090 is constructing the forty-layer bundle. Once complete, the next
-required machine is an RTX PRO 6000 96 GB, H100 NVL 94 GB, or H200 141 GB for:
+The forty-layer compact bundle is complete. The next required machine is an
+RTX PRO 6000 96 GB, H100 NVL 94 GB, or H200 141 GB for:
 
 1. one-tree native-prefix/cache parity;
 2. a 32-request budget-16 closed-loop screen with Shadow-LM;
