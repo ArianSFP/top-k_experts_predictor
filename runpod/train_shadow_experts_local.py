@@ -127,7 +127,8 @@ def parse_args() -> argparse.Namespace:
         choices=(2, 4, 8, 16), default=2,
     )
     parser.add_argument(
-        "--resident-count", type=int, choices=(32, 48, 64, 80, 96), default=80
+        "--resident-count", type=int,
+        choices=(32, 48, 64, 80, 92, 96), default=80,
     )
     parser.add_argument("--resident-eval-only", action="store_true")
     parser.add_argument("--device", default="cuda")

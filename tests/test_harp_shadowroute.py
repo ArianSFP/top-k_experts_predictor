@@ -440,6 +440,9 @@ def test_resident_int4_storage_matches_five_gib_budget():
     size = resident_int4_storage_bytes(residents=80)
     assert size == 5_347_737_600
     assert size / (1024 ** 3) < 5.0
+    resident_92 = resident_int4_storage_bytes(residents=92)
+    shared_fallback = 3 * 2048 * 512 * 40 * 2
+    assert (resident_92 + shared_fallback) / (1024 ** 3) < 6.0
 
 
 def test_shadow_parameter_counts_match_formal_plan():
