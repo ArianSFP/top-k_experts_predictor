@@ -45,6 +45,7 @@ from harp_rtt.shadow_expert import (
     target_selected_expert_outputs,
 )
 from harp_rtt.shadow_route import raw_mtp_prior_mixture, shadow_lm_path_posterior
+from harp_rtt.resident_policy import allocate_resident_experts
 from harp_rtt.shadow_training import (
     s0_scale_gate,
     selected_expert_distillation_loss,
@@ -443,6 +444,28 @@ def test_resident_int4_storage_matches_five_gib_budget():
     resident_92 = resident_int4_storage_bytes(residents=92)
     shared_fallback = 3 * 2048 * 512 * 40 * 2
     assert (resident_92 + shared_fallback) / (1024 ** 3) < 6.0
+
+
+def test_resident_allocation_spends_global_budget_on_largest_marginal_gain():
+    counts = torch.tensor([
+        [10, 9, 1, 0],
+        [10, 8, 7, 0],
+        [10, 2, 1, 0],
+    ], dtype=torch.int64)
+    allocation = allocate_resident_experts(
+        counts,
+        total_residents=7,
+        minimum_per_layer=1,
+        maximum_per_layer=3,
+    )
+    assert allocation.resident_counts == (2, 3, 2)
+    assert sum(allocation.resident_counts) == 7
+    assert torch.equal(allocation.resident_ids[0], torch.tensor([0, 1]))
+    assert allocation.covered_slots == (19, 25, 12)
+    with pytest.raises(ValueError, match="outside"):
+        allocate_resident_experts(
+            counts, total_residents=2, minimum_per_layer=1, maximum_per_layer=3
+        )
 
 
 def test_shadow_parameter_counts_match_formal_plan():

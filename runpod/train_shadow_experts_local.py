@@ -132,6 +132,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--resident-eval-only", action="store_true")
     parser.add_argument("--resident-export-only", action="store_true")
+    parser.add_argument("--resident-allocation-plan", type=Path)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--preflight-only", action="store_true")
@@ -1084,6 +1085,8 @@ def main() -> None:
         )
     if args.resident_eval_only and not args.next_router_agreement:
         raise ValueError("resident hybrid evaluation requires next-router labels")
+    if args.resident_allocation_plan is not None and not resident_stage:
+        raise ValueError("resident allocation plan is valid only for resident stages")
     partition = validate_partition(args.partition_manifest, args.data_profile)
     reuse = validate_reuse_split(args.reuse_split_manifest)
     selected = {
@@ -1215,6 +1218,7 @@ def main() -> None:
             ),
         }
     resident_ids: Tensor | None = None
+    resident_plan_sha256: str | None = None
     if args.mode == "resident_int4_shared":
         if args.initializer_checkpoint is None:
             raise ValueError("resident hybrid requires a frozen shared initializer")
@@ -1223,9 +1227,39 @@ def main() -> None:
             datasets["train"], layer=args.layer, device=device,
             workers=args.num_workers, active_slots=8,
         )
-        resident_ids = torch.argsort(
-            resident_counts, descending=True, stable=True
-        )[: args.resident_count].to(device)
+        if args.resident_allocation_plan is None:
+            resident_ids = torch.argsort(
+                resident_counts, descending=True, stable=True
+            )[: args.resident_count].to(device)
+        else:
+            plan = json.loads(args.resident_allocation_plan.read_text(encoding="utf-8"))
+            if plan.get("schema") != "harp_shadowroute_resident_allocation_v1":
+                raise ValueError("resident allocation plan schema changed")
+            expected_plan = {
+                "source_commit": args.source_commit,
+                "partition_manifest_sha256": sha256_file(args.partition_manifest),
+                "reuse_split_manifest_sha256": sha256_file(args.reuse_split_manifest),
+                "selection_uses_train_routes_only": True,
+                "formal_validation_opened": False,
+                "calibration_opened": False,
+                "sealed_test_opened": False,
+            }
+            for field, expected_value in expected_plan.items():
+                if plan.get(field) != expected_value:
+                    raise ValueError(f"resident allocation plan {field} mismatch")
+            ids_by_layer = plan.get("resident_expert_ids_by_layer")
+            if not isinstance(ids_by_layer, list) or len(ids_by_layer) != 40:
+                raise ValueError("resident allocation plan lacks forty layers")
+            resident_ids = torch.as_tensor(
+                ids_by_layer[args.layer], dtype=torch.long, device=device
+            )
+            if (
+                resident_ids.ndim != 1
+                or resident_ids.unique().numel() != resident_ids.numel()
+                or bool(((resident_ids < 0) | (resident_ids >= 256)).any())
+            ):
+                raise ValueError("resident allocation plan contains invalid expert IDs")
+            resident_plan_sha256 = sha256_file(args.resident_allocation_plan)
         model = PackedInt4ResidentExperts.from_target(
             resident_ids,
             SharedResidualExperts(model),
@@ -1308,7 +1342,10 @@ def main() -> None:
         "basis_count": args.basis_count,
         "basis_width": args.basis_width,
         "basis_expert_residual_width": args.basis_expert_residual_width,
-        "resident_count": args.resident_count,
+        "resident_count": (
+            int(resident_ids.numel()) if resident_ids is not None else None
+        ),
+        "resident_allocation_plan_sha256": resident_plan_sha256,
         "resident_expert_ids": (
             resident_ids.detach().cpu().tolist() if resident_ids is not None else None
         ),
@@ -1319,7 +1356,9 @@ def main() -> None:
         "trained_expert_count": (
             int((counts >= args.minimum_expert_count).sum())
             if args.mode == "s2_indexed" else (
-                args.resident_count if args.mode == "resident_int4_shared" else 256
+                int(resident_ids.numel())
+                if args.mode == "resident_int4_shared" and resident_ids is not None
+                else 256
             )
         ),
         "trained_selected_slot_mass": trained_mass,
