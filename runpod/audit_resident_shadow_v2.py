@@ -62,6 +62,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-model", type=Path, required=True)
     parser.add_argument("--parent-checkpoint", type=Path, required=True)
     parser.add_argument("--layer", type=int, choices=REPRESENTATIVE_LAYERS, required=True)
+    parser.add_argument(
+        "--parent-mode",
+        choices=("resident_int4_shared", "resident_int4_only"),
+        default="resident_int4_shared",
+    )
     parser.add_argument("--split", choices=("train", "tune"), default="tune")
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -134,7 +139,7 @@ def main() -> None:
     parent = torch.load(args.parent_checkpoint, map_location="cpu", weights_only=True)
     expected = {
         "schema": LOCAL_SCHEMA,
-        "mode": "resident_int4_shared",
+        "mode": args.parent_mode,
         "layer": args.layer,
         "target_checkpoint_index_sha256": checkpoint.index_sha256,
         "formal_validation_opened": False,
@@ -148,8 +153,12 @@ def main() -> None:
     state = parent.get("model_state_dict")
     if not isinstance(resident_ids, Tensor) or not isinstance(state, dict):
         raise ValueError("resident parent lacks namespace or state")
-    fallback = SharedResidualExperts(
-        SwiGLUDraftExpert(2048, 512).to(device=device, dtype=torch.bfloat16)
+    fallback = (
+        None
+        if args.parent_mode == "resident_int4_only"
+        else SharedResidualExperts(
+            SwiGLUDraftExpert(2048, 512).to(device=device, dtype=torch.bfloat16)
+        )
     )
     model = PackedInt4ResidentExperts.from_target(
         resident_ids.to(device), fallback, gate_up, down,
