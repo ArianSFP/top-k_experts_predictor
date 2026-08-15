@@ -131,6 +131,7 @@ def parse_args() -> argparse.Namespace:
         choices=(32, 48, 64, 80, 92, 96), default=80,
     )
     parser.add_argument("--resident-eval-only", action="store_true")
+    parser.add_argument("--resident-export-only", action="store_true")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--preflight-only", action="store_true")
@@ -1074,9 +1075,12 @@ def main() -> None:
             raise ValueError(f"{name} must be finite and non-negative")
     if args.basis_coefficients_only and args.mode != "basisdraft_all8":
         raise ValueError("coefficient-only training requires BasisDraft mode")
-    if args.resident_eval_only != (args.mode == "resident_int4_shared"):
+    resident_stage = args.resident_eval_only or args.resident_export_only
+    if args.resident_eval_only and args.resident_export_only:
+        raise ValueError("resident evaluation and export modes are mutually exclusive")
+    if resident_stage != (args.mode == "resident_int4_shared"):
         raise ValueError(
-            "resident INT4 shared mode is an optimizer-free evaluation stage"
+            "resident INT4 shared mode requires an optimizer-free eval/export stage"
         )
     if args.resident_eval_only and not args.next_router_agreement:
         raise ValueError("resident hybrid evaluation requires next-router labels")
@@ -1375,9 +1379,23 @@ def main() -> None:
             raise ValueError("teacher-forced next-router reconstruction failed")
     else:
         initial_tune_rows = []
-    if args.resident_eval_only:
+    if resident_stage:
         assert isinstance(model, PackedInt4ResidentExperts)
-        assert initial_router_tune is not None
+        if initial_router_tune is None:
+            initial_router_tune, initial_tune_rows = evaluate(
+                model,
+                datasets["tune"],
+                mode=args.mode,
+                layer=args.layer,
+                device=device,
+                gate_up=gate_up,
+                down=down,
+                microbatch=32,
+                workers=args.num_workers,
+                aggregate_loss_weight=args.aggregate_loss_weight,
+                individual_loss_weight=0.0,
+                cosine_loss_weight=args.cosine_loss_weight,
+            )
         development, development_rows = evaluate(
             model,
             datasets["development"],
@@ -1390,7 +1408,9 @@ def main() -> None:
             workers=args.num_workers,
             next_norm_weight=next_norm_weight,
             next_router_weight=next_router_weight,
-            router_agreement_weight=args.router_agreement_weight,
+            router_agreement_weight=(
+                args.router_agreement_weight if args.next_router_agreement else 0.0
+            ),
             aggregate_loss_weight=args.aggregate_loss_weight,
             individual_loss_weight=0.0,
             cosine_loss_weight=args.cosine_loss_weight,
