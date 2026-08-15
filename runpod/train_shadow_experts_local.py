@@ -1825,7 +1825,12 @@ def main() -> None:
         "target_checkpoint_index_sha256": checkpoint.index_sha256,
         "partition_manifest_sha256": sha256_file(args.partition_manifest),
         "diagnostic_only": True,
-        "closed_loop_authorized": component_gate,
+        # A layer-local v2 component result cannot authorize closed-loop use.
+        # Only the aggregate 40-layer promotion artifact may do that after
+        # the predeclared large-gain gate passes.
+        "closed_loop_authorized": bool(
+            component_gate and args.mode != "resident_int4_tail_control"
+        ),
         "formal_validation_opened": False,
         "calibration_opened": False,
         "sealed_test_opened": False,

@@ -813,9 +813,10 @@ class RouterVisibleTailControl(nn.Module):
             raise ValueError("next-router weight has incompatible geometry")
         if router_weight.device != self.expert_codes.weight.device:
             raise ValueError("next-router weight is on a different device")
-        if router_weight.requires_grad:
-            raise ValueError("next-router weight must be frozen")
-        self._next_router_weight = router_weight
+        # Binding can precede the global backbone freeze. Detach without a
+        # copy: this keeps a non-owning view of the exact resident router,
+        # prevents gradients, and avoids serializing duplicate router bytes.
+        self._next_router_weight = router_weight.detach()
 
     def forward(
         self,
