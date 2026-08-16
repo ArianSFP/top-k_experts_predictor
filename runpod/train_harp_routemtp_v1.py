@@ -788,6 +788,31 @@ def main() -> None:
             args.initialize_from, expected_stage=expected, predictor=predictor,
             adapters=adapters, residual=residual, expert=expert, router=router,
         )
+        if initializer.get("source_commit") != args.source_commit:
+            raise ValueError("RouteMTP predecessor source commit differs")
+        if initializer.get("hydration_source_commit") != hydration_source_commit:
+            raise ValueError("RouteMTP predecessor hydration source differs")
+        if initializer.get("hydration_manifest_sha256") != hydration_manifest_sha256:
+            raise ValueError("RouteMTP predecessor hydration differs")
+        if initializer.get("training_companion_manifest_sha256") != companion_manifest_sha256:
+            raise ValueError("RouteMTP predecessor companion differs")
+        if initializer.get("config") != config.__dict__:
+            raise ValueError("RouteMTP predecessor configuration differs")
+        if int(initializer.get("seed", -1)) != args.seed:
+            raise ValueError("RouteMTP predecessor seed differs")
+        for sealed_key in (
+            "official_tune_opened", "diagnostic_development_opened",
+            "formal_validation_opened", "calibration_opened", "sealed_test_opened",
+        ):
+            if initializer.get(sealed_key) is not False:
+                raise PermissionError(f"RouteMTP predecessor violates {sealed_key}")
+        predecessor_split = args.initialize_from.parent / "INTERNAL_SPLIT.json"
+        if (
+            not predecessor_split.is_file()
+            or initializer.get("internal_split_sha256") != sha256_file(predecessor_split)
+            or json.loads(predecessor_split.read_text(encoding="utf-8")) != split
+        ):
+            raise ValueError("RouteMTP predecessor request split differs")
         if stage == "r2_path":
             nn.init.zeros_(predictor.path_head.pre[-1].weight); nn.init.zeros_(predictor.path_head.pre[-1].bias)
             nn.init.zeros_(predictor.path_head.post[-1].weight); nn.init.zeros_(predictor.path_head.post[-1].bias)
