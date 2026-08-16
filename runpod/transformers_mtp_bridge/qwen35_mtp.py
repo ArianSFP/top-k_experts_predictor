@@ -28,6 +28,7 @@ from mtp_router_semantics import native_topk_router_distribution
 MTP_PREFIX = "mtp."
 SHARED_EMBED_KEY = "model.language_model.embed_tokens.weight"
 SHARED_LM_HEAD_KEY = "lm_head.weight"
+TARGET_FINAL_NORM_KEY = "model.language_model.norm.weight"
 
 
 def _checkpoint_index(model_path: str | Path) -> dict[str, str]:
@@ -92,6 +93,13 @@ class Qwen35CheckpointMTP(nn.Module):
             config.hidden_size, eps=config.rms_norm_eps
         )
         self.pre_fc_norm_hidden = Qwen3_5MoeRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps
+        )
+        # The rich causal dataset stores layer-39 post-MoE xplus, whereas the
+        # native MTP consumes the target model's final-normalized hidden row.
+        # Keep the authoritative frozen norm with the replay module so every
+        # caller applies the same checkpoint operation to its causal seed.
+        self.target_final_norm = Qwen3_5MoeRMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
         self.fc = nn.Linear(2 * config.hidden_size, config.hidden_size, bias=False)
@@ -264,6 +272,12 @@ def load_checkpoint_mtp(
 
     parameters = dict(module.named_parameters())
     index = _checkpoint_index(model_path)
+    target_norm_weight = read_checkpoint_tensor(
+        model_path, index, TARGET_FINAL_NORM_KEY
+    )
+    module.target_final_norm.weight.data.copy_(
+        target_norm_weight.to(dtype=module.target_final_norm.weight.dtype)
+    )
     source_keys = sorted(key for key in index if key.startswith(MTP_PREFIX))
     loaded: list[tuple[str, str]] = []
     for source_key in source_keys:
@@ -295,6 +309,7 @@ def load_checkpoint_mtp(
         "mapping": loaded,
         "shared_embedding_key": SHARED_EMBED_KEY,
         "shared_lm_head_key": SHARED_LM_HEAD_KEY,
+        "target_final_norm_key": TARGET_FINAL_NORM_KEY,
         "attention_implementation": module.decoder.config._attn_implementation,
         "experts_implementation": "eager",
         "layer_types": ["full_attention"],
