@@ -64,7 +64,11 @@ cardinality drift, and applies stable top eight. It never treats
 
 Training samples budgets `{1,4,8,16}`. Each view applies its deployed
 ancestor-closed mask and receives its own calibrated OTHER mass. All-node
-counterfactual labels still supervise branch semantics.
+counterfactual labels still supervise branch semantics. Training may execute
+all nodes to retain that dense teacher signal; every evaluation/timing view
+executes only its visible ancestor-closed nodes and reports the exact executed
+node count. Masking a prediction after executing a hidden node is forbidden in
+the runtime measurement.
 
 ## Data and split discipline
 
@@ -82,6 +86,15 @@ counterfactual labels still supervise branch semantics.
   calibration after the architecture is frozen.
 - The 128-request diagnostic partition is opened once. Formal validation,
   calibration, and sealed test remain closed.
+- The official B2 224/32 split is reconstructed with its original
+  `sha256(harp-rtt-b2-tune\0request_id)` rule without reading companion rows.
+  Only the 224 training requests are divided into 192/32 internal partitions.
+- Tune and diagnostic hydration stores are separate because they bind to
+  different immutable companions. Frozen evaluation verifies both bindings;
+  the training checkpoint remains bound to the fitting/tune hydration.
+- The 32-position parity hydration is an exact audited subset of the full
+  fitting hydration. The trainer requires identical geometry/bindings,
+  identical overlapping request records, and exact source-offset inclusion.
 
 ## Immutable experiment ladder
 
@@ -103,6 +116,9 @@ counterfactual labels still supervise branch semantics.
 
 The first failed nonlinear addition ends the ladder. Seed 42 screens all
 variants. Seed 43 is run only for the winning information-positive R2 model.
+Route-only stages are checkpointed on internal-development branch Recall@8.
+Path, joint, and nonlinear stages are checkpointed on deployed factual H2-H4
+Recall@8; selecting a path-only stage on invariant branch recall is forbidden.
 
 ## Gates
 
@@ -176,8 +192,10 @@ harp_rtt/routemtp_replay.py
 runpod/transformers_mtp_bridge/hydrate_routemtp_prefix_cache.py
 runpod/prepare_routemtp_hydration_inputs.py
 runpod/audit_harp_routemtp_replay.py
+runpod/audit_routemtp_hydration.py
 runpod/train_harp_routemtp_v1.py
 runpod/evaluate_harp_routemtp_v1.py
+runpod/compare_harp_routemtp_representation.py
 tests/test_harp_routemtp.py
 tests/test_harp_routemtp_cache.py
 tests/test_harp_routemtp_loss.py
