@@ -453,6 +453,7 @@ def forward_one(
     runtime_static: Any, geometry: Any, token_embedding: Tensor,
     hydration: HydrationStore, host: Mapping[str, Any], device: torch.device,
     budget_index: int,
+    execute_visible_only: bool = False,
 ) -> tuple[Any, Any, Any, Tensor]:
     prepared_host, base_scores = anchor_scores(
         host, anchor=anchor, runtime_static=runtime_static, device=device
@@ -462,6 +463,8 @@ def forward_one(
         config=predictor.config,
     )
     inputs = prepared.model_inputs
+    visible = inputs["anytime_node_masks"][:, budget_index]
+    execution_mask = visible if execute_visible_only else inputs["node_mask"]
     if stage_uses_replay(stage):
         factories, lengths, target_seeds, prefix_ids, hidden_histories = hydration.batch_factories(
             host["metadata"], mtp=runner.mtp, device=device
@@ -469,7 +472,7 @@ def forward_one(
         replay = runner(
             node_token_ids=inputs["node_token_ids"],
             parent_ids=inputs["node_parent_ids"],
-            node_mask=inputs["node_mask"],
+            node_mask=execution_mask,
             current_target_hidden=target_seeds,
             base_cache_factory=lambda index: factories[index](),
             base_cache_lengths=lengths,
@@ -498,14 +501,13 @@ def forward_one(
             recurrent_state=inputs["captured_vocabulary_head_input"],
         )
     _, anchor_marginals = exact_k_logz_with_marginals(base_scores, predictor.config.exact_k)
-    visible = inputs["anytime_node_masks"][:, budget_index]
     output = predictor(
         **channels,
         node_token_embeddings=inputs["node_token_embeddings"],
         node_parent_ids=inputs["node_parent_ids"],
         node_depths=inputs["node_depths"],
         node_child_ranks=inputs["node_child_ranks"],
-        node_mask=inputs["node_mask"],
+        node_mask=execution_mask,
         visible_mask=visible,
         native_edge_log_probabilities=inputs["native_edge_log_probabilities"],
         current_post_layer=inputs["current_post_layer"],
@@ -530,7 +532,7 @@ def forward_one(
         path=output.path,
         node_depths=inputs["node_depths"],
         visible_mask=visible,
-        branch_supervision_mask=inputs["node_mask"],
+        branch_supervision_mask=execution_mask,
         native_path_log_probabilities=inputs["native_path_log_probabilities"],
         teacher_node_logits=prepared.teacher_node_logits,
         teacher_node_ids=prepared.teacher_node_ids,
@@ -566,6 +568,7 @@ def evaluate(
         branch_hits = branch_slots = factual_hits = factual_slots = candidate_hits = 0
         horizon_hits = [0] * 4; horizon_slots = [0] * 4
         candidate_horizon_hits = [0] * 4; loss_total = rows = 0
+        executed_nodes = 0
         request_counts: dict[str, dict[str, Any]] = defaultdict(
             lambda: {
                 "branch_hits": 0, "branch_slots": 0,
@@ -582,8 +585,10 @@ def evaluate(
                 anchor=anchor, runtime_static=runtime_static, geometry=geometry,
                 token_embedding=token_embedding, hydration=hydration, host=host,
                 device=device, budget_index=budget_index,
+                execute_visible_only=True,
             )
             visible = prepared.model_inputs["anytime_node_masks"][:, budget_index]
+            executed_nodes += int(visible.sum())
             branch_valid = (
                 prepared.branch_valid
                 & visible[..., None]
@@ -678,6 +683,8 @@ def evaluate(
             "bootstrap_seed": 42,
             "wall_seconds": wall_seconds,
             "milliseconds_per_source_position": 1_000.0 * wall_seconds / max(1, len(dataset)),
+            "executed_nodes": executed_nodes,
+            "executed_nodes_per_source_position": executed_nodes / max(1, len(dataset)),
         }
     selection_budget = "16" if "16" in budgets else str(max(budgets_to_evaluate))
     return {"budgets": budgets, "selection_value": budgets[selection_budget]["branch_recall_at_8"]}
