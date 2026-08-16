@@ -520,6 +520,48 @@ def uniform_routequant_projected_bytes(
     return layers * (packed + scales + metadata)
 
 
+def mixed_routequant_projected_bytes(
+    bit_widths: Tensor,
+    *,
+    hidden_width: int = 2048,
+    intermediate_width: int = 512,
+    group_size: int = 64,
+) -> int:
+    """Exact logical tensor bytes for a per-layer/per-expert bit schedule.
+
+    The bit-width tensor is [layers, experts]. A schedule value applies to the
+    complete gate/up/down expert cell, so expert identity and the native
+    SwiGLU remain intact at every non-zero precision.
+    """
+
+    widths = torch.as_tensor(bit_widths, dtype=torch.int8).cpu()
+    if widths.ndim != 2 or widths.shape[0] < 1 or widths.shape[1] < 1:
+        raise ValueError("mixed RouteQuant schedule must be [layers,experts]")
+    if any(int(value) not in SUPPORTED_BITS for value in widths.flatten().tolist()):
+        raise ValueError("mixed RouteQuant schedule contains an unsupported bit width")
+    if hidden_width % group_size or intermediate_width % group_size:
+        raise ValueError("group size must divide both expert input widths")
+    cell_weights = 3 * hidden_width * intermediate_width
+    scale_values = (
+        2 * intermediate_width * (hidden_width // group_size)
+        + hidden_width * (intermediate_width // group_size)
+    )
+    payload = 0
+    for layer in widths:
+        active = layer > 0
+        payload += sum(
+            math.ceil(int((layer == bits).sum()) * cell_weights * bits / 8)
+            for bits in range(1, 5)
+        )
+        payload += int(active.sum()) * scale_values * 2
+        # Two matrix banks each persist one int8 bit table, one int32 bucket
+        # map, and int16 expert IDs for every active bucket entry.
+        payload += 2 * (
+            layer.numel() * (1 + 4) + int(active.sum()) * 2
+        )
+    return int(payload)
+
+
 __all__ = [
     "PackedNBitMatrixBank",
     "PackedRouteQuantExperts",
@@ -528,6 +570,7 @@ __all__ = [
     "dequantize_groupwise_nbit",
     "pack_unsigned_codes",
     "quantize_groupwise_nbit",
+    "mixed_routequant_projected_bytes",
     "uniform_routequant_projected_bytes",
     "unpack_unsigned_codes",
 ]

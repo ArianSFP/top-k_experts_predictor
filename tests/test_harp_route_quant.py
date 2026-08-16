@@ -4,6 +4,7 @@ import torch
 from harp_rtt.route_quant import (
     PackedRouteQuantExperts,
     dequantize_groupwise_nbit,
+    mixed_routequant_projected_bytes,
     pack_unsigned_codes,
     quantize_groupwise_nbit,
     uniform_routequant_projected_bytes,
@@ -135,3 +136,16 @@ def test_routequant_projected_bytes_are_monotonic_and_include_overhead():
     assert sizes[1] > raw_two_bit
     assert sizes[3] > 15 * 2**30
 
+
+
+def test_routequant_mixed_projected_bytes_match_uniform_schedules():
+    for bits in (1, 2, 3, 4):
+        schedule = torch.full((40, 256), bits, dtype=torch.int8)
+        assert mixed_routequant_projected_bytes(schedule) == (
+            uniform_routequant_projected_bytes(bits=bits)
+        )
+    mixed = torch.full((40, 256), 3, dtype=torch.int8)
+    mixed[:, :128] = 4
+    assert uniform_routequant_projected_bytes(bits=3) < (
+        mixed_routequant_projected_bytes(mixed)
+    ) < uniform_routequant_projected_bytes(bits=4)
