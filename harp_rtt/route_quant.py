@@ -622,6 +622,60 @@ def uniform_routequant_projected_bytes(
     return layers * (packed + scales + metadata)
 
 
+def asymmetric_routequant_projected_bytes(
+    gate_up_bit_widths: Tensor,
+    down_bit_widths: Tensor,
+    *,
+    hidden_width: int = 2048,
+    intermediate_width: int = 512,
+    group_size: int = 64,
+    scale_bytes: int = 2,
+) -> int:
+    """Logical bytes for separate gate/up and down bit schedules.
+
+    Both schedules are ``[layers, experts]`` and must omit the same complete
+    cells. This preserves the native expert identity and SwiGLU while allowing
+    the two projection families to spend different precision.
+    """
+
+    gate_widths = torch.as_tensor(gate_up_bit_widths, dtype=torch.int8).cpu()
+    down_widths = torch.as_tensor(down_bit_widths, dtype=torch.int8).cpu()
+    if gate_widths.shape != down_widths.shape or gate_widths.ndim != 2:
+        raise ValueError("asymmetric RouteQuant schedules must match [layers,experts]")
+    if gate_widths.shape[0] < 1 or gate_widths.shape[1] < 1:
+        raise ValueError("asymmetric RouteQuant schedule cannot be empty")
+    if any(
+        int(value) not in SUPPORTED_BITS
+        for value in torch.cat((gate_widths.flatten(), down_widths.flatten())).tolist()
+    ):
+        raise ValueError("asymmetric RouteQuant schedule has unsupported bits")
+    if not torch.equal(gate_widths == 0, down_widths == 0):
+        raise ValueError("asymmetric RouteQuant omission must remove complete cells")
+    if hidden_width % group_size or intermediate_width % group_size:
+        raise ValueError("group size must divide both expert input widths")
+    if scale_bytes not in (1, 2):
+        raise ValueError("RouteQuant scale storage must use one or two bytes")
+
+    gate_values = 2 * hidden_width * intermediate_width
+    down_values = hidden_width * intermediate_width
+    gate_scales = 2 * intermediate_width * (hidden_width // group_size)
+    down_scales = hidden_width * (intermediate_width // group_size)
+    payload = 0
+    for gate_layer, down_layer in zip(gate_widths, down_widths, strict=True):
+        for layer, values, scale_values in (
+            (gate_layer, gate_values, gate_scales),
+            (down_layer, down_values, down_scales),
+        ):
+            active = layer > 0
+            payload += sum(
+                math.ceil(int((layer == bits).sum()) * values * bits / 8)
+                for bits in range(1, 5)
+            )
+            payload += int(active.sum()) * scale_values * scale_bytes
+            payload += layer.numel() * (1 + 4) + int(active.sum()) * 2
+    return int(payload)
+
+
 def mixed_routequant_projected_bytes(
     bit_widths: Tensor,
     *,
@@ -673,6 +727,7 @@ __all__ = [
     "RouteQuantConfig",
     "SUPPORTED_BITS",
     "dequantize_groupwise_nbit",
+    "asymmetric_routequant_projected_bytes",
     "pack_unsigned_codes",
     "quantize_groupwise_nbit",
     "mixed_routequant_projected_bytes",

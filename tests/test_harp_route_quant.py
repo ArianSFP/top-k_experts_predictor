@@ -3,6 +3,7 @@ import torch
 
 from harp_rtt.route_quant import (
     PackedRouteQuantExperts,
+    asymmetric_routequant_projected_bytes,
     dequantize_groupwise_nbit,
     mixed_routequant_projected_bytes,
     pack_unsigned_codes,
@@ -207,3 +208,22 @@ def test_routequant_empty_schedule_strict_load_round_trip():
     ids = torch.tensor([[0, 1], [2, 3]])
     weights = torch.tensor([[0.7, 0.2], [0.6, 0.3]])
     assert torch.equal(source(hidden, ids, weights), target(hidden, ids, weights))
+
+
+def test_routequant_asymmetric_bytes_match_uniform_and_order_sensitivity():
+    uniform = torch.full((40, 256), 3, dtype=torch.int8)
+    assert asymmetric_routequant_projected_bytes(uniform, uniform) == (
+        uniform_routequant_projected_bytes(bits=3)
+    )
+    low_gate = torch.full((40, 256), 2, dtype=torch.int8)
+    high_down = torch.full((40, 256), 3, dtype=torch.int8)
+    high_gate = torch.full((40, 256), 3, dtype=torch.int8)
+    low_down = torch.full((40, 256), 2, dtype=torch.int8)
+    assert asymmetric_routequant_projected_bytes(low_gate, high_down) < (
+        asymmetric_routequant_projected_bytes(high_gate, low_down)
+    )
+    with pytest.raises(ValueError, match="complete cells"):
+        asymmetric_routequant_projected_bytes(
+            torch.zeros((1, 2), dtype=torch.int8),
+            torch.ones((1, 2), dtype=torch.int8),
+        )

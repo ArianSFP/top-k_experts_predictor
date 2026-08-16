@@ -32,6 +32,7 @@ if str(REPO_ROOT) not in sys.path:
 from harp_rtt.exact_k import stable_topk  # noqa: E402
 from harp_rtt.route_quant import (  # noqa: E402
     PackedRouteQuantExperts,
+    asymmetric_routequant_projected_bytes,
     mixed_routequant_projected_bytes,
     uniform_routequant_projected_bytes,
 )
@@ -74,6 +75,11 @@ def parse_args() -> argparse.Namespace:
         "--candidates",
         default="1:mse,2:mse,3:mse,4:amax,4:mse",
         help="comma-separated BIT:SCALE_METHOD candidates",
+    )
+    parser.add_argument(
+        "--asymmetric-candidates",
+        default="",
+        help="optional comma-separated GATE_UP_BITS/DOWN_BITS:SCALE_METHOD candidates",
     )
     parser.add_argument("--group-size", type=int, choices=(32, 64), default=64)
     parser.add_argument("--scale-storage", choices=("bf16", "log8", "fp8_e4m3"), default="bf16")
@@ -140,6 +146,26 @@ def parse_candidates(value: str) -> tuple[tuple[int, str], ...]:
         result.append((bits, method))
     if not result or len(set(result)) != len(result):
         raise ValueError("RouteQuant candidates must be non-empty and unique")
+    return tuple(result)
+
+
+def parse_asymmetric_candidates(value: str) -> tuple[tuple[int, int, str], ...]:
+    if not value:
+        return ()
+    result = []
+    for item in value.split(","):
+        widths, separator, method = item.partition(":")
+        gate_text, slash, down_text = widths.partition("/")
+        if not separator or not slash:
+            raise ValueError("asymmetric candidate must be GU_BITS/DOWN_BITS:METHOD")
+        gate_bits, down_bits = int(gate_text), int(down_text)
+        if gate_bits not in (1, 2, 3, 4) or down_bits not in (1, 2, 3, 4):
+            raise ValueError("asymmetric RouteQuant bit width is unsupported")
+        if method not in {"amax", "mse"}:
+            raise ValueError("asymmetric RouteQuant scale method is unsupported")
+        result.append((gate_bits, down_bits, method))
+    if len(set(result)) != len(result):
+        raise ValueError("asymmetric RouteQuant candidates must be unique")
     return tuple(result)
 
 
@@ -390,6 +416,7 @@ def main() -> None:
     args = parse_args()
     layers = parse_layers(args.layers)
     candidates = parse_candidates(args.candidates)
+    asymmetric_candidates = parse_asymmetric_candidates(args.asymmetric_candidates)
     upgrade_fractions = parse_upgrade_fractions(args.mixed_upgrade_fractions)
     scale_dtype, scale_bytes = resolve_scale_storage(args.scale_storage)
     if upgrade_fractions and args.mixed_upgrade_bits != args.mixed_base_bits + 1:
@@ -439,6 +466,10 @@ def main() -> None:
         "partition_schema": partition["schema"],
         "layers": list(layers),
         "candidates": [f"{bits}:{method}" for bits, method in candidates],
+        "asymmetric_candidates": [
+            f"{gate}/{down}:{method}"
+            for gate, down, method in asymmetric_candidates
+        ],
         "group_size": args.group_size,
         "scale_storage": args.scale_storage,
         "scale_storage_bytes": scale_bytes,
@@ -621,6 +652,64 @@ def main() -> None:
                 del model
                 if device.type == "cuda":
                     torch.cuda.empty_cache()
+        for gate_bits, down_bits, method in asymmetric_candidates:
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats(device)
+            model = PackedRouteQuantExperts.from_target(
+                gate_up,
+                down,
+                gate_up_bits=gate_bits,
+                down_bits=down_bits,
+                exact_k=8,
+                group_size=args.group_size,
+                scale_method=method,
+                item_chunk=args.item_chunk,
+                scale_dtype=scale_dtype,
+            ).to(device)
+            model.enable_dequantized_cache(True, max_experts=256)
+            metrics = evaluate_candidate(
+                model,
+                layer_datasets["tune"],
+                layer=layer,
+                device=device,
+                microbatch=args.microbatch,
+                workers=args.num_workers,
+                next_norm_weight=next_norm,
+                next_router_weight=next_router,
+            )
+            gate_schedule = torch.full((40, 256), gate_bits, dtype=torch.int8)
+            down_schedule = torch.full((40, 256), down_bits, dtype=torch.int8)
+            projected = asymmetric_routequant_projected_bytes(
+                gate_schedule,
+                down_schedule,
+                group_size=args.group_size,
+                scale_bytes=scale_bytes,
+            )
+            row = {
+                "layer": layer,
+                "variant": "asymmetric_projection_bits",
+                "gate_up_bits": gate_bits,
+                "down_bits": down_bits,
+                "scale_method": method,
+                "layer_persistent_bytes": model.persistent_nbytes(),
+                "scale_storage": args.scale_storage,
+                "uniform_40_layer_projected_bytes": projected,
+                "uniform_40_layer_projected_gib": projected / 2**30,
+                "metrics": metrics,
+                "exact_baseline": baselines["exact"],
+                "zero_baseline": baselines["zero"],
+                "peak_reserved_gib": (
+                    torch.cuda.max_memory_reserved(device) / 2**30
+                    if device.type == "cuda" else 0.0
+                ),
+            }
+            results.append(row)
+            append_jsonl(args.output / "candidate_metrics.jsonl", row)
+            print(json.dumps(row, sort_keys=True), flush=True)
+            del model
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
         for bits, method in candidates:
             if device.type == "cuda":
                 torch.cuda.empty_cache()
@@ -702,6 +791,34 @@ def main() -> None:
             "uniform_40_layer_projected_bytes": rows[0]["uniform_40_layer_projected_bytes"],
             "uniform_40_layer_projected_gib": rows[0]["uniform_40_layer_projected_gib"],
         })
+    asymmetric_aggregates = []
+    for gate_bits, down_bits, method in asymmetric_candidates:
+        rows = [
+            row for row in results
+            if row.get("variant") == "asymmetric_projection_bits"
+            and row.get("gate_up_bits") == gate_bits
+            and row.get("down_bits") == down_bits
+            and row.get("scale_method") == method
+        ]
+        asymmetric_aggregates.append({
+            "variant": "asymmetric_projection_bits",
+            "gate_up_bits": gate_bits,
+            "down_bits": down_bits,
+            "scale_method": method,
+            "mean_next_router_recall_at_8": sum(
+                row["metrics"]["request_macro_next_router_recall_at_8"] for row in rows
+            ) / len(rows),
+            "mean_normalized_residual_rmse": sum(
+                row["metrics"]["normalized_residual_rmse"] for row in rows
+            ) / len(rows),
+            "maximum_layer_recall_regression_from_exact": max(
+                row["exact_baseline"]["request_macro_next_router_recall_at_8"]
+                - row["metrics"]["request_macro_next_router_recall_at_8"]
+                for row in rows
+            ),
+            "uniform_40_layer_projected_bytes": rows[0]["uniform_40_layer_projected_bytes"],
+            "uniform_40_layer_projected_gib": rows[0]["uniform_40_layer_projected_gib"],
+        })
     mixed_aggregates = []
     for fraction in upgrade_fractions:
         rows = [
@@ -736,6 +853,7 @@ def main() -> None:
         "schema": RESULT_SCHEMA,
         "layers": list(layers),
         "aggregates": aggregates,
+        "asymmetric_aggregates": asymmetric_aggregates,
         "mixed_aggregates": mixed_aggregates,
         "candidate_rows": len(results),
         "optimizer_constructed": False,

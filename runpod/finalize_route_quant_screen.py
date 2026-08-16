@@ -61,8 +61,16 @@ def finalize(run: Path, *, source_commit: str) -> dict[str, Any]:
         (int(value.split(":")[0]), value.split(":")[1])
         for value in manifest["candidates"]
     )
+    asymmetric = tuple(
+        (
+            int(value.split(":")[0].split("/")[0]),
+            int(value.split(":")[0].split("/")[1]),
+            value.split(":")[1],
+        )
+        for value in manifest.get("asymmetric_candidates", [])
+    )
     fractions = tuple(float(value) for value in manifest["mixed_upgrade_fractions"])
-    expected = len(layers) * (len(candidates) + len(fractions))
+    expected = len(layers) * (len(candidates) + len(asymmetric) + len(fractions))
     if len(rows) != expected:
         raise ValueError(
             f"RouteQuant interrupted run has {len(rows)} rows, expected {expected}"
@@ -80,6 +88,41 @@ def finalize(run: Path, *, source_commit: str) -> dict[str, Any]:
             raise ValueError("RouteQuant uniform candidate lacks a complete layer set")
         aggregates.append({
             "bits": bits,
+            "scale_method": method,
+            "mean_next_router_recall_at_8": sum(
+                row["metrics"]["request_macro_next_router_recall_at_8"]
+                for row in selected
+            ) / len(selected),
+            "mean_normalized_residual_rmse": sum(
+                row["metrics"]["normalized_residual_rmse"] for row in selected
+            ) / len(selected),
+            "maximum_layer_recall_regression_from_exact": max(
+                row["exact_baseline"]["request_macro_next_router_recall_at_8"]
+                - row["metrics"]["request_macro_next_router_recall_at_8"]
+                for row in selected
+            ),
+            "uniform_40_layer_projected_bytes": selected[0][
+                "uniform_40_layer_projected_bytes"
+            ],
+            "uniform_40_layer_projected_gib": selected[0][
+                "uniform_40_layer_projected_gib"
+            ],
+        })
+    asymmetric_aggregates = []
+    for gate_bits, down_bits, method in asymmetric:
+        selected = [
+            row for row in rows
+            if row.get("variant") == "asymmetric_projection_bits"
+            and row.get("gate_up_bits") == gate_bits
+            and row.get("down_bits") == down_bits
+            and row.get("scale_method") == method
+        ]
+        if {int(row["layer"]) for row in selected} != set(layers):
+            raise ValueError("RouteQuant asymmetric candidate lacks a complete layer set")
+        asymmetric_aggregates.append({
+            "variant": "asymmetric_projection_bits",
+            "gate_up_bits": gate_bits,
+            "down_bits": down_bits,
             "scale_method": method,
             "mean_next_router_recall_at_8": sum(
                 row["metrics"]["request_macro_next_router_recall_at_8"]
@@ -141,6 +184,7 @@ def finalize(run: Path, *, source_commit: str) -> dict[str, Any]:
         "schema": RESULT_SCHEMA,
         "layers": list(layers),
         "aggregates": aggregates,
+        "asymmetric_aggregates": asymmetric_aggregates,
         "mixed_aggregates": mixed,
         "candidate_rows": len(rows),
         "measurement_source_commit": manifest["source_commit"],

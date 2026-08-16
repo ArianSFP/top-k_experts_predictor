@@ -6,6 +6,7 @@ import torch
 from harp_rtt.dataset import HarpRTTDataset
 
 from runpod.screen_route_quant import (
+    parse_asymmetric_candidates,
     parse_candidates,
     parse_layers,
     parse_upgrade_fractions,
@@ -17,6 +18,10 @@ from runpod.train_shadow_experts_local import ShadowFactualStateDataset
 
 def test_routequant_driver_parses_frozen_ladder():
     assert parse_layers("0,6,20,32") == (0, 6, 20, 32)
+    assert parse_asymmetric_candidates("2/3:mse,4/3:amax") == (
+        (2, 3, "mse"),
+        (4, 3, "amax"),
+    )
     assert parse_candidates("2:mse,3:mse,4:amax") == (
         (2, "mse"),
         (3, "mse"),
