@@ -101,3 +101,49 @@ def test_routequant_export_schedule_is_hash_bound(tmp_path):
             path, uniform_bits=None, source_commit="c" * 40,
             target_checkpoint_index_sha256=target,
         )
+
+
+def test_routequant_finalizer_seals_complete_interrupted_rows(tmp_path):
+    from runpod.finalize_route_quant_screen import finalize
+
+    run = tmp_path / "run"
+    run.mkdir()
+    manifest = {
+        "source_commit": "a" * 40,
+        "layers": [0],
+        "candidates": ["3:mse"],
+        "mixed_upgrade_fractions": [0.5],
+        "mixed_base_bits": 3,
+        "mixed_upgrade_bits": 4,
+        "optimizer_constructed": False,
+        "training_started": False,
+        "development_opened_for_metrics": False,
+        "formal_validation_opened": False,
+        "calibration_opened": False,
+        "sealed_test_opened": False,
+    }
+    (run / "run_manifest.json").write_text(json.dumps(manifest))
+    base = {
+        "layer": 0,
+        "metrics": {
+            "request_macro_next_router_recall_at_8": 0.9,
+            "normalized_residual_rmse": 0.2,
+        },
+        "exact_baseline": {"request_macro_next_router_recall_at_8": 0.99},
+        "uniform_40_layer_projected_bytes": 100,
+        "uniform_40_layer_projected_gib": 100 / 2**30,
+    }
+    rows = [
+        {**base, "bits": 3, "scale_method": "mse"},
+        {**base, "variant": "mixed_int3_int4", "upgrade_fraction": 0.5},
+    ]
+    (run / "candidate_metrics.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows)
+    )
+    (run / "layer_00_train_utility.json").write_text("{}")
+    result = finalize(run, source_commit="b" * 40)
+    assert result["candidate_rows"] == 2
+    assert result["recovered_after_post_metric_interruption"] is True
+    assert (run / "SHA256SUMS").is_file()
+    with pytest.raises(FileExistsError):
+        finalize(run, source_commit="b" * 40)

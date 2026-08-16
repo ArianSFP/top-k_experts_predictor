@@ -683,7 +683,7 @@ def main() -> None:
     for bits, method in candidates:
         rows = [
             row for row in results
-            if row["bits"] == bits and row["scale_method"] == method
+            if row.get("bits") == bits and row.get("scale_method") == method
         ]
         aggregates.append({
             "bits": bits,
