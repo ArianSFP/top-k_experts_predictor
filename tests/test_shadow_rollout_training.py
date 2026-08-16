@@ -3,12 +3,14 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from harp_rtt.route_quant import PackedRouteQuantExperts
 from harp_rtt.shadow_backbone import InstalledShadowBackbone
 from harp_rtt.shadow_bundle import (
     LOCAL_SCHEMA,
     load_shadow_bundle,
     resident_codebooks_from_bundle,
     resident_ids_from_bundle,
+    routequant_schedules_from_bundle,
 )
 from harp_rtt.shadow_expert import (
     BasisDraftConfig,
@@ -501,3 +503,70 @@ def test_resident_codebook_bundle_round_trip(tmp_path) -> None:
         target_checkpoint_index_sha256=target,
     )
     assert torch.equal(modules[7].codebook_proxy_ids, proxy_ids)
+
+
+def test_routequant_bundle_schedule_and_strict_load(tmp_path) -> None:
+    torch.manual_seed(53)
+    schedule = torch.tensor(([2, 3, 4, 3] * 64), dtype=torch.int8)
+    gate_up = torch.randn(256, 4, 4)
+    down = torch.randn(256, 4, 2)
+    reference = PackedRouteQuantExperts.from_target(
+        gate_up, down, gate_up_bits=schedule, exact_k=2, group_size=2,
+        scale_dtype=torch.uint8,
+    )
+    modules = tuple(
+        PackedRouteQuantExperts.empty_for_schedule(
+            schedule, hidden_width=4, intermediate_width=2, exact_k=2,
+            group_size=2, scale_dtype=torch.uint8,
+        )
+        for _ in range(40)
+    )
+    source = "e" * 40
+    target = "f" * 64
+    for layer in range(40):
+        directory = tmp_path / f"routequant_{layer:02d}"
+        directory.mkdir()
+        torch.save(
+            {
+                "schema": LOCAL_SCHEMA,
+                "mode": "routequant_all8",
+                "layer": layer,
+                "source_commit": source,
+                "target_checkpoint_index_sha256": target,
+                "model_state_dict": reference.state_dict(),
+                "bit_widths": schedule,
+                "group_size": 2,
+                "scale_storage": "log8",
+                "active_slots": 2,
+                "closed_loop_authorized": False,
+                "formal_validation_opened": False,
+                "calibration_opened": False,
+                "sealed_test_opened": False,
+            },
+            directory / f"shadow_routequant_all8_layer_{layer:02d}.pt",
+        )
+    schedules, storage = routequant_schedules_from_bundle(
+        tmp_path, source_commit=source,
+        target_checkpoint_index_sha256=target,
+        allow_unpromoted_diagnostic=True,
+    )
+    assert storage == "log8"
+    assert len(schedules) == 40
+    assert torch.equal(schedules[0], schedule)
+    installed = InstalledShadowBackbone(
+        model=nn.Identity(), mode="routequant_all8",
+        native_experts=tuple([None] * 40), shadow_experts=modules,
+    )
+    paths = load_shadow_bundle(
+        installed, tmp_path, source_commit=source,
+        target_checkpoint_index_sha256=target,
+        allow_unpromoted_diagnostic=True,
+    )
+    assert len(paths) == 40
+    hidden = torch.randn(2, 4)
+    ids = torch.tensor([[0, 1], [2, 3]])
+    weights = torch.tensor([[0.7, 0.2], [0.6, 0.3]])
+    assert torch.equal(
+        installed.shadow_experts[0](hidden, ids, weights),
+        reference(hidden, ids, weights),
+    )

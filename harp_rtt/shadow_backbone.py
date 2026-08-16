@@ -10,6 +10,7 @@ from typing import Any
 import torch
 from torch import nn
 
+from .route_quant import PackedRouteQuantExperts
 from .shadow_checkpoint import (
     IndexedCheckpoint,
     SelectiveLoadReport,
@@ -41,6 +42,7 @@ SHADOW_MODES = (
     "resident_int4_shared",
     "resident_int4_tail_control",
     "resident_int4_codebook",
+    "routequant_all8",
 )
 
 
@@ -96,6 +98,8 @@ def install_shadow_experts(
     resident_codebooks_by_layer: Sequence[
         tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     ] | None = None,
+    routequant_bits_by_layer: Sequence[torch.Tensor] | None = None,
+    routequant_scale_storage: str = "log8",
 ) -> InstalledShadowBackbone:
     """Replace only routed experts in an already-materialized official model."""
 
@@ -117,12 +121,29 @@ def install_shadow_experts(
         or len(resident_codebooks_by_layer) != 40
     ):
         raise ValueError("resident codebook requires exactly forty mapping tables")
+    if mode == "routequant_all8" and (
+        routequant_bits_by_layer is None
+        or len(routequant_bits_by_layer) != 40
+    ):
+        raise ValueError("RouteQuant requires exactly forty bit schedules")
+    if routequant_scale_storage not in {"bf16", "log8"}:
+        raise ValueError("RouteQuant runtime scale storage is unsupported")
     native: list[nn.Module | None] = []
     installed: list[nn.Module] = []
     for layer_id, layer in enumerate(resolve_text_layers(model)):
         original = layer.mlp.experts
         device, dtype = _module_device_dtype(original)
-        if mode == "basisdraft_all8":
+        if mode == "routequant_all8":
+            assert routequant_bits_by_layer is not None
+            replacement = PackedRouteQuantExperts.empty_for_schedule(
+                routequant_bits_by_layer[layer_id],
+                scale_dtype=(
+                    torch.bfloat16
+                    if routequant_scale_storage == "bf16" else torch.uint8
+                ),
+            ).to(device=device)
+            native.append(original if retain_native else None)
+        elif mode == "basisdraft_all8":
             replacement = RouteConditionedBasisExperts(BasisDraftConfig(
                 basis_count=basis_count,
                 basis_width=basis_width,
@@ -212,6 +233,7 @@ def install_shadow_experts(
         elif isinstance(module, (
             SharedResidualExperts, IndexedShadowExperts,
             RouteConditionedBasisExperts, PackedInt4ResidentExperts,
+            PackedRouteQuantExperts,
         )):
             module.requires_grad_(True)
     return InstalledShadowBackbone(
@@ -236,6 +258,8 @@ def build_selective_shadow_text_model(
     resident_codebooks_by_layer: Sequence[
         tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     ] | None = None,
+    routequant_bits_by_layer: Sequence[torch.Tensor] | None = None,
+    routequant_scale_storage: str = "log8",
 ) -> tuple[nn.Module, SelectiveLoadReport]:
     """Build the exact non-expert text stack without native expert allocation."""
 
@@ -243,6 +267,7 @@ def build_selective_shadow_text_model(
         "basisdraft_all8", "shared_width128", "shared_width512",
         "indexed_width16", "resident_int4_only", "resident_int4_shared",
         "resident_int4_tail_control", "resident_int4_codebook",
+        "routequant_all8",
     }:
         raise ValueError("selective deployment supports only resident shadow modes")
     try:
@@ -272,8 +297,24 @@ def build_selective_shadow_text_model(
         or len(resident_codebooks_by_layer) != 40
     ):
         raise ValueError("resident codebook requires exactly forty mapping tables")
+    if mode == "routequant_all8" and (
+        routequant_bits_by_layer is None
+        or len(routequant_bits_by_layer) != 40
+    ):
+        raise ValueError("RouteQuant requires exactly forty bit schedules")
+    if routequant_scale_storage not in {"bf16", "log8"}:
+        raise ValueError("RouteQuant runtime scale storage is unsupported")
     for layer_id, layer in enumerate(text_model.layers):
-        if mode == "basisdraft_all8":
+        if mode == "routequant_all8":
+            assert routequant_bits_by_layer is not None
+            replacement = PackedRouteQuantExperts.empty_for_schedule(
+                routequant_bits_by_layer[layer_id],
+                scale_dtype=(
+                    torch.bfloat16
+                    if routequant_scale_storage == "bf16" else torch.uint8
+                ),
+            )
+        elif mode == "basisdraft_all8":
             replacement = RouteConditionedBasisExperts(BasisDraftConfig(
                 basis_count=basis_count,
                 basis_width=basis_width,
@@ -340,6 +381,7 @@ def freeze_except_shadow(model: nn.Module) -> tuple[str, ...]:
         elif isinstance(experts, (
             SharedResidualExperts, IndexedShadowExperts,
             RouteConditionedBasisExperts, PackedInt4ResidentExperts,
+            PackedRouteQuantExperts,
         )):
             experts.requires_grad_(True)
         else:

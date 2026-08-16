@@ -7,6 +7,7 @@ from typing import Any
 
 import torch
 
+from .route_quant import PackedRouteQuantExperts
 from .shadow_backbone import InstalledShadowBackbone
 from .shadow_expert import (
     ExactTop1PlusDraftExperts,
@@ -30,6 +31,7 @@ CHECKPOINT_MODE = {
     "resident_int4_shared": "resident_int4_shared",
     "resident_int4_tail_control": "resident_tail_control_v2",
     "resident_int4_codebook": "resident_int4_codebook",
+    "routequant_all8": "routequant_all8",
 }
 
 
@@ -158,6 +160,56 @@ def resident_codebooks_from_bundle(
     return tuple(result)
 
 
+def routequant_schedules_from_bundle(
+    root: str | Path,
+    *,
+    source_commit: str,
+    target_checkpoint_index_sha256: str,
+    allow_unpromoted_diagnostic: bool = False,
+) -> tuple[tuple[torch.Tensor, ...], str]:
+    """Read strict per-layer bit schedules before RouteQuant construction."""
+
+    paths = discover_layer_checkpoints(root, "routequant_all8")
+    schedules = []
+    storage: str | None = None
+    for layer, path in enumerate(paths):
+        value = _load_value(
+            path,
+            expected_mode="routequant_all8",
+            expected_layer=layer,
+            source_commit=source_commit,
+            target_checkpoint_index_sha256=target_checkpoint_index_sha256,
+            allow_unpromoted_diagnostic=allow_unpromoted_diagnostic,
+        )
+        widths = value.get("bit_widths")
+        current_storage = value.get("scale_storage")
+        state = value["model_state_dict"]
+        if (
+            not isinstance(widths, torch.Tensor)
+            or widths.shape != (256,)
+            or any(int(item) not in (1, 2, 3, 4) for item in widths.tolist())
+        ):
+            raise ValueError("RouteQuant shard has an invalid bit schedule")
+        if current_storage not in {"bf16", "log8"}:
+            raise ValueError("RouteQuant shard has invalid scale storage")
+        if storage is None:
+            storage = str(current_storage)
+        elif storage != current_storage:
+            raise ValueError("RouteQuant scale storage differs across layers")
+        gate_widths = state.get("gate_up.bit_widths")
+        down_widths = state.get("down.bit_widths")
+        if (
+            not isinstance(gate_widths, torch.Tensor)
+            or not isinstance(down_widths, torch.Tensor)
+            or not torch.equal(gate_widths, widths)
+            or not torch.equal(down_widths, widths)
+        ):
+            raise ValueError("RouteQuant shard state disagrees with its schedule")
+        schedules.append(widths.to(torch.int8))
+    assert storage is not None
+    return tuple(schedules), storage
+
+
 def load_shadow_bundle(
     installed: InstalledShadowBackbone,
     root: str | Path,
@@ -205,6 +257,18 @@ def load_shadow_bundle(
                 != module.config.expert_residual_width
             ):
                 raise ValueError("BasisDraft runtime configuration differs from shard")
+            module.load_state_dict(state, strict=True)
+        elif isinstance(module, PackedRouteQuantExperts):
+            expected = set(module.state_dict())
+            if set(state) != expected:
+                raise ValueError("RouteQuant layer shard state is incomplete")
+            widths = value.get("bit_widths")
+            if (
+                not isinstance(widths, torch.Tensor)
+                or not torch.equal(widths.to(torch.int8), module.gate_up.bit_widths.cpu())
+                or not torch.equal(widths.to(torch.int8), module.down.bit_widths.cpu())
+            ):
+                raise ValueError("RouteQuant runtime schedule differs from shard")
             module.load_state_dict(state, strict=True)
         elif isinstance(module, PackedInt4ResidentExperts):
             expected = {
@@ -306,4 +370,5 @@ __all__ = [
     "load_shadow_bundle",
     "resident_codebooks_from_bundle",
     "resident_ids_from_bundle",
+    "routequant_schedules_from_bundle",
 ]

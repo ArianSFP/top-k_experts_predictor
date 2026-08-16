@@ -1,3 +1,5 @@
+import json
+
 import pytest
 import torch
 
@@ -74,3 +76,28 @@ def test_routequant_scale_storage_contract():
         assert resolve_scale_storage("fp8_e4m3") == (torch.float8_e4m3fn, 1)
     with pytest.raises(ValueError):
         resolve_scale_storage("int8")
+
+
+def test_routequant_export_schedule_is_hash_bound(tmp_path):
+    from runpod.export_route_quant import SCHEDULE_SCHEMA, load_schedule
+
+    source = "a" * 40
+    target = "b" * 64
+    path = tmp_path / "schedule.json"
+    path.write_text(json.dumps({
+        "schema": SCHEDULE_SCHEMA,
+        "source_commit": source,
+        "target_checkpoint_index_sha256": target,
+        "bit_widths": [[3] * 256 for _ in range(40)],
+    }))
+    widths, digest = load_schedule(
+        path, uniform_bits=None, source_commit=source,
+        target_checkpoint_index_sha256=target,
+    )
+    assert widths.shape == (40, 256)
+    assert digest is not None and len(digest) == 64
+    with pytest.raises(ValueError, match="lineage"):
+        load_schedule(
+            path, uniform_bits=None, source_commit="c" * 40,
+            target_checkpoint_index_sha256=target,
+        )

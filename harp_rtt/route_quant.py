@@ -331,6 +331,43 @@ class PackedNBitMatrixBank(nn.Module):
             buckets=buckets,
         )
 
+    @classmethod
+    def empty(
+        cls,
+        *,
+        bit_widths: Tensor,
+        input_width: int,
+        output_width: int,
+        group_size: int = 64,
+        scale_dtype: torch.dtype = torch.bfloat16,
+    ) -> "PackedNBitMatrixBank":
+        """Allocate a strict load target without native expert weights."""
+
+        widths = torch.as_tensor(bit_widths, dtype=torch.int8).cpu()
+        if widths.ndim != 1 or widths.numel() < 1:
+            raise ValueError("empty matrix-bank schedule must be one vector")
+        buckets: dict[int, tuple[Tensor, Tensor, Tensor]] = {}
+        for bits in range(1, 5):
+            ids = (widths == bits).nonzero(as_tuple=False).flatten()
+            buckets[bits] = (
+                ids.to(torch.int16),
+                torch.empty(
+                    ids.numel(), output_width,
+                    (input_width * bits + 7) // 8, dtype=torch.uint8,
+                ),
+                torch.empty(
+                    ids.numel(), output_width, input_width // group_size,
+                    dtype=scale_dtype,
+                ),
+            )
+        return cls(
+            bit_widths=widths,
+            input_width=input_width,
+            output_width=output_width,
+            group_size=group_size,
+            buckets=buckets,
+        )
+
     def dequantize(self, item: int, *, dtype: torch.dtype) -> Tensor | None:
         if not 0 <= int(item) < self.items:
             raise ValueError("matrix-bank item is out of range")
@@ -415,6 +452,41 @@ class PackedRouteQuantExperts(nn.Module):
             self._gate_up_cache[expert] = gate_up
             self._down_cache[expert] = down
         return gate_up, down
+
+    @classmethod
+    def empty_for_schedule(
+        cls,
+        bit_widths: Tensor,
+        *,
+        hidden_width: int = 2048,
+        intermediate_width: int = 512,
+        exact_k: int = 8,
+        group_size: int = 64,
+        scale_dtype: torch.dtype = torch.bfloat16,
+    ) -> "PackedRouteQuantExperts":
+        """Allocate a full-width mixed-bit expert pool for strict loading."""
+
+        widths = torch.as_tensor(bit_widths, dtype=torch.int8).cpu()
+        config = RouteQuantConfig(
+            hidden_width=hidden_width,
+            intermediate_width=intermediate_width,
+            experts=int(widths.numel()),
+            exact_k=exact_k,
+            group_size=group_size,
+        )
+        return cls(
+            config,
+            PackedNBitMatrixBank.empty(
+                bit_widths=widths, input_width=hidden_width,
+                output_width=2 * intermediate_width, group_size=group_size,
+                scale_dtype=scale_dtype,
+            ),
+            PackedNBitMatrixBank.empty(
+                bit_widths=widths, input_width=intermediate_width,
+                output_width=hidden_width, group_size=group_size,
+                scale_dtype=scale_dtype,
+            ),
+        )
 
     @classmethod
     def from_target(

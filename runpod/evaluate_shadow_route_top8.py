@@ -29,8 +29,10 @@ from harp_rtt.shadow_bundle import (  # noqa: E402
     load_shadow_bundle,
     resident_codebooks_from_bundle,
     resident_ids_from_bundle,
+    routequant_schedules_from_bundle,
 )
 from harp_rtt.shadow_checkpoint import IndexedCheckpoint, sha256_file  # noqa: E402
+from harp_rtt.route_quant import PackedRouteQuantExperts  # noqa: E402
 from harp_rtt.shadow_expert import PackedInt4TopKExperts  # noqa: E402
 from harp_rtt.shadow_rollout import ShadowRouteHooks, run_shadow_tree  # noqa: E402
 
@@ -74,7 +76,7 @@ def parse_args() -> argparse.Namespace:
             "basisdraft_all8", "exact_top1_plus_draft", "shared_width128",
             "shared_width512", "indexed_width16", "int4_top4",
             "resident_int4_only", "resident_int4_shared",
-            "resident_int4_codebook",
+            "resident_int4_codebook", "routequant_all8",
         ),
         required=True,
     )
@@ -95,6 +97,11 @@ def parse_args() -> argparse.Namespace:
             "cache each expert after its first exact reference dequantization "
             "for broad offline evaluation"
         ),
+    )
+    parser.add_argument(
+        "--cache-routequant-experts",
+        action="store_true",
+        help="cache exact RouteQuant reference dequantization for offline evaluation",
     )
     parser.add_argument(
         "--diagnostic-unpromoted-bundle",
@@ -415,13 +422,18 @@ def main() -> None:
         raise ValueError("native top-k diagnostic may not load a learned bundle")
     if args.diagnostic_unpromoted_bundle and args.mode not in {
         "basisdraft_all8", "exact_top1_plus_draft", "shared_width512",
-        "indexed_width16", "int4_top4", "resident_int4_only", "resident_int4_shared"
+        "indexed_width16", "int4_top4", "resident_int4_only", "resident_int4_shared",
+        "routequant_all8"
     }:
         raise ValueError(
             "the unpromoted diagnostic override is restricted to shadow controls"
         )
     if args.cache_int4_experts and args.mode != "int4_top4":
         raise ValueError("INT4 expert caching requires INT4 mode")
+    if args.cache_routequant_experts and args.mode != "routequant_all8":
+        raise ValueError("RouteQuant caching requires RouteQuant mode")
+    if args.cache_int4_experts and args.cache_routequant_experts:
+        raise ValueError("expert reference cache flags are mutually exclusive")
     if (args.ceiling_bundle is None) != (args.ceiling_parent_sha256 is None):
         raise ValueError(
             "--ceiling-bundle and --ceiling-parent-sha256 must be provided together"
@@ -459,6 +471,8 @@ def main() -> None:
     checkpoint = IndexedCheckpoint(args.model)
     resident_ids_by_layer = None
     resident_codebooks_by_layer = None
+    routequant_bits_by_layer = None
+    routequant_scale_storage = None
     if args.mode in {
         "resident_int4_only", "resident_int4_shared", "resident_int4_codebook"
     }:
@@ -477,6 +491,16 @@ def main() -> None:
                 target_checkpoint_index_sha256=checkpoint.index_sha256,
                 allow_unpromoted_diagnostic=args.diagnostic_unpromoted_bundle,
             )
+    if args.mode == "routequant_all8":
+        assert args.layer_checkpoint_root is not None
+        routequant_bits_by_layer, routequant_scale_storage = (
+            routequant_schedules_from_bundle(
+                args.layer_checkpoint_root,
+                source_commit=args.source_commit,
+                target_checkpoint_index_sha256=checkpoint.index_sha256,
+                allow_unpromoted_diagnostic=args.diagnostic_unpromoted_bundle,
+            )
+        )
     args.output.mkdir(parents=True)
     manifest = {
         "schema": SCHEMA,
@@ -494,6 +518,17 @@ def main() -> None:
             [int(ids.numel()) for ids in resident_ids_by_layer]
             if resident_ids_by_layer is not None else None
         ),
+        "routequant_scale_storage": routequant_scale_storage,
+        "routequant_bit_histogram": (
+            {
+                str(bits): sum(
+                    int((layer == bits).sum())
+                    for layer in routequant_bits_by_layer
+                )
+                for bits in range(1, 5)
+            }
+            if routequant_bits_by_layer is not None else None
+        ),
         "draft_scale": 0.0 if args.native_exact_slots is not None else 1.0,
         "trees": len(trees),
         "node_budget": int(args.node_budget),
@@ -509,7 +544,11 @@ def main() -> None:
         "ceiling_parent_sha256": args.ceiling_parent_sha256,
         "factual_mixture_evaluation": ceiling is not None,
         "execution_backend": (
-            "packed_int4_reference_with_exact_dequantization_cache"
+            "packed_routequant_reference_with_exact_dequantization_cache"
+            if args.cache_routequant_experts
+            else "packed_routequant_python_reference"
+            if args.mode == "routequant_all8"
+            else "packed_int4_reference_with_exact_dequantization_cache"
             if args.cache_int4_experts
             else "packed_int4_python_reference"
             if args.mode == "int4_top4"
@@ -541,6 +580,11 @@ def main() -> None:
         basis_expert_residual_width=args.basis_expert_residual_width,
         resident_ids_by_layer=resident_ids_by_layer,
         resident_codebooks_by_layer=resident_codebooks_by_layer,
+        routequant_bits_by_layer=routequant_bits_by_layer,
+        routequant_scale_storage=(
+            "log8" if routequant_scale_storage is None
+            else routequant_scale_storage
+        ),
     )
     if not args.native_parity_only and args.native_exact_slots is None:
         assert args.layer_checkpoint_root is not None
@@ -556,6 +600,11 @@ def main() -> None:
             for module in installed.shadow_experts:
                 if not isinstance(module, PackedInt4TopKExperts):
                     raise TypeError("INT4 cache requested for a non-INT4 module")
+                module.enable_dequantized_cache(max_experts=8)
+        if args.cache_routequant_experts:
+            for module in installed.shadow_experts:
+                if not isinstance(module, PackedRouteQuantExperts):
+                    raise TypeError("RouteQuant cache requested for another module")
                 module.enable_dequantized_cache(max_experts=8)
         write_json_exclusive(
             args.output / "BUNDLE_AUDIT.json",
