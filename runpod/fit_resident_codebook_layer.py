@@ -59,9 +59,9 @@ def parse_args() -> argparse.Namespace:
         parser.add_argument(f"--{split}-companion", type=Path, required=True)
     parser.add_argument("--partition-manifest", type=Path, required=True)
     parser.add_argument("--reuse-split-manifest", type=Path, required=True)
-    parser.add_argument("--scale-train-index", type=Path, required=True)
-    parser.add_argument("--scale-train-corpus", type=Path, required=True)
-    parser.add_argument("--outer-split-manifest", type=Path, required=True)
+    parser.add_argument("--scale-train-index", type=Path)
+    parser.add_argument("--scale-train-corpus", type=Path)
+    parser.add_argument("--outer-split-manifest", type=Path)
     parser.add_argument("--target-model", type=Path, required=True)
     parser.add_argument("--parent-checkpoint", type=Path, required=True)
     parser.add_argument("--layer", type=int, choices=range(40), required=True)
@@ -455,6 +455,7 @@ def main() -> None:
     partition = validate_partition(args.partition_manifest, args.data_profile)
     reuse = validate_reuse_split(args.reuse_split_manifest)
     selected = {
+        "train": set(reuse["inner_split"]["training_requests"]),
         "tune": set(reuse["inner_split"]["tuning_requests"]),
         "development": None,
     }
@@ -464,10 +465,26 @@ def main() -> None:
     development, development_groups = load_split(
         args, "development", selected_requests=None
     )
-    train, scale_provenance = build_scaled_training_dataset(
-        args, partition=partition, tune=tune, development=development
+    scale_values = (
+        args.scale_train_index,
+        args.scale_train_corpus,
+        args.outer_split_manifest,
     )
-    if train.requests & tune_groups or train.requests & development_groups:
+    if any(value is not None for value in scale_values) and not all(
+        value is not None for value in scale_values
+    ):
+        raise ValueError("scaled fitting arguments must be supplied together")
+    if all(value is not None for value in scale_values):
+        train, scale_provenance = build_scaled_training_dataset(
+            args, partition=partition, tune=tune, development=development
+        )
+        train_groups = set(train.requests)
+    else:
+        train, train_groups = load_split(
+            args, "train", selected_requests=selected["train"]
+        )
+        scale_provenance = None
+    if train_groups & tune_groups or train_groups & development_groups:
         raise PermissionError("resident codebook fitting overlaps a holdout group")
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
@@ -543,7 +560,11 @@ def main() -> None:
         "parent_checkpoint_sha256": sha256_file(args.parent_checkpoint),
         "partition_manifest_sha256": sha256_file(args.partition_manifest),
         "reuse_split_manifest_sha256": sha256_file(args.reuse_split_manifest),
-        "outer_split_manifest_sha256": sha256_file(args.outer_split_manifest),
+        "outer_split_manifest_sha256": (
+            None
+            if args.outer_split_manifest is None
+            else sha256_file(args.outer_split_manifest)
+        ),
         "scale_provenance": scale_provenance,
         "fit_provenance": fit_provenance,
         "shortlist": args.shortlist,
