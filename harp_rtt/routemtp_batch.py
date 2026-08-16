@@ -149,6 +149,14 @@ def prepare_routemtp_batch(
     current_queries = geometry.encode_router_inputs(current_router_input)
     current_logits = current["raw_target_router_logits"].float()
     current_centered = current_logits - current_logits.mean(-1, keepdim=True)
+    source_edge = counterfactual["source_edge_logp"].float()
+    source_path = counterfactual["source_path_logp"].float()
+    if bool((~torch.isfinite(source_edge) & node_mask).any()) or bool(
+        (~torch.isfinite(source_path) & node_mask).any()
+    ):
+        raise ValueError("active RouteMTP native path probabilities are non-finite")
+    source_edge = torch.where(node_mask, source_edge, torch.zeros_like(source_edge))
+    source_path = torch.where(node_mask, source_path, torch.zeros_like(source_path))
 
     model_inputs: dict[str, Tensor] = {
         "captured_fused_state": states[:, :, 0],
@@ -164,8 +172,8 @@ def prepare_routemtp_batch(
         "node_depths": depths,
         "node_child_ranks": tree["child_ranks"].long(),
         "node_mask": node_mask,
-        "native_edge_log_probabilities": counterfactual["source_edge_logp"].float().nan_to_num(0.0),
-        "native_path_log_probabilities": counterfactual["source_path_logp"].float().nan_to_num(0.0),
+        "native_edge_log_probabilities": source_edge,
+        "native_path_log_probabilities": source_path,
         "anytime_node_masks": build_anytime_node_masks(
             node_mask, counterfactual["budget_node_masks"].bool()
         ),
