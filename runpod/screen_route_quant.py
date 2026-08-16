@@ -76,6 +76,7 @@ def parse_args() -> argparse.Namespace:
         help="comma-separated BIT:SCALE_METHOD candidates",
     )
     parser.add_argument("--group-size", type=int, choices=(32, 64), default=64)
+    parser.add_argument("--scale-storage", choices=("bf16", "fp8_e4m3"), default="bf16")
     parser.add_argument(
         "--mixed-upgrade-fractions",
         default="",
@@ -90,6 +91,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--deterministic", action="store_true")
     return parser.parse_args()
+
+
+def resolve_scale_storage(name: str) -> tuple[torch.dtype, int]:
+    if name == "bf16":
+        return torch.bfloat16, 2
+    if name == "fp8_e4m3":
+        if not hasattr(torch, "float8_e4m3fn"):
+            raise RuntimeError("this PyTorch build lacks FP8 E4M3 scale storage")
+        return torch.float8_e4m3fn, 1
+    raise ValueError("unknown RouteQuant scale storage")
 
 
 def write_json_exclusive(path: Path, value: Mapping[str, Any]) -> None:
@@ -375,6 +386,7 @@ def main() -> None:
     layers = parse_layers(args.layers)
     candidates = parse_candidates(args.candidates)
     upgrade_fractions = parse_upgrade_fractions(args.mixed_upgrade_fractions)
+    scale_dtype, scale_bytes = resolve_scale_storage(args.scale_storage)
     if upgrade_fractions and args.mixed_upgrade_bits != args.mixed_base_bits + 1:
         raise ValueError("mixed RouteQuant sweep requires adjacent bit widths")
     if args.output.exists():
@@ -423,6 +435,8 @@ def main() -> None:
         "layers": list(layers),
         "candidates": [f"{bits}:{method}" for bits, method in candidates],
         "group_size": args.group_size,
+        "scale_storage": args.scale_storage,
+        "scale_storage_bytes": scale_bytes,
         "mixed_upgrade_fractions": list(upgrade_fractions),
         "mixed_base_bits": args.mixed_base_bits,
         "mixed_upgrade_bits": args.mixed_upgrade_bits,
@@ -485,6 +499,7 @@ def main() -> None:
                 group_size=args.group_size,
                 scale_method="mse",
                 item_chunk=args.item_chunk,
+                scale_dtype=scale_dtype,
             ).to(device)
             upgraded_model = PackedRouteQuantExperts.from_target(
                 gate_up,
@@ -494,6 +509,7 @@ def main() -> None:
                 group_size=args.group_size,
                 scale_method="mse",
                 item_chunk=args.item_chunk,
+                scale_dtype=scale_dtype,
             ).to(device)
             base_model.enable_dequantized_cache(True, max_experts=256)
             upgraded_model.enable_dequantized_cache(True, max_experts=256)
@@ -541,6 +557,7 @@ def main() -> None:
                     group_size=args.group_size,
                     scale_method="mse",
                     item_chunk=args.item_chunk,
+                    scale_dtype=scale_dtype,
                 ).to(device)
                 model.enable_dequantized_cache(True, max_experts=256)
                 metrics = evaluate_candidate(
@@ -567,14 +584,19 @@ def main() -> None:
                         as_tuple=False
                     ).flatten().tolist(),
                     "layer_persistent_bytes": model.persistent_nbytes(),
+                    "scale_storage": args.scale_storage,
                     "uniform_40_layer_projected_bytes": (
                         mixed_routequant_projected_bytes(
-                            global_schedule, group_size=args.group_size
+                            global_schedule,
+                            group_size=args.group_size,
+                            scale_bytes=scale_bytes,
                         )
                     ),
                     "uniform_40_layer_projected_gib": (
                         mixed_routequant_projected_bytes(
-                            global_schedule, group_size=args.group_size
+                            global_schedule,
+                            group_size=args.group_size,
+                            scale_bytes=scale_bytes,
                         ) / 2**30
                     ),
                     "metrics": metrics,
@@ -604,6 +626,7 @@ def main() -> None:
                 group_size=args.group_size,
                 scale_method=method,
                 item_chunk=args.item_chunk,
+                scale_dtype=scale_dtype,
             ).to(device)
             model.enable_dequantized_cache(True, max_experts=256)
             metrics = evaluate_candidate(
@@ -621,11 +644,16 @@ def main() -> None:
                 "bits": bits,
                 "scale_method": method,
                 "layer_persistent_bytes": model.persistent_nbytes(),
+                "scale_storage": args.scale_storage,
                 "uniform_40_layer_projected_bytes": uniform_routequant_projected_bytes(
-                    bits=bits, group_size=args.group_size
+                    bits=bits,
+                    group_size=args.group_size,
+                    scale_bytes=scale_bytes,
                 ),
                 "uniform_40_layer_projected_gib": uniform_routequant_projected_bytes(
-                    bits=bits, group_size=args.group_size
+                    bits=bits,
+                    group_size=args.group_size,
+                    scale_bytes=scale_bytes,
                 ) / 2**30,
                 "metrics": metrics,
                 "exact_baseline": baselines["exact"],

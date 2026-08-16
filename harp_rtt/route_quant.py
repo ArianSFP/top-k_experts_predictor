@@ -105,6 +105,7 @@ def quantize_groupwise_nbit(
     group_size: int = 64,
     scale_method: str = "mse",
     refinement_steps: int = 4,
+    scale_dtype: torch.dtype = torch.bfloat16,
 ) -> tuple[Tensor, Tensor]:
     """Symmetric groupwise quantization with packed 1--4 bit codes.
 
@@ -125,6 +126,11 @@ def quantize_groupwise_nbit(
         raise ValueError("scale method must be 'amax' or 'mse'")
     if refinement_steps < 0:
         raise ValueError("refinement steps must be non-negative")
+    allowed_scale_dtypes = {torch.bfloat16}
+    if hasattr(torch, "float8_e4m3fn"):
+        allowed_scale_dtypes.add(torch.float8_e4m3fn)
+    if scale_dtype not in allowed_scale_dtypes:
+        raise ValueError("RouteQuant scale storage must be BF16 or FP8 E4M3")
     grouped = weight.float().reshape(*weight.shape[:-1], -1, group_size)
     if bits == 1:
         signed = torch.where(grouped >= 0, 1.0, -1.0)
@@ -148,7 +154,7 @@ def quantize_groupwise_nbit(
     flat_codes = codes.reshape(*weight.shape[:-1], -1)
     return (
         pack_unsigned_codes(flat_codes, bits=bits),
-        scales.to(torch.bfloat16).contiguous(),
+        scales.to(scale_dtype).contiguous(),
     )
 
 
@@ -244,6 +250,11 @@ class PackedNBitMatrixBank(nn.Module):
                 raise ValueError("matrix-bank packed bucket geometry changed")
             if scales.shape != (ids.numel(), output_width, input_width // group_size):
                 raise ValueError("matrix-bank scale bucket geometry changed")
+            allowed_scale_dtypes = {torch.bfloat16}
+            if hasattr(torch, "float8_e4m3fn"):
+                allowed_scale_dtypes.add(torch.float8_e4m3fn)
+            if scales.dtype not in allowed_scale_dtypes:
+                raise ValueError("matrix-bank scale storage dtype changed")
             if ids.numel():
                 ids_long = ids.long()
                 if bool(((ids_long < 0) | (ids_long >= self.items)).any()):
@@ -253,7 +264,7 @@ class PackedNBitMatrixBank(nn.Module):
                 item_to_bucket[ids_long] = torch.arange(ids.numel(), dtype=torch.int32)
             self.register_buffer(f"ids_b{bits}", ids.contiguous())
             self.register_buffer(f"packed_b{bits}", packed.to(torch.uint8).cpu().contiguous())
-            self.register_buffer(f"scales_b{bits}", scales.to(torch.bfloat16).cpu().contiguous())
+            self.register_buffer(f"scales_b{bits}", scales.cpu().contiguous())
         active = widths > 0
         if bool((item_to_bucket[active] < 0).any()) or bool((item_to_bucket[~active] >= 0).any()):
             raise ValueError("matrix-bank bucket inventory is incomplete")
@@ -268,6 +279,7 @@ class PackedNBitMatrixBank(nn.Module):
         group_size: int = 64,
         scale_method: str = "mse",
         item_chunk: int = 2,
+        scale_dtype: torch.dtype = torch.bfloat16,
     ) -> "PackedNBitMatrixBank":
         if weight.ndim != 3:
             raise ValueError("matrix-bank source weights must be [items,out,in]")
@@ -285,7 +297,7 @@ class PackedNBitMatrixBank(nn.Module):
             )
             scales = torch.empty(
                 ids.numel(), weight.shape[1], weight.shape[-1] // group_size,
-                dtype=torch.bfloat16,
+                dtype=scale_dtype,
             )
             for start in range(0, ids.numel(), item_chunk):
                 stop = min(start + item_chunk, ids.numel())
@@ -295,6 +307,7 @@ class PackedNBitMatrixBank(nn.Module):
                     bits=bits,
                     group_size=group_size,
                     scale_method=scale_method,
+                    scale_dtype=scale_dtype,
                 )
                 packed[start:stop].copy_(current_packed.cpu())
                 scales[start:stop].copy_(current_scales.cpu())
@@ -404,6 +417,7 @@ class PackedRouteQuantExperts(nn.Module):
         group_size: int = 64,
         scale_method: str = "mse",
         item_chunk: int = 2,
+        scale_dtype: torch.dtype = torch.bfloat16,
     ) -> "PackedRouteQuantExperts":
         if gate_up.ndim != 3 or down.ndim != 3:
             raise ValueError("RouteQuant target weights must be rank three")
@@ -436,6 +450,7 @@ class PackedRouteQuantExperts(nn.Module):
                 group_size=group_size,
                 scale_method=scale_method,
                 item_chunk=item_chunk,
+                scale_dtype=scale_dtype,
             ),
             PackedNBitMatrixBank.from_weights(
                 down,
@@ -443,6 +458,7 @@ class PackedRouteQuantExperts(nn.Module):
                 group_size=group_size,
                 scale_method=scale_method,
                 item_chunk=item_chunk,
+                scale_dtype=scale_dtype,
             ),
         )
 
@@ -502,6 +518,7 @@ def uniform_routequant_projected_bytes(
     hidden_width: int = 2048,
     intermediate_width: int = 512,
     group_size: int = 64,
+    scale_bytes: int = 2,
 ) -> int:
     """Exact logical tensor bytes for a uniform full-pool reference bundle."""
 
@@ -515,7 +532,9 @@ def uniform_routequant_projected_bytes(
         experts * 2 * intermediate_width * (hidden_width // group_size)
         + experts * hidden_width * (intermediate_width // group_size)
     )
-    scales = groups * 2
+    if scale_bytes not in (1, 2):
+        raise ValueError("RouteQuant scale storage must use one or two bytes")
+    scales = groups * scale_bytes
     metadata = 2 * (experts + experts * 4 + experts * 2)
     return layers * (packed + scales + metadata)
 
@@ -526,6 +545,7 @@ def mixed_routequant_projected_bytes(
     hidden_width: int = 2048,
     intermediate_width: int = 512,
     group_size: int = 64,
+    scale_bytes: int = 2,
 ) -> int:
     """Exact logical tensor bytes for a per-layer/per-expert bit schedule.
 
@@ -553,7 +573,9 @@ def mixed_routequant_projected_bytes(
             math.ceil(int((layer == bits).sum()) * cell_weights * bits / 8)
             for bits in range(1, 5)
         )
-        payload += int(active.sum()) * scale_values * 2
+        if scale_bytes not in (1, 2):
+            raise ValueError("RouteQuant scale storage must use one or two bytes")
+        payload += int(active.sum()) * scale_values * scale_bytes
         # Two matrix banks each persist one int8 bit table, one int32 bucket
         # map, and int16 expert IDs for every active bucket entry.
         payload += 2 * (

@@ -7,6 +7,7 @@ from runpod.screen_route_quant import (
     parse_candidates,
     parse_layers,
     parse_upgrade_fractions,
+    resolve_scale_storage,
     upgrade_schedule,
 )
 from runpod.train_shadow_experts_local import ShadowFactualStateDataset
@@ -64,3 +65,11 @@ def test_routequant_mixed_upgrade_schedule_is_deterministic_and_nested():
 def test_routequant_rejects_invalid_upgrade_fractions(value: str):
     with pytest.raises(ValueError):
         parse_upgrade_fractions(value)
+
+
+def test_routequant_scale_storage_contract():
+    assert resolve_scale_storage("bf16") == (torch.bfloat16, 2)
+    if hasattr(torch, "float8_e4m3fn"):
+        assert resolve_scale_storage("fp8_e4m3") == (torch.float8_e4m3fn, 1)
+    with pytest.raises(ValueError):
+        resolve_scale_storage("int8")
