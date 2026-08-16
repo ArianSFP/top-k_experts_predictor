@@ -258,6 +258,20 @@ def test_expert_lora_is_exact_at_zero_and_routes_gradients_only_to_selected_cell
     assert torch.equal(adapter.gate_up_up.grad[2], torch.zeros_like(adapter.gate_up_up.grad[2]))
 
 
+def test_expert_lora_preserves_committed_prefix_rows() -> None:
+    torch.manual_seed(20); base = _PackedExperts(); adapter = SwitchableExpertLoRA(base, rank=2)
+    with torch.no_grad():
+        adapter.gate_up_up.fill_(0.1); adapter.down_up.fill_(0.1)
+    hidden = torch.randn(1, 4, 6)
+    ids = torch.tensor([[[0, 1], [1, 0], [0, 2], [2, 1]]])
+    weights = torch.full((1, 4, 2), 0.5)
+    expected = base(hidden, ids, weights)
+    with adapter.active(tail_rows=2):
+        actual = adapter(hidden, ids, weights)
+    assert torch.equal(actual[:, :2], expected[:, :2])
+    assert not torch.equal(actual[:, 2:], expected[:, 2:])
+
+
 class _Router(nn.Module):
     def __init__(self) -> None:
         super().__init__(); self.linear = nn.Linear(6, 5, bias=False)
@@ -287,3 +301,15 @@ def test_router_residual_zero_init_preserves_native_hard_route() -> None:
     assert adapter.active_top_k == 2
     trust, balance = adapter.regularization(hidden)
     assert torch.isfinite(trust) and torch.isfinite(balance)
+
+
+def test_router_residual_preserves_committed_prefix_rows() -> None:
+    torch.manual_seed(21); base = _Router()
+    adapter = SwitchableMTPRouterResidual(base, 6, 5, rank=2, top_k=2)
+    with torch.no_grad():
+        adapter.up.weight.fill_(0.2)
+    hidden = torch.randn(1, 4, 6)
+    expected = base(hidden)
+    with adapter.active(tail_rows=2):
+        actual = adapter(hidden)
+    assert torch.equal(actual[0][:, :2], expected[0][:, :2])

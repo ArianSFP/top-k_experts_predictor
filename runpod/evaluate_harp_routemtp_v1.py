@@ -85,7 +85,10 @@ def main() -> None:
     hydration_manifest_sha256 = sha256_file(args.hydration / "HYDRATION_MANIFEST.json")
     if checkpoint.get("hydration_manifest_sha256") != hydration_manifest_sha256:
         raise ValueError("RouteMTP checkpoint was trained from a different hydration")
-    if checkpoint.get("source_commit") != hydration.value.get("bindings", {}).get("source_commit"):
+    hydration_source_commit = checkpoint.get(
+        "hydration_source_commit", checkpoint.get("source_commit")
+    )
+    if hydration_source_commit != hydration.value.get("bindings", {}).get("source_commit"):
         raise ValueError("RouteMTP checkpoint source differs from hydration source")
     for dataset in (tune, development):
         missing = [

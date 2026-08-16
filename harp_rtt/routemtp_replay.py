@@ -119,8 +119,8 @@ class RouteMTPTreeRunner(nn.Module):
         ]
         calls = 0
         for batch_index in range(batch):
-                topology = parent_ids[batch_index]
-                for node in range(nodes):
+            topology = parent_ids[batch_index]
+            for node in range(nodes):
                     if not bool(node_mask[batch_index, node]):
                         continue
                     path = self._path(topology, node)
@@ -149,9 +149,13 @@ class RouteMTPTreeRunner(nn.Module):
                                 self.adapters.active(True, tail_rows=len(path))
                             )
                             if self.expert_adapter is not None:
-                                stack.enter_context(self.expert_adapter.active(True))
+                                stack.enter_context(
+                                    self.expert_adapter.active(True, tail_rows=len(path))
+                                )
                             if self.router_adapter is not None:
-                                stack.enter_context(self.router_adapter.active(True))
+                                stack.enter_context(
+                                    self.router_adapter.active(True, tail_rows=len(path))
+                                )
                             output = self.mtp.forward_with_grad(
                                 full_ids,
                                 previous,
@@ -182,18 +186,32 @@ class RouteMTPTreeRunner(nn.Module):
                     ]
                     final: dict[str, Tensor] | None = None
                     for step, path_node in enumerate(path):
-                        with self.adapters.active(True, tail_rows=1):
+                        with ExitStack() as stack:
+                            stack.enter_context(
+                                self.adapters.active(True, tail_rows=1)
+                            )
+                            if self.expert_adapter is not None:
+                                stack.enter_context(
+                                    self.expert_adapter.active(True, tail_rows=1)
+                                )
+                            if self.router_adapter is not None:
+                                stack.enter_context(
+                                    self.router_adapter.active(True, tail_rows=1)
+                                )
                             output = self.mtp.forward_with_grad(
-                            node_token_ids[batch_index : batch_index + 1, path_node : path_node + 1],
-                            previous,
-                            position_ids=torch.tensor(
-                                [[int(base_cache_lengths[batch_index].item()) + step]],
-                                device=node_token_ids.device,
-                                dtype=torch.long,
-                            ),
-                            past_key_values=cache,
-                            use_cache=True,
-                            compute_vocabulary_logits=False,
+                                node_token_ids[
+                                    batch_index : batch_index + 1,
+                                    path_node : path_node + 1,
+                                ],
+                                previous,
+                                position_ids=torch.tensor(
+                                    [[int(base_cache_lengths[batch_index].item()) + step]],
+                                    device=node_token_ids.device,
+                                    dtype=torch.long,
+                                ),
+                                past_key_values=cache,
+                                use_cache=True,
+                                compute_vocabulary_logits=False,
                             )
                         calls += 1
                         cache = output["past_key_values"]

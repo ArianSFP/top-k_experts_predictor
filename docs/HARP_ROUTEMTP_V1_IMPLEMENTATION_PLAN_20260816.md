@@ -14,11 +14,12 @@ It does not train another head over detached frozen MTP snapshots.
 
 ## Frozen serving contract
 
-- Native MTP base tensors may be shared immutably; native and RouteMTP caches
-  and recurrent states are independent.
+- Native MTP base tensors may be shared immutably; native and RouteMTP
+  recurrent states are independent.
 - Native token/tree generation is always adapter-off.
 - RouteMTP initially adapts fusion `fc` and attention Q/O with rank-32 LoRA.
-  K/V remain frozen, so the committed-prefix cache remains coherent.
+  K/V remain frozen. Every adapter is masked to speculative H1-H4 rows, so
+  the committed prefix stays exactly adapter-off.
 - RouteMTP predicts one `[40,256]` route trajectory for each node's actual
   depth. It never predicts four horizons from one node.
 - The five MTP channels stay separate until target-layer conditioning:
@@ -70,8 +71,9 @@ counterfactual labels still supervise branch semantics.
 - Existing factual H1-H4 labels and all-node H2-H4 counterfactual labels are
   reused. No target-route recapture or new request generation is authorized.
 - A one-time deterministic target-prefix hydration pass creates adapter-off
-  MTP K/V caches for existing requests. One cache is stored per request;
-  the public loader can return only a hash-bound causal source-position slice.
+  MTP K/V caches and exact final-normalized target hidden rows for existing
+  requests. One record is stored per request; the public loader can return
+  only a hash-bound causal source-position slice.
 - Hydration is bound to source, target/MTP checkpoint, split, base capture,
   and counterfactual companion hashes.
 - The 224 fitting requests are deterministically split into 192 internal-fit
@@ -135,6 +137,32 @@ timely recall is computed only after real hardware timings are available.
 All artifacts are written to fresh local NVMe, audited and checksummed, then
 mirrored immutably. Each pod is stopped—not terminated—after its assigned
 stage and mirror verification complete.
+
+## Stage-A execution result (2026-08-16)
+
+The first optimized cached-append replay was correctly rejected. Although it
+used the same frozen K/V projections, changing the MTP fusion/attention GEMM
+from the capture's full-prefix matrix shape to one appended row changed BF16
+rounding at expert boundaries and produced recursive route divergence. Its
+32-position diagnostic had 300 selected-ID mismatches over 1,024 nodes. No
+tolerance was relaxed.
+
+The authoritative runner now reproduces the capture's isolated full-prefix
+execution and applies every trainable adapter only to the speculative tail.
+The frozen committed-prefix rows remain adapter-off. On the blocking
+32-position audit it achieved:
+
+- 1,024/1,024 nodes audited across H1-H4;
+- zero maximum error for fused, router-input, post-MoE and vocabulary-head
+  state channels;
+- zero router-logit and execution-weight error;
+- zero selected-ID mismatches;
+- 66.30 GiB hydration peak, below the frozen 90-GiB gate;
+- no optimizer and no formal-validation, calibration or sealed-test access.
+
+Cached append remains implemented only as an unpromoted performance research
+path. It cannot replace the full-prefix reference unless a future audit is
+bit-identical under the same immutable inputs.
 
 ## Implemented files
 

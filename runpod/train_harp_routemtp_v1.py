@@ -104,6 +104,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mtp-preprocessing", type=Path, required=True)
     parser.add_argument("--parity-report", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
+    parser.add_argument(
+        "--hydration-source-commit",
+        help="immutable source commit recorded by the predecessor hydration",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--initialize-from", type=Path)
     parser.add_argument("--seed", type=int, default=42)
@@ -645,6 +649,9 @@ def main() -> None:
     from qwen35_mtp import load_checkpoint_mtp
     if args.output.exists(): raise FileExistsError(f"refusing to overwrite {args.output}")
     if len(args.source_commit) != 40: raise ValueError("RouteMTP requires a full source commit")
+    hydration_source_commit = args.hydration_source_commit or args.source_commit
+    if len(hydration_source_commit) != 40:
+        raise ValueError("RouteMTP hydration requires a full predecessor commit")
     parity = json.loads(args.parity_report.read_text())
     if parity.get("passed") is not True or parity.get("adapter_off") is not True:
         raise PermissionError("RouteMTP replay parity has not passed")
@@ -667,7 +674,7 @@ def main() -> None:
     if parity.get("counterfactual_companion_manifest_sha256") != companion_manifest_sha256:
         raise ValueError("RouteMTP parity report was produced from a different companion")
     bindings = hydration.value.get("bindings", {})
-    if bindings.get("source_commit") != args.source_commit:
+    if bindings.get("source_commit") != hydration_source_commit:
         raise ValueError("RouteMTP hydration source commit differs from training source")
     if bindings.get("counterfactual_companion_sha256") != companion_manifest_sha256:
         raise ValueError("RouteMTP hydration companion binding differs from training companion")
@@ -746,6 +753,7 @@ def main() -> None:
     manifest = {
         "schema": SCHEMA, "stage": stage, "seed": args.seed,
         "source_commit": args.source_commit,
+        "hydration_source_commit": hydration_source_commit,
         "config": config.__dict__, "trainable_names": trainable_names,
         "trainable_bf16_bytes": trainable_parameter_bytes,
         "added_deployed_bf16_bytes": parameter_bytes,
@@ -844,6 +852,7 @@ def main() -> None:
     checkpoint = {
         "schema": SCHEMA, "stage": stage, "seed": args.seed,
         "source_commit": args.source_commit, "config": config.__dict__,
+        "hydration_source_commit": hydration_source_commit,
         "best_epoch": best_epoch, "best_internal_dev_value": best_value,
         "state": best_state, "added_bf16_bytes": parameter_bytes,
         "hydration_manifest_sha256": hydration_manifest_sha256,

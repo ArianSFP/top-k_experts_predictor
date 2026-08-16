@@ -34,14 +34,19 @@ class SwitchableExpertLoRA(nn.Module):
         nn.init.kaiming_uniform_(self.gate_up_down, a=math.sqrt(5))
         nn.init.kaiming_uniform_(self.down_down, a=math.sqrt(5))
         self.enabled = False
+        self.active_tail_rows: int | None = None
 
     @contextmanager
-    def active(self, enabled: bool = True) -> Iterator[None]:
-        previous = self.enabled; self.enabled = bool(enabled)
+    def active(
+        self, enabled: bool = True, *, tail_rows: int | None = None
+    ) -> Iterator[None]:
+        previous = self.enabled; previous_tail = self.active_tail_rows
+        self.enabled = bool(enabled)
+        self.active_tail_rows = int(tail_rows) if tail_rows is not None else None
         try:
             yield
         finally:
-            self.enabled = previous
+            self.enabled = previous; self.active_tail_rows = previous_tail
 
     def forward(self, hidden_states: Tensor, top_k_index: Tensor, top_k_weights: Tensor) -> Tensor:
         if not self.enabled:
@@ -68,7 +73,18 @@ class SwitchableExpertLoRA(nn.Module):
                 token_index,
                 output * weights[token_index, slot_index, None],
             )
-        return result.reshape_as(hidden_states)
+        adapted = result.reshape_as(hidden_states)
+        if self.active_tail_rows is None:
+            return adapted
+        if hidden_states.ndim < 3 or not 0 < self.active_tail_rows <= hidden_states.shape[-2]:
+            raise ValueError("expert-LoRA speculative-tail rows are invalid")
+        base = self.base(hidden_states, top_k_index, top_k_weights)
+        mask = torch.zeros(
+            hidden_states.shape[-2], device=hidden_states.device, dtype=adapted.dtype
+        )
+        mask[-self.active_tail_rows :] = 1
+        mask = mask.view(*((1,) * (adapted.ndim - 2)), -1, 1)
+        return base + (adapted - base) * mask
 
 
 class SwitchableMTPRouterResidual(nn.Module):
@@ -86,17 +102,22 @@ class SwitchableMTPRouterResidual(nn.Module):
         self.active_top_k = int(top_k)
         self.temperature = 1.0
         self.enabled = False
+        self.active_tail_rows: int | None = None
         self._regularization_terms: list[tuple[Tensor, Tensor]] = []
 
     @contextmanager
-    def active(self, enabled: bool = True) -> Iterator[None]:
-        previous = self.enabled; self.enabled = bool(enabled)
+    def active(
+        self, enabled: bool = True, *, tail_rows: int | None = None
+    ) -> Iterator[None]:
+        previous = self.enabled; previous_tail = self.active_tail_rows
+        self.enabled = bool(enabled)
+        self.active_tail_rows = int(tail_rows) if tail_rows is not None else None
         if enabled:
             self._regularization_terms = []
         try:
             yield
         finally:
-            self.enabled = previous
+            self.enabled = previous; self.active_tail_rows = previous_tail
 
     def set_training_progress(self, progress: float) -> None:
         """Apply the declared sparse-soft-to-hard R3 router curriculum."""
@@ -117,7 +138,18 @@ class SwitchableMTPRouterResidual(nn.Module):
         if not isinstance(base_output, (tuple, list)) or len(base_output) != 3:
             raise TypeError("native MTP router must return logits, weights, IDs")
         base_logits = base_output[0]
-        logits = base_logits + self.up(self.down(hidden_states)).reshape_as(base_logits)
+        correction = self.up(self.down(hidden_states)).reshape_as(base_logits)
+        if self.active_tail_rows is not None:
+            if hidden_states.ndim < 3 or not 0 < self.active_tail_rows <= hidden_states.shape[-2]:
+                raise ValueError("router-adapter speculative-tail rows are invalid")
+            mask = torch.zeros(
+                hidden_states.shape[-2], device=hidden_states.device, dtype=correction.dtype
+            )
+            mask[-self.active_tail_rows :] = 1
+            correction = correction * mask.view(
+                *((1,) * (correction.ndim - 2)), -1, 1
+            )
+        logits = base_logits + correction
         base_probability = torch.softmax(base_logits.float(), -1)
         trust = F.kl_div(
             torch.log_softmax(logits.float(), -1), base_probability,
