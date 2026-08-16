@@ -362,8 +362,9 @@ def collect_upgrade_utility(
         active_rows += int(valid.sum())
     if batches == 0 or active_rows == 0:
         raise ValueError("RouteQuant utility planner saw no training rows")
-    if int((occurrences > 0).sum()) != experts:
-        raise ValueError("RouteQuant utility planner did not observe every expert")
+    observed_experts = int((occurrences > 0).sum())
+    if observed_experts == 0:
+        raise ValueError("RouteQuant utility planner did not observe any expert")
     route_scale = route_utility.abs().sum().clamp_min(1e-30)
     residual_scale = residual_utility.abs().sum().clamp_min(1e-30)
     score = route_utility / route_scale + 0.25 * residual_utility / residual_scale
@@ -376,6 +377,8 @@ def collect_upgrade_utility(
         "occurrences": occurrences.cpu(),
         "batches": batches,
         "active_rows": active_rows,
+        "observed_experts": observed_experts,
+        "unobserved_experts": experts - observed_experts,
         "horizon_weights": horizon_weights.cpu().tolist(),
         "utility_source": "training_only_first_order_next_router_plus_exact_residual",
     }
@@ -528,6 +531,8 @@ def main() -> None:
                 "layer": layer,
                 "batches": utility["batches"],
                 "active_rows": utility["active_rows"],
+                "observed_experts": utility["observed_experts"],
+                "unobserved_experts": utility["unobserved_experts"],
                 "horizon_weights": utility["horizon_weights"],
                 "utility_source": utility["utility_source"],
                 "score": utility["score"].tolist(),
