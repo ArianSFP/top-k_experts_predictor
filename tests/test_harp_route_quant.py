@@ -171,3 +171,19 @@ def test_routequant_fp8_scale_storage_is_finite_and_smaller():
     assert mixed_routequant_projected_bytes(schedule, scale_bytes=1) == (
         uniform_routequant_projected_bytes(bits=3, scale_bytes=1)
     )
+
+
+def test_routequant_log8_scale_storage_tracks_bf16_scales():
+    torch.manual_seed(43)
+    weight = torch.randn(3, 5, 16) * 0.02
+    packed, scales = quantize_groupwise_nbit(
+        weight, bits=4, group_size=8, scale_dtype=torch.uint8
+    )
+    restored = dequantize_groupwise_nbit(
+        packed, scales, bits=4, group_size=8, dtype=torch.float32
+    )
+    assert scales.dtype == torch.uint8
+    assert torch.isfinite(restored).all()
+    assert float((restored - weight).square().mean()) < 0.02 * float(
+        weight.square().mean()
+    )

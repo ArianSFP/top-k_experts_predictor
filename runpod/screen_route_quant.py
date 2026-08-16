@@ -76,7 +76,7 @@ def parse_args() -> argparse.Namespace:
         help="comma-separated BIT:SCALE_METHOD candidates",
     )
     parser.add_argument("--group-size", type=int, choices=(32, 64), default=64)
-    parser.add_argument("--scale-storage", choices=("bf16", "fp8_e4m3"), default="bf16")
+    parser.add_argument("--scale-storage", choices=("bf16", "log8", "fp8_e4m3"), default="bf16")
     parser.add_argument(
         "--mixed-upgrade-fractions",
         default="",
@@ -96,6 +96,8 @@ def parse_args() -> argparse.Namespace:
 def resolve_scale_storage(name: str) -> tuple[torch.dtype, int]:
     if name == "bf16":
         return torch.bfloat16, 2
+    if name == "log8":
+        return torch.uint8, 1
     if name == "fp8_e4m3":
         if not hasattr(torch, "float8_e4m3fn"):
             raise RuntimeError("this PyTorch build lacks FP8 E4M3 scale storage")

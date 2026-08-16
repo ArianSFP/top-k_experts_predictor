@@ -69,6 +69,7 @@ def test_routequant_rejects_invalid_upgrade_fractions(value: str):
 
 def test_routequant_scale_storage_contract():
     assert resolve_scale_storage("bf16") == (torch.bfloat16, 2)
+    assert resolve_scale_storage("log8") == (torch.uint8, 1)
     if hasattr(torch, "float8_e4m3fn"):
         assert resolve_scale_storage("fp8_e4m3") == (torch.float8_e4m3fn, 1)
     with pytest.raises(ValueError):

@@ -126,11 +126,11 @@ def quantize_groupwise_nbit(
         raise ValueError("scale method must be 'amax' or 'mse'")
     if refinement_steps < 0:
         raise ValueError("refinement steps must be non-negative")
-    allowed_scale_dtypes = {torch.bfloat16}
+    allowed_scale_dtypes = {torch.bfloat16, torch.uint8}
     if hasattr(torch, "float8_e4m3fn"):
         allowed_scale_dtypes.add(torch.float8_e4m3fn)
     if scale_dtype not in allowed_scale_dtypes:
-        raise ValueError("RouteQuant scale storage must be BF16 or FP8 E4M3")
+        raise ValueError("RouteQuant scale storage must be BF16, LOG8, or FP8 E4M3")
     grouped = weight.float().reshape(*weight.shape[:-1], -1, group_size)
     if bits == 1:
         signed = torch.where(grouped >= 0, 1.0, -1.0)
@@ -154,7 +154,13 @@ def quantize_groupwise_nbit(
     flat_codes = codes.reshape(*weight.shape[:-1], -1)
     return (
         pack_unsigned_codes(flat_codes, bits=bits),
-        scales.to(scale_dtype).contiguous(),
+        (
+            torch.round((torch.log2(scales) + 24.0) * 8.0)
+            .clamp(0, 255)
+            .to(torch.uint8)
+            if scale_dtype == torch.uint8
+            else scales.to(scale_dtype)
+        ).contiguous(),
     )
 
 
@@ -182,8 +188,13 @@ def dequantize_groupwise_nbit(
     else:
         qmax = (1 << (bits - 1)) - 1
         quantized = grouped.to(dtype).sub(qmax)
+    decoded_scales = (
+        torch.exp2(scales.float() / 8.0 - 24.0).to(dtype)
+        if scales.dtype == torch.uint8
+        else scales.to(dtype)
+    )
     return (
-        quantized * scales.to(dtype)[..., None]
+        quantized * decoded_scales[..., None]
     ).reshape(*codes.shape[:-1], values)
 
 
@@ -250,7 +261,7 @@ class PackedNBitMatrixBank(nn.Module):
                 raise ValueError("matrix-bank packed bucket geometry changed")
             if scales.shape != (ids.numel(), output_width, input_width // group_size):
                 raise ValueError("matrix-bank scale bucket geometry changed")
-            allowed_scale_dtypes = {torch.bfloat16}
+            allowed_scale_dtypes = {torch.bfloat16, torch.uint8}
             if hasattr(torch, "float8_e4m3fn"):
                 allowed_scale_dtypes.add(torch.float8_e4m3fn)
             if scales.dtype not in allowed_scale_dtypes:
