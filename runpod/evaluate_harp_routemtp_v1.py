@@ -29,7 +29,8 @@ from harp_rtt.static_artifacts import load_static_target_artifacts  # noqa: E402
 from harp_rtt.train import runtime_static_artifacts  # noqa: E402
 from harp_rtt.training import sha256_file  # noqa: E402
 from runpod.train_harp_routemtp_v1 import (  # noqa: E402
-    HydrationStore, SCHEMA as CHECKPOINT_SCHEMA, evaluate, load_compact_state,
+    HydrationStore, IndexedSubset, SCHEMA as CHECKPOINT_SCHEMA, evaluate,
+    load_compact_state,
 )
 
 
@@ -43,6 +44,7 @@ def parse_args() -> argparse.Namespace:
         parser.add_argument(f"--{split}-corpus", type=Path, required=True)
         parser.add_argument(f"--{split}-companion", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--training-split-manifest", type=Path, required=True)
     parser.add_argument("--hydration", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--static-dir", type=Path, required=True)
@@ -56,12 +58,31 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_dataset(index: Path, corpus: Path, companion: Path) -> Dataset[Any]:
+def load_dataset(
+    index: Path,
+    corpus: Path,
+    companion: Path,
+    *,
+    allowed_requests: set[str] | None = None,
+) -> Dataset[Any]:
     base = HarpRTTDataset(index, "train", corpus_root=corpus, max_tree_nodes=32)
     labels, manifest = load_node_counterfactual_companion(companion, split="train", training=True)
     if manifest.get("sealed_test_opened") is not False:
         raise PermissionError("RouteMTP evaluation companion crossed sealed test")
-    return NodeCounterfactualDatasetAdapter(base, labels, split="train", training=True)
+    joined = NodeCounterfactualDatasetAdapter(base, labels, split="train", training=True)
+    if allowed_requests is None:
+        return joined
+    indices: list[int] = []
+    observed: set[str] = set()
+    for index_value, record in enumerate(base.records):
+        request = str(base.segments[record.segment].sequences[record.sequence]["request_id"])
+        if request in allowed_requests:
+            indices.append(index_value); observed.add(request)
+    if observed != allowed_requests:
+        raise KeyError(
+            f"RouteMTP official tune selection misses {len(allowed_requests - observed)} requests"
+        )
+    return IndexedSubset(joined, indices)
 
 
 def request_ids(dataset: Dataset[Any]) -> set[str]:
@@ -76,9 +97,26 @@ def main() -> None:
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     if checkpoint.get("schema") != CHECKPOINT_SCHEMA:
         raise ValueError("RouteMTP checkpoint schema mismatch")
+    if checkpoint.get("internal_split_sha256") != sha256_file(args.training_split_manifest):
+        raise ValueError("RouteMTP checkpoint and protected request split differ")
+    protected_split = json.loads(args.training_split_manifest.read_text(encoding="utf-8"))
+    if protected_split.get("schema") != "harp_routemtp_protected_request_split_v2":
+        raise ValueError("RouteMTP protected request split schema mismatch")
+    official_tune = set(protected_split.get("official_tuning_requests", []))
+    if (
+        len(official_tune) != 32
+        or int(protected_split.get("official_tuning_rows", -1)) != 512
+        or protected_split.get("official_tune_opened") is not False
+    ):
+        raise PermissionError("RouteMTP official tune partition is not sealed 32/512")
     stage = str(checkpoint["stage"]); device = torch.device(args.device)
-    tune = load_dataset(args.tune_index, args.tune_corpus, args.tune_companion)
+    tune = load_dataset(
+        args.tune_index, args.tune_corpus, args.tune_companion,
+        allowed_requests=official_tune,
+    )
     development = load_dataset(args.development_index, args.development_corpus, args.development_companion)
+    if len(tune) != 512 or request_ids(tune) != official_tune:
+        raise PermissionError("RouteMTP evaluator did not isolate the official tune partition")
     if request_ids(tune) & request_ids(development):
         raise PermissionError("RouteMTP tune/development requests overlap")
     hydration = HydrationStore(args.hydration)

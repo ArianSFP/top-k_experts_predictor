@@ -80,6 +80,9 @@ PREDECESSOR = {
     "r3_router": "r3_expert",
 }
 EFFECTIVE_BATCH = 32
+EXPECTED_B2_REQUESTS = 256
+EXPECTED_ROWS_PER_REQUEST = 16
+OFFICIAL_TUNE_REQUESTS = 32
 
 
 class IndexedSubset(Dataset[Any]):
@@ -139,30 +142,66 @@ def append_jsonl(path: Path, value: Mapping[str, Any]) -> None:
         handle.flush(); os.fsync(handle.fileno())
 
 
-def _request_id(dataset: Dataset[Any], index: int) -> str:
-    return str(dataset[index]["metadata"]["request_id"])
-
-
-def internal_split(dataset: Dataset[Any], dev_requests: int) -> tuple[Dataset[Any], Dataset[Any], dict[str, Any]]:
+def request_groups(base: HarpRTTDataset) -> dict[str, list[int]]:
     by_request: dict[str, list[int]] = defaultdict(list)
-    for index in range(len(dataset)):
-        by_request[_request_id(dataset, index)].append(index)
-    if len(by_request) <= dev_requests:
+    for index, record in enumerate(base.records):
+        request = str(base.segments[record.segment].sequences[record.sequence]["request_id"])
+        by_request[request].append(index)
+    return dict(by_request)
+
+
+def protected_training_split(
+    dataset: Dataset[Any],
+    base: HarpRTTDataset,
+    dev_requests: int,
+) -> tuple[Dataset[Any], Dataset[Any], dict[str, Any]]:
+    """Freeze B2's official tune split, then split only its 224 train requests.
+
+    Request identities are read from the base index rather than ``dataset`` so
+    counterfactual labels belonging to the protected official tune requests are
+    not opened while constructing the training subsets.
+    """
+    by_request = request_groups(base)
+    if len(by_request) != EXPECTED_B2_REQUESTS or len(base) != (
+        EXPECTED_B2_REQUESTS * EXPECTED_ROWS_PER_REQUEST
+    ):
+        raise ValueError("RouteMTP requires the frozen 256-request B2 inventory")
+    if any(len(indices) != EXPECTED_ROWS_PER_REQUEST for indices in by_request.values()):
+        raise ValueError("every RouteMTP B2 request must contribute exactly 16 rows")
+    b2_order = sorted(
+        by_request,
+        key=lambda request: (
+            hashlib.sha256(f"harp-rtt-b2-tune\0{request}".encode()).digest(),
+            request,
+        ),
+    )
+    official_tune = set(b2_order[:OFFICIAL_TUNE_REQUESTS])
+    training_pool = set(b2_order[OFFICIAL_TUNE_REQUESTS:])
+    if len(training_pool) <= dev_requests:
         raise ValueError("not enough fitting requests for RouteMTP internal development")
     ordered = sorted(
-        by_request,
-        key=lambda value: hashlib.sha256(("RouteMTP-internal-42:" + value).encode()).hexdigest(),
+        training_pool,
+        key=lambda value: (
+            hashlib.sha256(("RouteMTP-internal-42:" + value).encode()).digest(),
+            value,
+        ),
     )
-    development = set(ordered[:dev_requests]); fitting = set(ordered[dev_requests:])
+    development = set(ordered[:dev_requests]); fitting = training_pool - development
     fit_indices = [index for request in sorted(fitting) for index in by_request[request]]
     dev_indices = [index for request in sorted(development) for index in by_request[request]]
+    if fitting & development or fitting & official_tune or development & official_tune:
+        raise AssertionError("RouteMTP request partitions overlap")
     return IndexedSubset(dataset, fit_indices), IndexedSubset(dataset, dev_indices), {
-        "schema": "harp_routemtp_internal_request_split_v1",
+        "schema": "harp_routemtp_protected_request_split_v2",
         "seed": 42,
+        "official_tune_selection": "sha256(harp-rtt-b2-tune\\0request_id)",
+        "official_tuning_requests": sorted(official_tune),
+        "official_tuning_rows": sum(len(by_request[value]) for value in official_tune),
         "fit_requests": sorted(fitting),
         "internal_development_requests": sorted(development),
         "fit_rows": len(fit_indices),
         "internal_development_rows": len(dev_indices),
+        "request_disjoint": True,
         "official_tune_opened": False,
         "diagnostic_development_opened": False,
     }
@@ -665,7 +704,9 @@ def main() -> None:
         args.train_companion, split="train", training=True
     )
     joined = NodeCounterfactualDatasetAdapter(base, labels, split="train", training=True)
-    fit, internal_dev, split = internal_split(joined, args.internal_dev_requests)
+    fit, internal_dev, split = protected_training_split(
+        joined, base, args.internal_dev_requests
+    )
     hydration = HydrationStore(args.hydration)
     hydration_manifest_sha256 = sha256_file(args.hydration / "HYDRATION_MANIFEST.json")
     companion_manifest_sha256 = sha256_file(args.train_companion / "manifest.json")

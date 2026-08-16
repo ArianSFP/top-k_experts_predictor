@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from torch import nn
+from torch.utils.data import Dataset
 
 from harp_rtt.routemtp import (
     AnytimePathPosterior,
@@ -22,6 +23,7 @@ from harp_rtt.routemtp_batch import (
     assert_causal_routemtp_inputs,
     build_anytime_node_masks,
 )
+from runpod.train_harp_routemtp_v1 import protected_training_split
 
 
 def _config() -> RouteMTPConfig:
@@ -223,6 +225,45 @@ def test_installation_leaves_kv_unadapted() -> None:
 def test_model_input_contract_rejects_label_leakage() -> None:
     with pytest.raises(PermissionError, match="undeclared"):
         assert_causal_routemtp_inputs({"future_router_logits": torch.zeros(1)})
+
+
+class _NoReadDataset(Dataset[object]):
+    def __len__(self) -> int:
+        return 256 * 16
+
+    def __getitem__(self, index: int) -> object:
+        raise AssertionError("partition construction opened a protected label row")
+
+
+class _FakeBase:
+    def __init__(self, records: list[object], sequences: list[dict[str, str]]) -> None:
+        self.records = records
+        self.segments = {"segment": SimpleNamespace(sequences=sequences)}
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+
+def test_protected_training_split_freezes_official_tune_before_internal_dev() -> None:
+    requests = [f"request-{value:03d}" for value in range(256)]
+    sequences = [{"request_id": request} for request in requests]
+    records = [
+        SimpleNamespace(segment="segment", sequence=request_index)
+        for request_index in range(256)
+        for _ in range(16)
+    ]
+    base = _FakeBase(records, sequences)
+    fitting, development, manifest = protected_training_split(
+        _NoReadDataset(), base, 32
+    )
+    fit = set(manifest["fit_requests"])
+    internal = set(manifest["internal_development_requests"])
+    official = set(manifest["official_tuning_requests"])
+    assert (len(fit), len(internal), len(official)) == (192, 32, 32)
+    assert not (fit & internal or fit & official or internal & official)
+    assert fit | internal | official == set(requests)
+    assert (len(fitting), len(development)) == (192 * 16, 32 * 16)
+    assert manifest["official_tune_opened"] is False
 
 
 class _PackedExperts(nn.Module):
