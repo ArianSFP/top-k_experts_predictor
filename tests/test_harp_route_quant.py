@@ -83,6 +83,12 @@ def test_routequant_runtime_preserves_identity_weights_and_omission():
     ).sum(1)
     assert not torch.allclose(output, renormalized)
     assert not any(True for _ in module.parameters())
+    module.enable_dequantized_cache()
+    cached = module(hidden, ids, weights)
+    assert torch.equal(cached, output)
+    assert set(module._gate_up_cache) == {0, 1, 3}
+    module.enable_dequantized_cache(False)
+    assert not module._gate_up_cache and not module._down_cache
 
 
 def test_routequant_mixed_bit_bank_storage_round_trip():

@@ -356,6 +356,41 @@ class PackedRouteQuantExperts(nn.Module):
         self.config = config
         self.gate_up = gate_up
         self.down = down
+        self.cache_dequantized = False
+        self.cache_max_experts = 0
+        self._gate_up_cache: dict[int, Tensor] = {}
+        self._down_cache: dict[int, Tensor] = {}
+
+    def enable_dequantized_cache(
+        self, enabled: bool = True, *, max_experts: int | None = None
+    ) -> None:
+        """Cache exact reference dequantization without changing arithmetic."""
+
+        self.cache_dequantized = bool(enabled)
+        if max_experts is None:
+            max_experts = self.config.experts
+        if self.cache_dequantized and not 1 <= int(max_experts) <= self.config.experts:
+            raise ValueError("RouteQuant dequantization cache capacity is invalid")
+        self.cache_max_experts = int(max_experts) if self.cache_dequantized else 0
+        if not self.cache_dequantized:
+            self._gate_up_cache.clear()
+            self._down_cache.clear()
+
+    def _expert_weights(
+        self, expert: int, *, dtype: torch.dtype
+    ) -> tuple[Tensor | None, Tensor | None]:
+        if self.cache_dequantized and expert in self._gate_up_cache:
+            return self._gate_up_cache[expert], self._down_cache[expert]
+        gate_up = self.gate_up.dequantize(expert, dtype=dtype)
+        down = self.down.dequantize(expert, dtype=dtype)
+        if self.cache_dequantized and gate_up is not None and down is not None:
+            if len(self._gate_up_cache) >= self.cache_max_experts:
+                oldest = next(iter(self._gate_up_cache))
+                self._gate_up_cache.pop(oldest)
+                self._down_cache.pop(oldest)
+            self._gate_up_cache[expert] = gate_up
+            self._down_cache[expert] = down
+        return gate_up, down
 
     @classmethod
     def from_target(
@@ -427,8 +462,7 @@ class PackedRouteQuantExperts(nn.Module):
             device=hidden.device, dtype=hidden.dtype,
         )
         for expert in torch.unique(ids).tolist():
-            gate_up = self.gate_up.dequantize(int(expert), dtype=hidden.dtype)
-            down = self.down.dequantize(int(expert), dtype=hidden.dtype)
+            gate_up, down = self._expert_weights(int(expert), dtype=hidden.dtype)
             if gate_up is None:
                 if down is not None:  # pragma: no cover - constructor invariant
                     raise RuntimeError("partially omitted RouteQuant expert")

@@ -322,6 +322,7 @@ def main() -> None:
                 scale_method=method,
                 item_chunk=args.item_chunk,
             ).to(device)
+            model.enable_dequantized_cache(True, max_experts=256)
             metrics = evaluate_candidate(
                 model,
                 datasets["tune"],
