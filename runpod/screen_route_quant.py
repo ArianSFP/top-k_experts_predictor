@@ -79,8 +79,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mixed-upgrade-fractions",
         default="",
-        help="optional comma-separated fractions for a train-planned INT3-to-INT4 sweep",
+        help="optional comma-separated fractions for a train-planned adjacent-bit sweep",
     )
+    parser.add_argument("--mixed-base-bits", type=int, choices=(1, 2, 3), default=3)
+    parser.add_argument("--mixed-upgrade-bits", type=int, choices=(2, 3, 4), default=4)
     parser.add_argument("--item-chunk", type=int, default=2)
     parser.add_argument("--microbatch", type=int, choices=(1, 2, 4, 8, 16, 32), default=16)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -373,6 +375,8 @@ def main() -> None:
     layers = parse_layers(args.layers)
     candidates = parse_candidates(args.candidates)
     upgrade_fractions = parse_upgrade_fractions(args.mixed_upgrade_fractions)
+    if upgrade_fractions and args.mixed_upgrade_bits != args.mixed_base_bits + 1:
+        raise ValueError("mixed RouteQuant sweep requires adjacent bit widths")
     if args.output.exists():
         raise FileExistsError(f"refusing to overwrite RouteQuant run {args.output}")
     if len(args.source_commit) != 40 or any(
@@ -420,8 +424,8 @@ def main() -> None:
         "candidates": [f"{bits}:{method}" for bits, method in candidates],
         "group_size": args.group_size,
         "mixed_upgrade_fractions": list(upgrade_fractions),
-        "mixed_base_bits": 3,
-        "mixed_upgrade_bits": 4,
+        "mixed_base_bits": args.mixed_base_bits,
+        "mixed_upgrade_bits": args.mixed_upgrade_bits,
         "mixed_utility_split": "train",
         "mixed_selection_split": "tune",
         "seed": args.seed,
@@ -476,7 +480,7 @@ def main() -> None:
             base_model = PackedRouteQuantExperts.from_target(
                 gate_up,
                 down,
-                gate_up_bits=3,
+                gate_up_bits=args.mixed_base_bits,
                 exact_k=8,
                 group_size=args.group_size,
                 scale_method="mse",
@@ -485,7 +489,7 @@ def main() -> None:
             upgraded_model = PackedRouteQuantExperts.from_target(
                 gate_up,
                 down,
-                gate_up_bits=4,
+                gate_up_bits=args.mixed_upgrade_bits,
                 exact_k=8,
                 group_size=args.group_size,
                 scale_method="mse",
@@ -523,7 +527,12 @@ def main() -> None:
             if device.type == "cuda":
                 torch.cuda.empty_cache()
             for fraction in upgrade_fractions:
-                schedule = upgrade_schedule(utility["score"], fraction=fraction)
+                schedule = upgrade_schedule(
+                    utility["score"],
+                    fraction=fraction,
+                    base_bits=args.mixed_base_bits,
+                    upgrade_bits=args.mixed_upgrade_bits,
+                )
                 model = PackedRouteQuantExperts.from_target(
                     gate_up,
                     down,
@@ -547,10 +556,14 @@ def main() -> None:
                 global_schedule = schedule.view(1, -1).expand(40, -1).contiguous()
                 row = {
                     "layer": layer,
-                    "variant": "mixed_int3_int4",
+                    "variant": (
+                        f"mixed_int{args.mixed_base_bits}_int{args.mixed_upgrade_bits}"
+                    ),
+                    "base_bits": args.mixed_base_bits,
+                    "upgrade_bits": args.mixed_upgrade_bits,
                     "upgrade_fraction": fraction,
-                    "upgrade_count": int((schedule == 4).sum()),
-                    "upgraded_expert_ids": (schedule == 4).nonzero(
+                    "upgrade_count": int((schedule == args.mixed_upgrade_bits).sum()),
+                    "upgraded_expert_ids": (schedule == args.mixed_upgrade_bits).nonzero(
                         as_tuple=False
                     ).flatten().tolist(),
                     "layer_persistent_bytes": model.persistent_nbytes(),
@@ -658,11 +671,17 @@ def main() -> None:
     for fraction in upgrade_fractions:
         rows = [
             row for row in results
-            if row.get("variant") == "mixed_int3_int4"
+            if row.get("variant") == (
+                f"mixed_int{args.mixed_base_bits}_int{args.mixed_upgrade_bits}"
+            )
             and row["upgrade_fraction"] == fraction
         ]
         mixed_aggregates.append({
-            "variant": "mixed_int3_int4",
+            "variant": (
+                f"mixed_int{args.mixed_base_bits}_int{args.mixed_upgrade_bits}"
+            ),
+            "base_bits": args.mixed_base_bits,
+            "upgrade_bits": args.mixed_upgrade_bits,
             "upgrade_fraction": fraction,
             "mean_next_router_recall_at_8": sum(
                 row["metrics"]["request_macro_next_router_recall_at_8"] for row in rows
