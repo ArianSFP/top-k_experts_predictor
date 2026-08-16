@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+from contextlib import nullcontext
 from datetime import datetime, timezone
 import json
 import os
@@ -22,9 +23,19 @@ for candidate in (str(REPO_ROOT), str(BRIDGE)):
 
 from harp_rtt.node_counterfactual import load_node_counterfactual_companion  # noqa: E402
 from harp_rtt.exact_k import stable_topk  # noqa: E402
+from harp_rtt.resident_fusion import (  # noqa: E402
+    PREDICTION_SIDECAR_SCHEMA,
+    RESIDENT_POLICIES,
+    cumulative_prior_omission,
+    expert_availability_mask,
+    hot_resident_subset,
+    selected_route_availability,
+)
 from harp_rtt.route_ceiling import factual_branch_topk, posterior_native_topk  # noqa: E402
 from harp_rtt.shadow_route import shadow_lm_path_posterior  # noqa: E402
-from harp_rtt.shadow_backbone import exact_prefix_experts, install_shadow_experts  # noqa: E402
+from harp_rtt.shadow_backbone import (  # noqa: E402
+    exact_prefix_experts, install_shadow_experts, resident_runtime_policy,
+)
 from harp_rtt.shadow_bundle import (  # noqa: E402
     load_shadow_bundle,
     resident_codebooks_from_bundle,
@@ -34,7 +45,9 @@ from harp_rtt.shadow_bundle import (  # noqa: E402
 from harp_rtt.shadow_checkpoint import IndexedCheckpoint, sha256_file  # noqa: E402
 from harp_rtt.route_quant import PackedRouteQuantExperts  # noqa: E402
 from harp_rtt.shadow_expert import PackedInt4TopKExperts  # noqa: E402
-from harp_rtt.shadow_rollout import ShadowRouteHooks, run_shadow_tree  # noqa: E402
+from harp_rtt.shadow_rollout import (  # noqa: E402
+    ShadowRouteHooks, exact_prefix_state, run_shadow_tree,
+)
 
 
 SCHEMA = "harp_shadowroute_closed_loop_evaluation_v1"
@@ -89,6 +102,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--node-budget", choices=("4", "8", "16", "32"), default="16")
+    parser.add_argument(
+        "--resident-policy", choices=RESIDENT_POLICIES, default="resident_3850",
+        help="non-persistent compact resident policy applied to future tree nodes",
+    )
+    parser.add_argument(
+        "--prediction-sidecar", action="store_true",
+        help="write dense label-free per-position predictions for paired analysis",
+    )
     parser.add_argument("--native-parity", action="store_true")
     parser.add_argument(
         "--cache-int4-experts",
@@ -172,6 +193,81 @@ def native_parity_mask(
     if valid.ndim != 2 or node_mask.ndim != 1:
         raise ValueError("native parity expects [N,L] validity and [N] node mask")
     return valid[:count].bool() & node_mask[:count, None].bool()
+
+
+def write_torch_exclusive(path: Path, value: Mapping[str, Any]) -> None:
+    with path.open("x+b") as handle:
+        torch.save(dict(value), handle)
+        handle.flush(); os.fsync(handle.fileno())
+
+
+def _pad_nodes(value: torch.Tensor, *, nodes: int = 32, fill: float | int = 0) -> torch.Tensor:
+    if value.shape[0] > nodes:
+        raise ValueError("prediction sidecar node count exceeds its fixed geometry")
+    result = value.new_full((nodes, *value.shape[1:]), fill)
+    result[: value.shape[0]] = value
+    return result
+
+
+def _selected_ids_mass(ids: torch.Tensor, *, experts: int = 256) -> torch.Tensor:
+    if ids.ndim != 3 or ids.shape[-1] != 8:
+        raise ValueError("selected-ID mass expects [N,L,8]")
+    result = torch.zeros(
+        *ids.shape[:-1], experts, dtype=torch.float32, device=ids.device
+    )
+    return result.scatter(-1, ids.long(), 1.0)
+
+
+def resident_omission_telemetry(
+    *,
+    selected_ids: torch.Tensor,
+    selected_weights: torch.Tensor,
+    parent_indices: torch.Tensor,
+    node_mask: torch.Tensor,
+    static_resident_ids: tuple[torch.Tensor, ...],
+    current_selected_ids: torch.Tensor | None,
+) -> dict[str, torch.Tensor]:
+    """Build label-free immediate and prior-causal omission telemetry."""
+
+    if selected_ids.shape != selected_weights.shape or selected_ids.ndim != 3:
+        raise ValueError("resident telemetry routes must be [N,L,K]")
+    count, layers, _ = selected_ids.shape
+    if layers != 40 or parent_indices.shape != (count,) or node_mask.shape != (count,):
+        raise ValueError("resident telemetry geometry changed")
+    static_available = expert_availability_mask(static_resident_ids)
+    available = expert_availability_mask(
+        static_resident_ids, current_selected_ids=current_selected_ids
+    )
+    static_selected = selected_route_availability(selected_ids, static_available)
+    available_selected = selected_route_availability(selected_ids, available)
+    opportunistic = available_selected & ~static_selected
+    missing = ~available_selected
+    missing_mass = (selected_weights.float() * missing.float()).sum(-1)
+    missing_count = missing.sum(-1).to(torch.int16)
+    prior_mass = cumulative_prior_omission(
+        parent_indices, node_mask, missing_mass
+    )
+    prior_count = cumulative_prior_omission(
+        parent_indices, node_mask, missing_count.float()
+    )
+    return {
+        "static_available_experts": static_available,
+        "available_experts": available,
+        "static_resident_selected": static_selected,
+        "opportunistic_selected": opportunistic,
+        "missing_selected": missing,
+        "immediate_missing_mass": missing_mass,
+        "immediate_missing_count": missing_count,
+        "prior_missing_mass": prior_mass,
+        "prior_missing_count": prior_count,
+    }
+
+
+def assert_prediction_record_label_free(record: Mapping[str, Any]) -> None:
+    forbidden = ("target", "truth", "prefix_mismatch", "factual_branch", "acceptance")
+    bad = [name for name in record if any(part in name.lower() for part in forbidden)]
+    if bad:
+        raise PermissionError(f"prediction sidecar contains label-like fields: {sorted(bad)}")
 
 
 def load_ceiling_bundle(path: Path, *, parent_sha256: str) -> dict[str, Any]:
@@ -434,10 +530,18 @@ def main() -> None:
         raise ValueError("RouteQuant caching requires RouteQuant mode")
     if args.cache_int4_experts and args.cache_routequant_experts:
         raise ValueError("expert reference cache flags are mutually exclusive")
+    if args.resident_policy != "resident_3850" and args.mode != "resident_int4_only":
+        raise ValueError("hot resident policies require Resident-Only mode")
+    if args.prediction_sidecar and args.native_parity_only:
+        raise ValueError("prediction sidecars require a ShadowRoute rollout")
+    if args.prediction_sidecar and args.mode != "resident_int4_only":
+        raise ValueError("prediction sidecars currently require Resident-Only mode")
     if (args.ceiling_bundle is None) != (args.ceiling_parent_sha256 is None):
         raise ValueError(
             "--ceiling-bundle and --ceiling-parent-sha256 must be provided together"
         )
+    if args.prediction_sidecar and args.ceiling_bundle is None:
+        raise ValueError("prediction sidecars require the aligned ceiling bundle")
     if args.ceiling_parent_sha256 is not None and (
         len(args.ceiling_parent_sha256) != 64
         or any(character not in "0123456789abcdef" for character in args.ceiling_parent_sha256)
@@ -545,6 +649,8 @@ def main() -> None:
         "draft_scale": 0.0 if args.native_exact_slots is not None else 1.0,
         "trees": len(trees),
         "node_budget": int(args.node_budget),
+        "resident_policy": args.resident_policy,
+        "prediction_sidecar_requested": args.prediction_sidecar,
         "native_parity_requested": args.native_parity,
         "native_parity_only": args.native_parity_only,
         "diagnostic_unpromoted_bundle": args.diagnostic_unpromoted_bundle,
@@ -634,6 +740,7 @@ def main() -> None:
         tuple[str, str, str, int], list[torch.Tensor]
     ] = defaultdict(list)
     root_cells: dict[str, list[torch.Tensor]] = defaultdict(list)
+    prediction_records: list[dict[str, Any]] = []
     native_mismatches = 0
     executed_nodes = 0
     peak_gib = 0.0
@@ -674,11 +781,17 @@ def main() -> None:
                     native_valid=native["valid"][:count].bool(),
                 )
 
+            prefix_state = (
+                exact_prefix_state(installed, hooks, authoritative_prefix)
+                if args.prediction_sidecar or args.resident_policy == "hot25_current"
+                else None
+            )
             if args.native_parity:
                 with exact_prefix_experts(installed):
                     reference = run_shadow_tree(
                         installed, hooks, authoritative_prefix=authoritative_prefix,
                         token_ids=token_ids, parent_indices=parents, node_mask=node_mask,
+                        prefix_cache=(None if prefix_state is None else prefix_state.cache),
                     )
                 # The immutable all-node companion retains valid labels for
                 # nodes omitted by a reduced runtime budget.  Those nodes have
@@ -696,10 +809,27 @@ def main() -> None:
                 del reference
 
             if not args.native_parity_only:
-                result = run_shadow_tree(
-                    installed, hooks, authoritative_prefix=authoritative_prefix,
-                    token_ids=token_ids, parent_indices=parents, node_mask=node_mask,
+                current_route = (
+                    None if prefix_state is None else prefix_state.selected_ids.cpu()
                 )
+                policy_context = (
+                    resident_runtime_policy(
+                        installed,
+                        args.resident_policy,
+                        current_selected_ids=(
+                            current_route
+                            if args.resident_policy == "hot25_current" else None
+                        ),
+                    )
+                    if args.mode == "resident_int4_only"
+                    else nullcontext(installed)
+                )
+                with policy_context:
+                    result = run_shadow_tree(
+                        installed, hooks, authoritative_prefix=authoritative_prefix,
+                        token_ids=token_ids, parent_indices=parents, node_mask=node_mask,
+                        prefix_cache=(None if prefix_state is None else prefix_state.cache),
+                    )
                 predicted = result.selected_ids[:count].cpu()
                 truth = native["selected_ids"][:count].long()
                 depth = native["depth"][:count].long()
@@ -790,6 +920,113 @@ def main() -> None:
                     conditions["shadow_lm"] = (
                         shadow_prediction, shadow_inclusion
                     )
+                    if args.prediction_sidecar:
+                        assert resident_ids_by_layer is not None
+                        if prefix_state is None:
+                            raise RuntimeError("prediction sidecar lacks exact prefix state")
+                        static_residents = (
+                            tuple(ids.cpu() for ids in resident_ids_by_layer)
+                            if args.resident_policy == "resident_3850"
+                            else hot_resident_subset(resident_ids_by_layer)
+                        )
+                        policy_current = (
+                            prefix_state.selected_ids.cpu()
+                            if args.resident_policy == "hot25_current" else None
+                        )
+                        telemetry = resident_omission_telemetry(
+                            selected_ids=predicted,
+                            selected_weights=result.selected_weights[:count].float().cpu(),
+                            parent_indices=parents,
+                            node_mask=node_mask,
+                            static_resident_ids=static_residents,
+                            current_selected_ids=policy_current,
+                        )
+                        final_marginals = shadow_inclusion[0].float().clone()
+                        final_ids = shadow_prediction[0].long().clone()
+                        root_mass = _selected_ids_mass(predicted[:1])[0]
+                        final_marginals[0] = root_mass
+                        final_ids[0] = predicted[0]
+                        captured_shadow = (
+                            shadow_inclusion
+                            - shadow_posterior.other_probabilities[..., None, None]
+                            * anchor_marginals
+                        ).clamp_min(0.0)
+                        captured_shadow[0, 0] = root_mass
+                        captured_probability = shadow_posterior.captured_probabilities.sum(-1)[0]
+                        captured_probability[0] = 1.0
+                        record: dict[str, Any] = {
+                            "request_id": str(tree["request_id"]),
+                            "source_request_id": str(
+                                tree["source_request_id"] or tree["request_id"]
+                            ),
+                            "sequence_id": str(tree["sequence_id"]),
+                            "source_position": position,
+                            "tree_id": str(tree.get("tree_id", "")),
+                            "authoritative_prefix_hash": str(
+                                tree["authoritative_prefix_hash"]
+                            ),
+                            "ceiling_row": int(ceiling_row),
+                            "resident_policy": args.resident_policy,
+                            "token_ids": _pad_nodes(token_ids, fill=0).to(torch.int32),
+                            "parent_indices": _pad_nodes(parents, fill=-1).to(torch.int16),
+                            "node_depths": _pad_nodes(depth, fill=0).to(torch.int8),
+                            "node_mask": _pad_nodes(node_mask, fill=False).bool(),
+                            "branch_mask": branch_mask[0].bool(),
+                            "router_logits": _pad_nodes(
+                                result.router_logits[:count].float().cpu().to(torch.bfloat16)
+                            ),
+                            "selected_ids": _pad_nodes(
+                                predicted.to(torch.int16), fill=-1
+                            ),
+                            "selected_weights": _pad_nodes(
+                                result.selected_weights[:count].cpu().to(torch.bfloat16)
+                            ),
+                            "shadow_lm_captured_probabilities": (
+                                shadow_posterior.captured_probabilities[0].cpu()
+                                .to(torch.float32)
+                            ),
+                            "shadow_lm_other_probabilities": (
+                                shadow_posterior.other_probabilities[0].cpu()
+                                .to(torch.float32)
+                            ),
+                            "captured_probability": captured_probability.cpu(),
+                            "captured_shadow_marginals": captured_shadow[0].cpu()
+                            .to(torch.bfloat16),
+                            "final_shadow_marginals": final_marginals.cpu()
+                            .to(torch.bfloat16),
+                            "final_shadow_ids": final_ids.cpu().to(torch.int16),
+                            "current_selected_ids": prefix_state.selected_ids.cpu()
+                            .to(torch.int16),
+                            "current_selected_weights": prefix_state.selected_weights.cpu()
+                            .to(torch.bfloat16),
+                            "static_available_experts": telemetry[
+                                "static_available_experts"
+                            ],
+                            "available_experts": telemetry["available_experts"],
+                            "static_resident_selected": _pad_nodes(
+                                telemetry["static_resident_selected"]
+                            ),
+                            "opportunistic_selected": _pad_nodes(
+                                telemetry["opportunistic_selected"]
+                            ),
+                            "missing_selected": _pad_nodes(
+                                telemetry["missing_selected"]
+                            ),
+                            "immediate_missing_mass": _pad_nodes(
+                                telemetry["immediate_missing_mass"].to(torch.bfloat16)
+                            ),
+                            "immediate_missing_count": _pad_nodes(
+                                telemetry["immediate_missing_count"]
+                            ),
+                            "prior_missing_mass": _pad_nodes(
+                                telemetry["prior_missing_mass"].to(torch.bfloat16)
+                            ),
+                            "prior_missing_count": _pad_nodes(
+                                telemetry["prior_missing_count"].to(torch.bfloat16)
+                            ),
+                        }
+                        assert_prediction_record_label_free(record)
+                        prediction_records.append(record)
                     factual_indices = ceiling["factual_branch_indices"][
                         ceiling_row : ceiling_row + 1
                     ].long().clone()
@@ -877,6 +1114,35 @@ def main() -> None:
     )
     write_rows(args.output / "request_route_predictions.jsonl", rows)
     write_rows(args.output / "request_factual_predictions.jsonl", factual_rows)
+    if args.prediction_sidecar:
+        if len(prediction_records) != len(trees):
+            raise RuntimeError("prediction sidecar record count differs from executed trees")
+        write_torch_exclusive(
+            args.output / "prediction_sidecar.pt",
+            {
+                "schema": PREDICTION_SIDECAR_SCHEMA,
+                "provenance": {
+                    "source_commit": args.source_commit,
+                    "execution_source_commit": args.execution_source_commit,
+                    "resident_policy": args.resident_policy,
+                    "node_budget": int(args.node_budget),
+                    "base_capture_manifest_sha256": manifest[
+                        "base_capture_manifest_sha256"
+                    ],
+                    "native_companion_manifest_sha256": manifest[
+                        "native_companion_manifest_sha256"
+                    ],
+                    "ceiling_bundle_sha256": manifest["ceiling_bundle_sha256"],
+                    "target_checkpoint_index_sha256": checkpoint.index_sha256,
+                    "label_free": True,
+                    "runtime_available": True,
+                    "formal_validation_opened": False,
+                    "calibration_opened": False,
+                    "sealed_test_opened": False,
+                },
+                "records": prediction_records,
+            },
+        )
     accuracy_gate_met = bool(
         args.native_parity_only
         or (

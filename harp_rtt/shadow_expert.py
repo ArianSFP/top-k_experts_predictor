@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import math
 from typing import Protocol
+import weakref
 
 import torch
 from torch import Tensor, nn
@@ -755,6 +756,8 @@ class ResidentTailComponents:
     control_output: Tensor
     missing_mass: Tensor
     missing_mask: Tensor
+    resident_mask: Tensor
+    opportunistic_mask: Tensor
 
 
 class RouterVisibleTailControl(nn.Module):
@@ -845,8 +848,11 @@ class PackedInt4ResidentExperts(nn.Module):
     """Resident frequent experts with a compact fallback for every miss.
 
     Unlike the full INT4 control, this module stores only a frozen subset of
-    target experts.  It never consults the target offload store.  Missing
-    selected-weight mass is assigned to the resident shared draft; when the
+    target experts.  By default it never consults the target offload store.
+    A separately audited runtime policy may reuse exact experts already known
+    to be present in the serving cache; that policy is an explicit whitelist
+    and cannot initiate arbitrary expert access.  Missing selected-weight mass
+    is assigned to the resident shared draft; when the
     fallback exposes per-expert BasisDraft values, resident slots replace the
     corresponding approximation exactly.
     """
@@ -890,6 +896,17 @@ class PackedInt4ResidentExperts(nn.Module):
             ids.numel(), dtype=torch.long, device=device
         )
         self.register_buffer("expert_to_resident", expert_to_resident)
+        self.register_buffer(
+            "_runtime_packed_enabled",
+            torch.ones(ids.numel(), dtype=torch.bool, device=device),
+            persistent=False,
+        )
+        self.register_buffer(
+            "_runtime_opportunistic_enabled",
+            torch.zeros(experts, dtype=torch.bool, device=device),
+            persistent=False,
+        )
+        object.__setattr__(self, "_runtime_native_ref", None)
         codebook_values = (
             codebook_proxy_ids,
             codebook_proxy_coefficients,
@@ -985,6 +1002,66 @@ class PackedInt4ResidentExperts(nn.Module):
     def codebook_enabled(self) -> bool:
         return hasattr(self, "codebook_proxy_ids")
 
+    @property
+    def runtime_active_resident_ids(self) -> Tensor:
+        return self.resident_ids[self._runtime_packed_enabled]
+
+    @property
+    def runtime_opportunistic_ids(self) -> Tensor:
+        return torch.nonzero(
+            self._runtime_opportunistic_enabled, as_tuple=False
+        ).flatten()
+
+    def configure_runtime_policy(
+        self,
+        *,
+        active_resident_ids: Tensor | None = None,
+        opportunistic_ids: Tensor | None = None,
+        native_experts: RoutedExperts | None = None,
+    ) -> None:
+        """Configure a non-persistent packed/cache resident view."""
+
+        if self.codebook_enabled and (
+            active_resident_ids is not None or opportunistic_ids is not None
+        ):
+            raise ValueError("runtime resident masking is unsupported for codebooks")
+        active = self.resident_ids if active_resident_ids is None else torch.as_tensor(
+            active_resident_ids, dtype=torch.long, device=self.resident_ids.device
+        )
+        if active.ndim != 1 or active.unique().numel() != active.numel():
+            raise ValueError("active resident IDs must be a unique vector")
+        local = self.expert_to_resident[active]
+        if bool((local < 0).any()):
+            raise ValueError("runtime policy enabled a cell absent from the bundle")
+        self._runtime_packed_enabled.zero_()
+        self._runtime_packed_enabled[local] = True
+
+        opportunistic = torch.empty(
+            0, dtype=torch.long, device=self.resident_ids.device
+        ) if opportunistic_ids is None else torch.as_tensor(
+            opportunistic_ids, dtype=torch.long, device=self.resident_ids.device
+        )
+        if (
+            opportunistic.ndim != 1
+            or opportunistic.unique().numel() != opportunistic.numel()
+            or bool(((opportunistic < 0) | (opportunistic >= self.experts)).any())
+        ):
+            raise ValueError("opportunistic expert IDs must be unique and in range")
+        if opportunistic.numel() and native_experts is None:
+            raise ValueError("opportunistic experts require an exact resident-cache binding")
+        self._runtime_opportunistic_enabled.zero_()
+        self._runtime_opportunistic_enabled[opportunistic] = True
+        object.__setattr__(
+            self,
+            "_runtime_native_ref",
+            None if native_experts is None else weakref.ref(native_experts),
+        )
+
+    def reset_runtime_policy(self) -> None:
+        self._runtime_packed_enabled.fill_(True)
+        self._runtime_opportunistic_enabled.zero_()
+        object.__setattr__(self, "_runtime_native_ref", None)
+
     @classmethod
     @torch.no_grad()
     def from_target(
@@ -1067,8 +1144,10 @@ class PackedInt4ResidentExperts(nn.Module):
         if ids.shape[-1] != self.exact_k:
             raise ValueError("resident hybrid requires the complete native top-k route")
         local_ids = self.expert_to_resident[ids]
-        resident = local_ids >= 0
-        missing = ~resident
+        safe_local = local_ids.clamp_min(0)
+        resident = (local_ids >= 0) & self._runtime_packed_enabled[safe_local]
+        opportunistic = ~resident & self._runtime_opportunistic_enabled[ids]
+        missing = ~(resident | opportunistic)
         missing_mass = (weights * missing.to(weights)).sum(dim=1, keepdim=True)
         if self.codebook_enabled:
             if self.fallback is not None or self.router_control is not None:
@@ -1150,7 +1229,9 @@ class PackedInt4ResidentExperts(nn.Module):
                 )
             resident_output = torch.zeros_like(hidden)
             for local_id in torch.unique(local_ids[resident]).tolist():
-                positions = (local_ids == int(local_id)).nonzero(as_tuple=False)
+                positions = (
+                    resident & (local_ids == int(local_id))
+                ).nonzero(as_tuple=False)
                 token_index, slot_index = positions[:, 0], positions[:, 1]
                 gate_up, down = self._resident_weights(
                     int(local_id), dtype=hidden.dtype
@@ -1160,6 +1241,26 @@ class PackedInt4ResidentExperts(nn.Module):
                 resident_output[token_index] += (
                     exact * weights[token_index, slot_index, None]
                 )
+        opportunistic_output = torch.zeros_like(hidden)
+        if bool(opportunistic.any()):
+            reference = self._runtime_native_ref
+            native = None if reference is None else reference()
+            if native is None:
+                raise RuntimeError("opportunistic resident-cache binding expired")
+            for expert_id in torch.unique(ids[opportunistic]).tolist():
+                positions = (
+                    opportunistic & (ids == int(expert_id))
+                ).nonzero(as_tuple=False)
+                token_index, slot_index = positions[:, 0], positions[:, 1]
+                exact = native(
+                    hidden[token_index],
+                    ids[token_index, slot_index, None],
+                    weights[token_index, slot_index, None],
+                )
+                opportunistic_output[token_index] += exact.reshape(
+                    token_index.numel(), self.hidden_width
+                )
+            resident_output = resident_output + opportunistic_output
         control_output = torch.zeros_like(hidden)
         if self.router_control is not None:
             control_output = self.router_control(hidden, ids, weights, missing)
@@ -1172,6 +1273,8 @@ class PackedInt4ResidentExperts(nn.Module):
             control_output=control_output.reshape(*shaped),
             missing_mass=missing_mass.reshape(*leading, 1),
             missing_mask=missing.reshape(*leading, ids.shape[-1]),
+            resident_mask=resident.reshape(*leading, ids.shape[-1]),
+            opportunistic_mask=opportunistic.reshape(*leading, ids.shape[-1]),
         )
 
 

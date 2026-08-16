@@ -414,6 +414,69 @@ def freeze_except_shadow(model: nn.Module) -> tuple[str, ...]:
 
 
 @contextmanager
+def resident_runtime_policy(
+    installed: InstalledShadowBackbone,
+    policy: str,
+    *,
+    current_selected_ids: torch.Tensor | None = None,
+):
+    """Apply a non-persistent compact resident policy for one source tree.
+
+    ``hot25_current`` may call only exact experts selected by the already
+    completed current target token.  The whitelist is reset after the tree and
+    is never serialized into the resident bundle.
+    """
+
+    from .resident_fusion import hot_resident_subset, validate_resident_policy
+
+    validate_resident_policy(policy)
+    if installed.mode != "resident_int4_only":
+        raise ValueError("runtime resident policies require Resident-Only mode")
+    modules = installed.shadow_experts
+    if any(not isinstance(module, PackedInt4ResidentExperts) for module in modules):
+        raise TypeError("installed backbone does not contain resident experts")
+    packed = tuple(module for module in modules if isinstance(
+        module, PackedInt4ResidentExperts
+    ))
+    hot = hot_resident_subset(tuple(module.resident_ids for module in packed))
+    if policy == "hot25_current":
+        if current_selected_ids is None or current_selected_ids.shape != (40, 8):
+            raise ValueError("hot25_current requires exact current routes [40,8]")
+        current = current_selected_ids.long()
+        if bool(((current < 0) | (current >= 256)).any()):
+            raise ValueError("current route contains an invalid expert ID")
+    elif current_selected_ids is not None:
+        raise ValueError("current routes are valid only for hot25_current")
+    try:
+        for layer, module in enumerate(packed):
+            if policy == "resident_3850":
+                module.reset_runtime_policy()
+            elif policy == "hot25":
+                module.configure_runtime_policy(active_resident_ids=hot[layer])
+            else:
+                assert current_selected_ids is not None
+                current_ids = current_selected_ids[layer].to(module.resident_ids.device)
+                current_set = set(current_ids.tolist())
+                active = torch.tensor(
+                    [value for value in hot[layer].tolist() if value not in current_set],
+                    dtype=torch.long,
+                    device=module.resident_ids.device,
+                )
+                native = installed.native_experts[layer]
+                if native is None:
+                    raise RuntimeError("current-cache policy lacks exact target experts")
+                module.configure_runtime_policy(
+                    active_resident_ids=active,
+                    opportunistic_ids=current_ids.unique(sorted=True),
+                    native_experts=native,
+                )
+        yield installed
+    finally:
+        for module in packed:
+            module.reset_runtime_policy()
+
+
+@contextmanager
 def exact_prefix_experts(installed: InstalledShadowBackbone):
     """Temporarily restore native routed experts for committed-prefix replay."""
 
@@ -438,6 +501,7 @@ __all__ = [
     "exact_prefix_experts",
     "freeze_except_shadow",
     "install_shadow_experts",
+    "resident_runtime_policy",
     "resolve_text_layers",
     "resolve_text_model",
 ]
