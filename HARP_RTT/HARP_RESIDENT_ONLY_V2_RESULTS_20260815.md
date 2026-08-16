@@ -169,6 +169,13 @@ Every layer has its own checksum inventory. The sealed root has a complete
 
 ## Next experiment
 
+An intervening resident-functional-codebook experiment was completed on
+2026-08-16 and failed its four-phase component gate. Both one-proxy and
+two-proxy substitution regressed next-router Recall@8 and residual error versus
+Resident-Only v2. See \`HARP_RESIDENT_CODEBOOK_V3_RESULTS_20260816.md\`. The
+sealed Resident-Only v2 bundle therefore remains the compact candidate for the
+exact-cache screen below.
+
 The next required hardware is one **RTX PRO 6000 96GB** (or H100 NVL 94GB /
 H200 141GB equivalent), with at least 192 GB host RAM and 250 GB local NVMe.
 
