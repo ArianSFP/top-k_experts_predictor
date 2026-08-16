@@ -45,6 +45,7 @@ def parse_args() -> argparse.Namespace:
         parser.add_argument(f"--{split}-companion", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--training-split-manifest", type=Path, required=True)
+    parser.add_argument("--source-commit", required=True)
     parser.add_argument("--tune-hydration", type=Path, required=True)
     parser.add_argument("--development-hydration", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
@@ -98,6 +99,8 @@ def main() -> None:
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     if checkpoint.get("schema") != CHECKPOINT_SCHEMA:
         raise ValueError("RouteMTP checkpoint schema mismatch")
+    if len(args.source_commit) != 40 or checkpoint.get("source_commit") != args.source_commit:
+        raise ValueError("RouteMTP evaluation source commit differs from checkpoint")
     if checkpoint.get("internal_split_sha256") != sha256_file(args.training_split_manifest):
         raise ValueError("RouteMTP checkpoint and protected request split differ")
     protected_split = json.loads(args.training_split_manifest.read_text(encoding="utf-8"))
@@ -226,6 +229,7 @@ def main() -> None:
     )
     result = {
         "schema": SCHEMA, "stage": stage,
+        "source_commit": args.source_commit,
         "checkpoint_sha256": sha256_file(args.checkpoint),
         "tune_hydration_manifest_sha256": tune_hydration_sha256,
         "development_hydration_manifest_sha256": development_hydration_sha256,
