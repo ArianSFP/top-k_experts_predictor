@@ -2,6 +2,18 @@
 
 Status: **blocking audit passed; stop before production capture or training**.
 
+## RouteMTP v1
+
+`hydrate_routemtp_prefix_cache.py` performs the one-time, outer-train-only
+adapter-off prefix hydration required by the independent recurrent RouteMTP
+runner. It writes one checkpoint-derived K/V cache per request and a
+hash-bound source-position table. Consumers must use
+`harp_rtt.routemtp_cache.load_causal_cache_slice`; direct unsliced
+full-request cache access is outside the model contract. The blocking next
+command is `runpod/audit_harp_routemtp_replay.py`, which audits exactly 32
+positions and must pass before `runpod/train_harp_routemtp_v1.py` may
+construct an optimizer.
+
 This immutable pilot proves that the BF16 Transformers backend can emit an
 event-aligned, same-execution target-plus-MTP trace for GCRP-2R v1.3.  It is a
 schema/instrumentation pilot, not a statistically useful training corpus.

@@ -124,8 +124,7 @@ class Qwen35CheckpointMTP(nn.Module):
     def _capture_post_ffn_hidden(self, _module, _args, output) -> None:
         self._post_ffn_hidden = output
 
-    @torch.no_grad()
-    def forward(
+    def _forward_impl(
         self,
         input_ids: torch.Tensor,
         previous_hidden: torch.Tensor,
@@ -133,6 +132,7 @@ class Qwen35CheckpointMTP(nn.Module):
         position_ids: torch.Tensor,
         past_key_values: Any | None = None,
         use_cache: bool = True,
+        compute_vocabulary_logits: bool = True,
     ) -> dict[str, Any]:
         if input_ids.ndim != 2 or previous_hidden.ndim != 3:
             raise ValueError("expected input_ids [B,T] and previous_hidden [B,T,D]")
@@ -164,7 +164,7 @@ class Qwen35CheckpointMTP(nn.Module):
             raise RuntimeError("expected exactly one MTP router-logit tensor")
 
         head_input = output.last_hidden_state
-        vocabulary_logits = self.lm_head(head_input)
+        vocabulary_logits = self.lm_head(head_input) if compute_vocabulary_logits else None
         router_logits = output.router_logits[0].reshape(
             input_ids.shape[0], input_ids.shape[1], -1
         )
@@ -188,6 +188,54 @@ class Qwen35CheckpointMTP(nn.Module):
             "vocabulary_logits": vocabulary_logits,
             "past_key_values": output.past_key_values,
         }
+
+    @torch.no_grad()
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        previous_hidden: torch.Tensor,
+        *,
+        position_ids: torch.Tensor,
+        past_key_values: Any | None = None,
+        use_cache: bool = True,
+        compute_vocabulary_logits: bool = True,
+    ) -> dict[str, Any]:
+        """Frozen native-MTP execution used exclusively for token/tree generation."""
+
+        return self._forward_impl(
+            input_ids,
+            previous_hidden,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            compute_vocabulary_logits=compute_vocabulary_logits,
+        )
+
+    def forward_with_grad(
+        self,
+        input_ids: torch.Tensor,
+        previous_hidden: torch.Tensor,
+        *,
+        position_ids: torch.Tensor,
+        past_key_values: Any | None = None,
+        use_cache: bool = True,
+        compute_vocabulary_logits: bool = False,
+    ) -> dict[str, Any]:
+        """Independent RouteMTP execution with gradients through adapters/state.
+
+        Frozen checkpoint parameters retain ``requires_grad=False``.  This API
+        exists solely so RouteMTP's LoRA and recurrent route state can train;
+        native :meth:`forward` remains protected by ``torch.no_grad``.
+        """
+
+        return self._forward_impl(
+            input_ids,
+            previous_hidden,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            compute_vocabulary_logits=compute_vocabulary_logits,
+        )
 
 
 def load_checkpoint_mtp(
