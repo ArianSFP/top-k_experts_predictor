@@ -451,6 +451,7 @@ def main() -> None:
     ):
         raise ValueError("source commit must be a full lowercase Git SHA")
     args.data_profile = "b2_reuse_4096"
+    args.next_router_agreement = args.layer < 39
     partition = validate_partition(args.partition_manifest, args.data_profile)
     reuse = validate_reuse_split(args.reuse_split_manifest)
     selected = {
