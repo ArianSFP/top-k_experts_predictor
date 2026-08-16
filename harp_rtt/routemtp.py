@@ -86,6 +86,12 @@ class SwitchableLoRALinear(nn.Module):
         self.up = nn.Linear(rank, base.out_features, bias=False)
         nn.init.kaiming_uniform_(self.down.weight, a=math.sqrt(5))
         nn.init.zeros_(self.up.weight)
+        # Adapters are installed after the authoritative MTP checkpoint has
+        # already been materialised. Match that module immediately instead
+        # of relying on a later parent ``to(...)`` call, which does not occur
+        # in the replay/parity runner.
+        self.down.to(device=base.weight.device, dtype=base.weight.dtype)
+        self.up.to(device=base.weight.device, dtype=base.weight.dtype)
         self.enabled = False
         self.base.requires_grad_(False)
 

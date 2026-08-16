@@ -177,6 +177,16 @@ def test_switchable_lora_preserves_native_path_at_zero_and_when_disabled() -> No
         assert not torch.equal(adapter(values), expected)
 
 
+def test_switchable_lora_inherits_bfloat16_base_dtype() -> None:
+    base = nn.Linear(5, 4, bias=False, dtype=torch.bfloat16)
+    adapter = SwitchableLoRALinear(base, 2)
+    assert adapter.down.weight.dtype == torch.bfloat16
+    assert adapter.up.weight.dtype == torch.bfloat16
+    values = torch.randn(3, 5, dtype=torch.bfloat16)
+    with adapter.active():
+        assert torch.equal(adapter(values), base(values))
+
+
 def test_installation_leaves_kv_unadapted() -> None:
     attention = SimpleNamespace(
         q_proj=nn.Linear(8, 8, bias=False),
