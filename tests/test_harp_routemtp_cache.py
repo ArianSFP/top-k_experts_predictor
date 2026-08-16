@@ -35,6 +35,7 @@ def test_cache_is_never_loaded_without_a_causal_prefix_slice(tmp_path) -> None:
         "key.0": torch.randn(1, 2, 5, 4, dtype=torch.bfloat16),
         "value.0": torch.randn(1, 2, 5, 4, dtype=torch.bfloat16),
         "shifted_token_ids": torch.arange(5, dtype=torch.int64),
+        "target_final_hidden": torch.randn(6, 7, dtype=torch.bfloat16),
     }
     path = tmp_path / "request.safetensors"
     record = write_cache_record(path, tensors, geometry, request_id="request-1")
@@ -44,6 +45,7 @@ def test_cache_is_never_loaded_without_a_causal_prefix_slice(tmp_path) -> None:
     )
     assert loaded["key.0"].shape == (1, 2, 3, 4)
     assert loaded["shifted_token_ids"].tolist() == [0, 1, 2]
+    assert loaded["target_final_hidden"].shape == (4, 7)
     with pytest.raises(ValueError, match="exceeds"):
         load_causal_cache_slice(
             path,
@@ -59,6 +61,7 @@ def test_hydration_manifest_is_hash_bound_and_sealed(tmp_path) -> None:
         "key.0": torch.zeros(1, 2, 2, 4, dtype=torch.bfloat16),
         "value.0": torch.zeros(1, 2, 2, 4, dtype=torch.bfloat16),
         "shifted_token_ids": torch.arange(2, dtype=torch.int64),
+        "target_final_hidden": torch.zeros(3, 7, dtype=torch.bfloat16),
     }
     cache = tmp_path / "request.safetensors"
     record = write_cache_record(cache, tensors, geometry, request_id="request-1")

@@ -307,6 +307,7 @@ def main() -> None:
                 raise ValueError("RouteMTP cache geometry changed between requests")
             tensors: dict[str, Tensor] = {
                 "shifted_token_ids": ids[0, 1:].detach().cpu(),
+                "target_final_hidden": hidden[0].detach().cpu(),
             }
             for layer, (key, value) in enumerate(layers):
                 tensors[f"key.{layer}"] = key.detach().cpu()

@@ -119,15 +119,13 @@ class RouteMTPTreeRunner(nn.Module):
                     if not bool(node_mask[batch_index, node]):
                         continue
                     cache = base_cache_factory(batch_index)
-                    current_xplus = current_target_hidden[
+                    # Hydration supplies the exact final-normalized target
+                    # row consumed by native MTP at source t.  Reconstructing
+                    # it from a BF16 persisted layer-39 xplus is measurably
+                    # different near MTP router boundaries.
+                    previous = current_target_hidden[
                         batch_index : batch_index + 1, None
                     ]
-                    target_final_norm = getattr(self.mtp, "target_final_norm", None)
-                    previous = (
-                        target_final_norm(current_xplus)
-                        if target_final_norm is not None
-                        else current_xplus
-                    )
                     final: dict[str, Tensor] | None = None
                     for step, path_node in enumerate(self._path(topology, node)):
                         output = self.mtp.forward_with_grad(

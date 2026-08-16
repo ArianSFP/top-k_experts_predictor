@@ -85,6 +85,7 @@ def validate_cache_tensors(
         *(f"key.{layer}" for layer in range(geometry.mtp_layers)),
         *(f"value.{layer}" for layer in range(geometry.mtp_layers)),
         "shifted_token_ids",
+        "target_final_hidden",
     }
     if set(tensors) != expected:
         raise ValueError(
@@ -107,6 +108,13 @@ def validate_cache_tensors(
     if token_ids.ndim != 1 or token_ids.dtype != torch.int64:
         raise ValueError("shifted token IDs must be int64 [T]")
     lengths.add(int(token_ids.numel()))
+    target_hidden = tensors["target_final_hidden"]
+    if target_hidden.ndim != 2 or target_hidden.shape[0] != token_ids.numel() + 1:
+        raise ValueError("target final hidden must be [cache_length+1,D]")
+    if target_hidden.dtype not in {torch.bfloat16, torch.float16, torch.float32}:
+        raise TypeError("target final hidden must be floating point")
+    if not torch.isfinite(target_hidden).all():
+        raise ValueError("target final hidden contains NaN or Inf")
     if len(lengths) != 1:
         raise ValueError("RouteMTP cache streams have different lengths")
     return lengths.pop()
@@ -154,6 +162,9 @@ def load_causal_cache_slice(
     for name, value in tensors.items():
         if name == "shifted_token_ids":
             result[name] = value[: offset.prefix_length].clone()
+            continue
+        if name == "target_final_hidden":
+            result[name] = value[: offset.prefix_length + 1].clone()
             continue
         slices = [slice(None)] * value.ndim
         slices[geometry.sequence_axis] = slice(0, offset.prefix_length)

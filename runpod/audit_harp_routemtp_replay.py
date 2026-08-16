@@ -147,7 +147,7 @@ def main() -> None:
             node_token_ids=tree["token_ids"][None].long().to(args.device),
             parent_ids=tree["parent"][None].long().to(args.device),
             node_mask=node_mask,
-            current_target_hidden=inputs["final_hidden"][None].to(args.device),
+            current_target_hidden=tensors["target_final_hidden"][-1:, :].to(args.device),
             base_cache_factory=cache_factory,
             base_cache_lengths=torch.tensor([offset.prefix_length], device=args.device),
         )
