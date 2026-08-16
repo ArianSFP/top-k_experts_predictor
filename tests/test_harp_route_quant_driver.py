@@ -195,14 +195,53 @@ def test_routequant_global_schedule_never_upgrades_unobserved_experts(tmp_path):
     }
     (tmp_path / "run_manifest.json").write_text(json.dumps(manifest))
     for layer in range(39):
-        score = [1.0] * 256
+        route = [1.0] * 256
+        residual = [1.0] * 256
         occurrences = [1] * 256
-        score[7] = 1e6
+        route[7] = 1e6
+        residual[7] = 1e6
         occurrences[7] = 0
         (tmp_path / f"layer_{layer:02d}_train_utility.json").write_text(
-            json.dumps({"layer": layer, "score": score, "occurrences": occurrences})
+            json.dumps({
+                "layer": layer,
+                "route_utility": route,
+                "residual_utility": residual,
+                "occurrences": occurrences,
+            })
         )
     _, scores, _ = load_global_upgrade_scores(
         tmp_path, base_bits=1, upgrade_bits=2
     )
     assert torch.isneginf(scores[:39, 7]).all()
+
+
+def test_routequant_global_score_preserves_cross_layer_utility_scale(tmp_path):
+    from runpod.build_route_quant_schedule import load_global_upgrade_scores
+
+    manifest = {
+        "schema": "harp_routequant_representative_screen_v1",
+        "source_commit": "a" * 40,
+        "target_checkpoint_index_sha256": "b" * 64,
+        "partition_manifest_sha256": "c" * 64,
+        "reuse_split_manifest_sha256": "d" * 64,
+        "layers": list(range(39)),
+        "mixed_base_bits": 3,
+        "mixed_upgrade_bits": 4,
+        "mixed_utility_split": "train",
+        "development_opened_for_metrics": False,
+        "formal_validation_opened": False,
+        "sealed_test_opened": False,
+    }
+    (tmp_path / "run_manifest.json").write_text(json.dumps(manifest))
+    for layer in range(39):
+        multiplier = 100.0 if layer == 5 else 1.0
+        (tmp_path / f"layer_{layer:02d}_train_utility.json").write_text(json.dumps({
+            "layer": layer,
+            "route_utility": [multiplier] * 256,
+            "residual_utility": [multiplier] * 256,
+            "occurrences": [1] * 256,
+        }))
+    _, scores, _ = load_global_upgrade_scores(
+        tmp_path, base_bits=3, upgrade_bits=4
+    )
+    assert float(scores[5, 0]) > 50.0 * float(scores[4, 0])

@@ -63,21 +63,40 @@ def load_global_upgrade_scores(
         raise ValueError("global RouteQuant schedule requires layers 0..38")
 
     scores = torch.full((LAYERS, EXPERTS), -math.inf, dtype=torch.float64)
+    route = torch.zeros((39, EXPERTS), dtype=torch.float64)
+    residual = torch.zeros_like(route)
+    observed = torch.zeros((39, EXPERTS), dtype=torch.bool)
     input_hashes = {"run_manifest.json": sha256_file(manifest_path)}
     for layer in range(39):
         path = screen / f"layer_{layer:02d}_train_utility.json"
         value = json.loads(path.read_text(encoding="utf-8"))
         if value.get("layer") != layer:
             raise ValueError(f"RouteQuant utility layer mismatch at {layer}")
-        utility = torch.as_tensor(value.get("score"), dtype=torch.float64)
+        layer_route = torch.as_tensor(value.get("route_utility"), dtype=torch.float64)
+        layer_residual = torch.as_tensor(
+            value.get("residual_utility"), dtype=torch.float64
+        )
         occurrences = torch.as_tensor(value.get("occurrences"), dtype=torch.int64)
-        if utility.shape != (EXPERTS,) or occurrences.shape != (EXPERTS,):
+        if (
+            layer_route.shape != (EXPERTS,)
+            or layer_residual.shape != (EXPERTS,)
+            or occurrences.shape != (EXPERTS,)
+        ):
             raise ValueError(f"RouteQuant utility shape mismatch at layer {layer}")
-        observed = occurrences > 0
-        if not torch.isfinite(utility[observed]).all():
+        current_observed = occurrences > 0
+        if (
+            not torch.isfinite(layer_route[current_observed]).all()
+            or not torch.isfinite(layer_residual[current_observed]).all()
+        ):
             raise ValueError(f"non-finite observed utility at layer {layer}")
-        scores[layer, observed] = utility[observed]
+        route[layer] = layer_route
+        residual[layer] = layer_residual
+        observed[layer] = current_observed
         input_hashes[path.name] = sha256_file(path)
+    route_scale = route[observed].abs().sum().clamp_min(1e-30)
+    residual_scale = residual[observed].abs().sum().clamp_min(1e-30)
+    globally_normalized = route / route_scale + 0.25 * residual / residual_scale
+    scores[:39][observed] = globally_normalized[observed]
     scores[39] = math.inf
     return manifest, scores, input_hashes
 
@@ -158,8 +177,11 @@ def main() -> None:
         ],
         "partition_manifest_sha256": manifest["partition_manifest_sha256"],
         "reuse_split_manifest_sha256": manifest["reuse_split_manifest_sha256"],
-        "utility_source": "training_only_first_order_next_router_plus_exact_residual",
-        "allocation": "global_stable_marginal_utility",
+        "utility_source": (
+            "training_only_globally_normalized_first_order_next_router_"
+            "plus_exact_residual"
+        ),
+        "allocation": "global_stable_marginal_utility_per_byte",
         "base_bits": args.base_bits,
         "upgrade_bits": args.upgrade_bits,
         "requested_upgrade_fraction": args.upgrade_fraction,
