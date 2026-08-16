@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -50,15 +51,33 @@ class ShadowRouteHooks(AbstractContextManager):
         for row in self.rows.values():
             row.clear()
 
-    def stacked(self) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    @staticmethod
+    def _token_row(value: Tensor, token_index: int) -> Tensor:
+        if value.ndim == 2:
+            return value[token_index]
+        if value.ndim == 3 and value.shape[0] == 1:
+            return value[0, token_index]
+        raise ValueError("ShadowRoute hook tensor has an unsupported token geometry")
+
+    def stacked(self, *, token_index: int = -1) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         required = ("router_logits", "selected_ids", "selected_weights", "hidden_state")
         if any(any(name not in self.rows[layer] for name in required) for layer in range(40)):
             raise RuntimeError("ShadowRoute hook capture is incomplete")
-        logits = torch.stack([self.rows[layer]["router_logits"][0] for layer in range(40)])
-        ids = torch.stack([self.rows[layer]["selected_ids"][0] for layer in range(40)])
-        weights = torch.stack([self.rows[layer]["selected_weights"][0] for layer in range(40)])
+        logits = torch.stack([
+            self._token_row(self.rows[layer]["router_logits"], token_index)
+            for layer in range(40)
+        ])
+        ids = torch.stack([
+            self._token_row(self.rows[layer]["selected_ids"], token_index)
+            for layer in range(40)
+        ])
+        weights = torch.stack([
+            self._token_row(self.rows[layer]["selected_weights"], token_index)
+            for layer in range(40)
+        ])
         hidden = torch.stack([
-            self.rows[layer]["hidden_state"][0, -1] for layer in range(40)
+            self._token_row(self.rows[layer]["hidden_state"], token_index)
+            for layer in range(40)
         ])
         return logits, ids, weights, hidden
 
@@ -67,6 +86,47 @@ class ShadowRouteHooks(AbstractContextManager):
             handle.remove()
         self.handles.clear()
         return False
+
+
+@dataclass(frozen=True)
+class ShadowPrefixResult:
+    cache: Any
+    router_logits: Tensor
+    selected_ids: Tensor
+    selected_weights: Tensor
+    hidden_state: Tensor
+
+
+@torch.inference_mode()
+def exact_prefix_state(
+    installed: InstalledShadowBackbone,
+    hooks: ShadowRouteHooks,
+    authoritative_prefix: list[int],
+) -> ShadowPrefixResult:
+    """Replay the exact committed prefix and retain its final-token route."""
+
+    if not authoritative_prefix:
+        raise ValueError("authoritative prefix cannot be empty")
+    parameter = next(installed.model.parameters())
+    hooks.clear()
+    with exact_prefix_experts(installed):
+        output = installed.model(
+            input_ids=torch.tensor(
+                [authoritative_prefix], dtype=torch.long, device=parameter.device
+            ),
+            use_cache=True,
+            output_hidden_states=False,
+            output_router_logits=True,
+            return_dict=True,
+        )
+    logits, ids, weights, hidden = hooks.stacked(token_index=-1)
+    return ShadowPrefixResult(
+        cache=output.past_key_values,
+        router_logits=logits.detach(),
+        selected_ids=ids.detach(),
+        selected_weights=weights.detach(),
+        hidden_state=hidden.detach(),
+    )
 
 
 @torch.inference_mode()
@@ -98,10 +158,12 @@ def run_shadow_tree(
     token_ids: Tensor,
     parent_indices: Tensor,
     node_mask: Tensor,
+    prefix_cache: Any | None = None,
 ) -> ShadowTreeResult:
     """Restore an exact target prefix, then execute future nodes with shadows."""
 
-    prefix_cache = exact_prefix_cache(installed, authoritative_prefix)
+    if prefix_cache is None:
+        prefix_cache = exact_prefix_cache(installed, authoritative_prefix)
     parameter = next(installed.model.parameters())
 
     def step(token_id: int, cache: Any, _depth: int) -> ShadowNodeResult:
@@ -177,7 +239,9 @@ def run_shadow_tree(
 
 
 __all__ = [
+    "ShadowPrefixResult",
     "ShadowRouteHooks",
     "exact_prefix_cache",
+    "exact_prefix_state",
     "run_shadow_tree",
 ]
