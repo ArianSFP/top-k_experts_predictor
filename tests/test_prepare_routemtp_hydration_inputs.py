@@ -31,6 +31,7 @@ def test_builder_joins_exact_adaptive_identity_and_stays_outer_train(tmp_path: P
     offset = json.loads((output / "source_offsets.jsonl").read_text())
     manifest = json.loads((output / "MANIFEST.json").read_text())
     assert request["full_committed_token_ids"] == [1, 2, 3, 4, 5]
+    assert request["prompt_length"] == 2
     assert offset["request_id"] == "adaptive-1" and offset["source_position"] == 2
     assert len(offset["prefix_hash"]) == 64
     assert manifest["sealed_test_opened"] is False

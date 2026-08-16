@@ -75,10 +75,10 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def load_requests(path: Path) -> dict[str, list[int]]:
+def load_requests(path: Path) -> dict[str, dict[str, Any]]:
     rows = _read_jsonl(path)
     sequence_starts: dict[str, dict[str, Any]] = {}
-    requests: dict[str, list[int]] = {}
+    requests: dict[str, dict[str, Any]] = {}
     for row in rows:
         event = row.get("event")
         if event == "sequence_start":
@@ -91,6 +91,7 @@ def load_requests(path: Path) -> dict[str, list[int]]:
             if request_id not in sequence_starts:
                 raise ValueError("sequence_end lacks an authorized sequence_start")
             tokens = row.get("full_committed_token_ids")
+            prompt_length = len(sequence_starts[request_id].get("prompt_token_ids", []))
         else:
             request_id = str(row["request_id"])
             if str(row.get("split", "train")).lower() != "train":
@@ -98,26 +99,35 @@ def load_requests(path: Path) -> dict[str, list[int]]:
             if bool(row.get("external_evaluation", False)):
                 raise PermissionError("RouteMTP hydration refuses external evaluation")
             tokens = row.get("full_committed_token_ids")
+            prompt_length = int(row.get("prompt_length", 0))
         if not isinstance(tokens, list) or len(tokens) < 2:
             raise ValueError(f"request {request_id} lacks a complete token sequence")
+        if not 1 <= prompt_length < len(tokens):
+            raise ValueError(f"request {request_id} lacks a valid prompt boundary")
         if request_id in requests:
             raise ValueError(f"duplicate hydrated request {request_id}")
-        requests[request_id] = [int(value) for value in tokens]
+        requests[request_id] = {
+            "tokens": [int(value) for value in tokens],
+            "prompt_length": prompt_length,
+        }
     if not requests:
         raise ValueError("RouteMTP request hydration input is empty")
     return requests
 
 
-def load_offsets(path: Path, requests: Mapping[str, list[int]]) -> list[RouteMTPSourceOffset]:
+def load_offsets(
+    path: Path, requests: Mapping[str, Mapping[str, Any]]
+) -> list[RouteMTPSourceOffset]:
     result: list[RouteMTPSourceOffset] = []
     seen: set[tuple[str, int]] = set()
     for row in _read_jsonl(path):
         if str(row.get("split", "train")).lower() != "train":
             raise PermissionError("RouteMTP source offsets are outer-train only")
         request_id = str(row["request_id"]); source_position = int(row["source_position"])
-        tokens = requests.get(request_id)
-        if tokens is None:
+        request = requests.get(request_id)
+        if request is None:
             raise KeyError(f"source offset references missing request {request_id}")
+        tokens = [int(value) for value in request["tokens"]]
         if not 0 <= source_position < len(tokens) - 1:
             raise ValueError("RouteMTP source position cannot supply exact H1")
         # Shifted MTP prefix pairs token[1:t+1] with target hidden[0:t].
@@ -247,15 +257,36 @@ def main() -> None:
     records: list[dict[str, Any]] = []
     geometry: RouteMTPCacheGeometry | None = None
     with torch.inference_mode():
-        for request_id, tokens in sorted(requests.items()):
+        for request_id, request in sorted(requests.items()):
+            tokens = [int(value) for value in request["tokens"]]
+            prompt_length = int(request["prompt_length"])
             ids = torch.tensor([tokens], device=args.device, dtype=torch.long)
+            # Reproduce the authoritative capture call pattern: one prompt
+            # prefill followed by one cached target call per generated token.
+            # A single full-sequence target call is causally equivalent, but
+            # the hybrid GDN/KV implementation is not numerically identical
+            # in BF16 and those differences materially change MTP routing.
             target_output = target(
-                input_ids=ids,
-                use_cache=False,
+                input_ids=ids[:, :prompt_length],
+                use_cache=True,
                 output_hidden_states=True,
                 return_dict=True,
             )
-            hidden = target_output.hidden_states[-1]
+            target_cache = target_output.past_key_values
+            hidden_rows = [target_output.hidden_states[-1]]
+            for position in range(prompt_length, len(tokens)):
+                target_output = target(
+                    input_ids=ids[:, position : position + 1],
+                    past_key_values=target_cache,
+                    use_cache=True,
+                    output_hidden_states=True,
+                    return_dict=True,
+                )
+                target_cache = target_output.past_key_values
+                hidden_rows.append(target_output.hidden_states[-1])
+            hidden = torch.cat(hidden_rows, dim=1)
+            if hidden.shape[1] != len(tokens):
+                raise RuntimeError("incremental target hydration length differs")
             mtp_output = mtp(
                 ids[:, 1:],
                 hidden[:, :-1],
@@ -287,8 +318,9 @@ def main() -> None:
                 request_id=request_id,
             )
             record["relative_path"] = str(Path("records") / f"{request_id}.safetensors")
+            record["prompt_length"] = prompt_length
             records.append(record)
-            del target_output, hidden, mtp_output, layers, tensors
+            del target_output, target_cache, hidden_rows, hidden, mtp_output, layers, tensors
     assert geometry is not None
     write_hydration_manifest(
         args.output / "HYDRATION_MANIFEST.json",

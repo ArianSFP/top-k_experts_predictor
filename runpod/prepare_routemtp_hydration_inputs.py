@@ -90,6 +90,7 @@ def main() -> None:
             "sequence_id": str(row["sequence_id"]),
             "split": "train",
             "external_evaluation": False,
+            "prompt_length": len(prompt),
             "full_committed_token_ids": prompt + generated,
         }
     records = list(companion.get("records", []))
