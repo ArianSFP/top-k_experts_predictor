@@ -147,3 +147,49 @@ def test_routequant_finalizer_seals_complete_interrupted_rows(tmp_path):
     assert (run / "SHA256SUMS").is_file()
     with pytest.raises(FileExistsError):
         finalize(run, source_commit="b" * 40)
+
+
+def test_routequant_global_schedule_is_stable_and_forces_final_layer():
+    from runpod.build_route_quant_schedule import allocate_global_schedule
+
+    scores = torch.arange(40 * 256, dtype=torch.float64).reshape(40, 256)
+    scores[0, 0] = scores[0, 1]
+    schedule = allocate_global_schedule(
+        scores, base_bits=2, upgrade_bits=3, upgrade_fraction=0.125
+    )
+    assert schedule.shape == (40, 256)
+    assert torch.equal(schedule[39], torch.full((256,), 3, dtype=torch.int8))
+    assert int((schedule == 3).sum()) == round(40 * 256 * 0.125)
+    assert schedule[38, 255] == 3
+
+
+def test_routequant_global_schedule_never_upgrades_unobserved_experts(tmp_path):
+    from runpod.build_route_quant_schedule import load_global_upgrade_scores
+
+    manifest = {
+        "schema": "harp_routequant_representative_screen_v1",
+        "source_commit": "a" * 40,
+        "target_checkpoint_index_sha256": "b" * 64,
+        "partition_manifest_sha256": "c" * 64,
+        "reuse_split_manifest_sha256": "d" * 64,
+        "layers": list(range(39)),
+        "mixed_base_bits": 1,
+        "mixed_upgrade_bits": 2,
+        "mixed_utility_split": "train",
+        "development_opened_for_metrics": False,
+        "formal_validation_opened": False,
+        "sealed_test_opened": False,
+    }
+    (tmp_path / "run_manifest.json").write_text(json.dumps(manifest))
+    for layer in range(39):
+        score = [1.0] * 256
+        occurrences = [1] * 256
+        score[7] = 1e6
+        occurrences[7] = 0
+        (tmp_path / f"layer_{layer:02d}_train_utility.json").write_text(
+            json.dumps({"layer": layer, "score": score, "occurrences": occurrences})
+        )
+    _, scores, _ = load_global_upgrade_scores(
+        tmp_path, base_bits=1, upgrade_bits=2
+    )
+    assert torch.isneginf(scores[:39, 7]).all()
