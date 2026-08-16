@@ -26,6 +26,7 @@ from harp_rtt.routemtp_batch import (
 from runpod.train_harp_routemtp_v1 import (
     parse_anytime_budgets,
     protected_training_split,
+    screen_request_subsets,
     stage_stop_reason,
     stage_selection_metric,
 )
@@ -269,6 +270,28 @@ def test_protected_training_split_freezes_official_tune_before_internal_dev() ->
     assert fit | internal | official == set(requests)
     assert (len(fitting), len(development)) == (192 * 16, 32 * 16)
     assert manifest["official_tune_opened"] is False
+
+
+def test_request_subset_screen_is_deterministic_and_train_only() -> None:
+    requests = [f"request-{value:03d}" for value in range(256)]
+    sequences = [{"request_id": request} for request in requests]
+    records = [
+        SimpleNamespace(segment="segment", sequence=request_index)
+        for request_index in range(256)
+        for _ in range(16)
+    ]
+    base = _FakeBase(records, sequences)
+    fitting, development, manifest = protected_training_split(
+        _NoReadDataset(), base, 32
+    )
+    fit_screen, dev_screen, screened = screen_request_subsets(
+        fitting, development, manifest,
+        fit_requests=16, development_requests=4,
+    )
+    assert (len(fit_screen), len(dev_screen)) == (16 * 16, 4 * 16)
+    assert screened["active_fit_requests"] == manifest["fit_requests"][:16]
+    assert screened["active_internal_development_requests"] == manifest["internal_development_requests"][:4]
+    assert screened["official_tuning_requests"] == manifest["official_tuning_requests"]
 
 
 def test_stage_selection_follows_the_deployed_objective() -> None:

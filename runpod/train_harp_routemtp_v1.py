@@ -132,6 +132,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--gradient-clip", type=float, default=1.0)
     parser.add_argument("--internal-dev-requests", type=int, default=32)
+    parser.add_argument("--screen-fit-requests", type=int, default=0)
+    parser.add_argument("--screen-dev-requests", type=int, default=0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--deterministic", action="store_true")
@@ -237,6 +239,55 @@ def protected_training_split(
         "official_tune_opened": False,
         "diagnostic_development_opened": False,
     }
+
+
+def screen_request_subsets(
+    fit: IndexedSubset,
+    development: IndexedSubset,
+    split: Mapping[str, Any],
+    *,
+    fit_requests: int,
+    development_requests: int,
+) -> tuple[IndexedSubset, IndexedSubset, dict[str, Any]]:
+    """Deterministically restrict train-only requests for architecture screening."""
+
+    full_fit = tuple(str(value) for value in split["fit_requests"])
+    full_development = tuple(
+        str(value) for value in split["internal_development_requests"]
+    )
+    if fit_requests < 0 or development_requests < 0:
+        raise ValueError("screen request counts cannot be negative")
+    active_fit = full_fit if fit_requests == 0 else full_fit[:fit_requests]
+    active_development = (
+        full_development
+        if development_requests == 0
+        else full_development[:development_requests]
+    )
+    if not active_fit or len(active_fit) != (fit_requests or len(full_fit)):
+        raise ValueError("screen fit request count exceeds the protected fitting split")
+    if not active_development or len(active_development) != (
+        development_requests or len(full_development)
+    ):
+        raise ValueError("screen development count exceeds the protected split")
+    fit_rows = len(active_fit) * EXPECTED_ROWS_PER_REQUEST
+    development_rows = len(active_development) * EXPECTED_ROWS_PER_REQUEST
+    if len(fit.indices) != len(full_fit) * EXPECTED_ROWS_PER_REQUEST:
+        raise AssertionError("protected fitting rows are not request contiguous")
+    if len(development.indices) != len(full_development) * EXPECTED_ROWS_PER_REQUEST:
+        raise AssertionError("protected development rows are not request contiguous")
+    result = dict(split)
+    result.update({
+        "screening_mode": fit_requests > 0 or development_requests > 0,
+        "active_fit_requests": list(active_fit),
+        "active_internal_development_requests": list(active_development),
+        "active_fit_rows": fit_rows,
+        "active_internal_development_rows": development_rows,
+    })
+    return (
+        IndexedSubset(fit.base, list(fit.indices[:fit_rows])),
+        IndexedSubset(development.base, list(development.indices[:development_rows])),
+        result,
+    )
 
 
 class HydrationStore:
@@ -797,6 +848,11 @@ def main() -> None:
     joined = NodeCounterfactualDatasetAdapter(base, labels, split="train", training=True)
     fit, internal_dev, split = protected_training_split(
         joined, base, args.internal_dev_requests
+    )
+    fit, internal_dev, split = screen_request_subsets(
+        fit, internal_dev, split,
+        fit_requests=args.screen_fit_requests,
+        development_requests=args.screen_dev_requests,
     )
     hydration = HydrationStore(args.hydration)
     parity_hydration = HydrationStore(args.parity_hydration)
