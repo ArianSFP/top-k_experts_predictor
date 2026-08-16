@@ -45,7 +45,8 @@ def parse_args() -> argparse.Namespace:
         parser.add_argument(f"--{split}-companion", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--training-split-manifest", type=Path, required=True)
-    parser.add_argument("--hydration", type=Path, required=True)
+    parser.add_argument("--tune-hydration", type=Path, required=True)
+    parser.add_argument("--development-hydration", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--static-dir", type=Path, required=True)
     parser.add_argument("--anchor-checkpoint", type=Path, required=True)
@@ -119,22 +120,45 @@ def main() -> None:
         raise PermissionError("RouteMTP evaluator did not isolate the official tune partition")
     if request_ids(tune) & request_ids(development):
         raise PermissionError("RouteMTP tune/development requests overlap")
-    hydration = HydrationStore(args.hydration)
-    hydration_manifest_sha256 = sha256_file(args.hydration / "HYDRATION_MANIFEST.json")
-    if checkpoint.get("hydration_manifest_sha256") != hydration_manifest_sha256:
+    tune_hydration = HydrationStore(args.tune_hydration)
+    development_hydration = HydrationStore(args.development_hydration)
+    tune_hydration_sha256 = sha256_file(
+        args.tune_hydration / "HYDRATION_MANIFEST.json"
+    )
+    development_hydration_sha256 = sha256_file(
+        args.development_hydration / "HYDRATION_MANIFEST.json"
+    )
+    if checkpoint.get("hydration_manifest_sha256") != tune_hydration_sha256:
         raise ValueError("RouteMTP checkpoint was trained from a different hydration")
     hydration_source_commit = checkpoint.get(
         "hydration_source_commit", checkpoint.get("source_commit")
     )
-    if hydration_source_commit != hydration.value.get("bindings", {}).get("source_commit"):
-        raise ValueError("RouteMTP checkpoint source differs from hydration source")
-    for dataset in (tune, development):
+    for name, store, companion in (
+        ("tune", tune_hydration, args.tune_companion),
+        ("development", development_hydration, args.development_companion),
+    ):
+        bindings = store.value.get("bindings", {})
+        if hydration_source_commit != bindings.get("source_commit"):
+            raise ValueError(f"RouteMTP checkpoint source differs from {name} hydration")
+        companion_sha256 = sha256_file(companion / "manifest.json")
+        if bindings.get("counterfactual_companion_sha256") != companion_sha256:
+            raise ValueError(f"RouteMTP {name} hydration and companion differ")
+    for name, dataset, store in (
+        ("tune", tune, tune_hydration),
+        ("development", development, development_hydration),
+    ):
         missing = [
             (str(dataset[index]["metadata"]["request_id"]), int(dataset[index]["metadata"]["position"]))
             for index in range(len(dataset))
-            if (str(dataset[index]["metadata"]["request_id"]), int(dataset[index]["metadata"]["position"])) not in hydration.offsets
+            if (
+                str(dataset[index]["metadata"]["request_id"]),
+                int(dataset[index]["metadata"]["position"]),
+            ) not in store.offsets
         ]
-        if missing: raise KeyError(f"RouteMTP evaluation hydration misses {len(missing)} rows")
+        if missing:
+            raise KeyError(
+                f"RouteMTP {name} hydration misses {len(missing)} evaluation rows"
+            )
 
     static = load_static_target_artifacts(args.static_dir, device="cpu")
     config = RouteMTPConfig(**checkpoint["config"]); config.validate()
@@ -176,7 +200,7 @@ def main() -> None:
     tune_metrics = evaluate(
         stage=stage, predictor=predictor, runner=runner, objective=objective,
         anchor=anchor, runtime_static=runtime_static, geometry=geometry,
-        token_embedding=token_embedding, hydration=hydration, dataset=tune,
+        token_embedding=token_embedding, hydration=tune_hydration, dataset=tune,
         device=device, microbatch=args.microbatch_size, workers=0,
     )
     # Architecture, checkpoint, budget policy, and temperature are frozen
@@ -184,7 +208,8 @@ def main() -> None:
     development_metrics = evaluate(
         stage=stage, predictor=predictor, runner=runner, objective=objective,
         anchor=anchor, runtime_static=runtime_static, geometry=geometry,
-        token_embedding=token_embedding, hydration=hydration, dataset=development,
+        token_embedding=token_embedding, hydration=development_hydration,
+        dataset=development,
         device=device, microbatch=args.microbatch_size, workers=0,
     )
     selected = development_metrics["budgets"]["16"]
@@ -202,7 +227,8 @@ def main() -> None:
     result = {
         "schema": SCHEMA, "stage": stage,
         "checkpoint_sha256": sha256_file(args.checkpoint),
-        "hydration_manifest_sha256": hydration_manifest_sha256,
+        "tune_hydration_manifest_sha256": tune_hydration_sha256,
+        "development_hydration_manifest_sha256": development_hydration_sha256,
         "tune": tune_metrics, "development": development_metrics,
         "standalone_useful_gate_passed": useful,
         "final_accuracy_candidate_gate_passed": final_candidate,
