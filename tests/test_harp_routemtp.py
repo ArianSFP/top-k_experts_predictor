@@ -23,7 +23,10 @@ from harp_rtt.routemtp_batch import (
     assert_causal_routemtp_inputs,
     build_anytime_node_masks,
 )
-from runpod.train_harp_routemtp_v1 import protected_training_split
+from runpod.train_harp_routemtp_v1 import (
+    protected_training_split,
+    stage_selection_metric,
+)
 
 
 def _config() -> RouteMTPConfig:
@@ -264,6 +267,14 @@ def test_protected_training_split_freezes_official_tune_before_internal_dev() ->
     assert fit | internal | official == set(requests)
     assert (len(fitting), len(development)) == (192 * 16, 32 * 16)
     assert manifest["official_tune_opened"] is False
+
+
+def test_stage_selection_follows_the_deployed_objective() -> None:
+    assert stage_selection_metric("r2_qo") == "branch_recall_at_8"
+    assert stage_selection_metric("f1_path") == "factual_h2_h4_recall_at_8"
+    assert stage_selection_metric("r2_path") == "factual_h2_h4_recall_at_8"
+    assert stage_selection_metric("r2_joint") == "factual_h2_h4_recall_at_8"
+    assert stage_selection_metric("r3_expert") == "factual_h2_h4_recall_at_8"
 
 
 class _PackedExperts(nn.Module):

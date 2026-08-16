@@ -290,6 +290,15 @@ def stage_uses_target_bank(stage: str) -> bool:
     return stage not in {"f0_captured", "f0_replay"}
 
 
+def stage_selection_metric(stage: str) -> str:
+    if stage in {
+        "f1_path", "r2_path", "r2_joint", "r3_residual", "r3_expert",
+        "r3_router",
+    }:
+        return "factual_h2_h4_recall_at_8"
+    return "branch_recall_at_8"
+
+
 def compact_state(
     predictor: RouteMTPPredictor,
     adapters: Any,
@@ -567,12 +576,15 @@ def evaluate(
             raise ValueError(f"undeclared anytime budget {budget}")
         budget_index = ANYTIME_BUDGETS.index(budget)
         branch_hits = branch_slots = factual_hits = factual_slots = candidate_hits = 0
+        branch_horizon_hits = [0] * 4; branch_horizon_slots = [0] * 4
         horizon_hits = [0] * 4; horizon_slots = [0] * 4
         candidate_horizon_hits = [0] * 4; loss_total = rows = 0
         executed_nodes = 0
         request_counts: dict[str, dict[str, Any]] = defaultdict(
             lambda: {
                 "branch_hits": 0, "branch_slots": 0,
+                "branch_horizon_hits": [0] * 4,
+                "branch_horizon_slots": [0] * 4,
                 "horizon_hits": [0] * 4, "horizon_slots": [0] * 4,
                 "candidate_horizon_hits": [0] * 4,
             }
@@ -601,6 +613,13 @@ def evaluate(
             ).any(-2)
             per_request_branch_hits = (branch_match & branch_valid[..., None]).sum((1, 2, 3))
             per_request_branch_slots = branch_valid.sum((1, 2)) * predictor.config.exact_k
+            per_request_branch_horizon_hits = torch.zeros(
+                branch_match.shape[0], 4, dtype=torch.long,
+                device=branch_match.device,
+            )
+            per_request_branch_horizon_slots = torch.zeros_like(
+                per_request_branch_horizon_hits
+            )
             branch_hits += int(per_request_branch_hits.sum())
             branch_slots += int(per_request_branch_slots.sum())
             factual_match = (
@@ -617,6 +636,20 @@ def evaluate(
             per_request_horizon_slots = valid.sum(2) * predictor.config.exact_k
             per_request_candidate_hits = (covered & valid[..., None]).sum((2, 3))
             for horizon in range(4):
+                depth_mask = (
+                    prepared.model_inputs["node_depths"] == horizon + 1
+                )[..., None]
+                branch_cell = branch_valid & depth_mask
+                current_branch_hits = (
+                    branch_match & branch_cell[..., None]
+                ).sum((1, 2, 3))
+                current_branch_slots = (
+                    branch_cell.sum((1, 2)) * predictor.config.exact_k
+                )
+                per_request_branch_horizon_hits[:, horizon] = current_branch_hits
+                per_request_branch_horizon_slots[:, horizon] = current_branch_slots
+                branch_horizon_hits[horizon] += int(current_branch_hits.sum())
+                branch_horizon_slots[horizon] += int(current_branch_slots.sum())
                 horizon_hits[horizon] += int((factual_match[:, horizon] & valid[:, horizon, :, None]).sum())
                 horizon_slots[horizon] += int(valid[:, horizon].sum()) * predictor.config.exact_k
                 candidate_horizon_hits[horizon] += int(
@@ -628,6 +661,12 @@ def evaluate(
                 counts["branch_hits"] += int(per_request_branch_hits[batch_index])
                 counts["branch_slots"] += int(per_request_branch_slots[batch_index])
                 for horizon in range(4):
+                    counts["branch_horizon_hits"][horizon] += int(
+                        per_request_branch_horizon_hits[batch_index, horizon]
+                    )
+                    counts["branch_horizon_slots"][horizon] += int(
+                        per_request_branch_horizon_slots[batch_index, horizon]
+                    )
                     counts["horizon_hits"][horizon] += int(
                         per_request_horizon_hits[batch_index, horizon]
                     )
@@ -644,17 +683,21 @@ def evaluate(
         request_rows: list[dict[str, Any]] = []
         for request_id, counts in sorted(request_counts.items()):
             h_hits = counts["horizon_hits"]; h_slots = counts["horizon_slots"]
+            b_hits = counts["branch_horizon_hits"]
+            b_slots = counts["branch_horizon_slots"]
             c_hits = counts["candidate_horizon_hits"]
             request_rows.append({
                 "request_id": request_id,
                 "branch_recall_at_8": counts["branch_hits"] / max(1, counts["branch_slots"]),
+                "branch_h4_recall_at_8": b_hits[3] / max(1, b_slots[3]),
                 "factual_h1_h4_recall_at_8": sum(h_hits) / max(1, sum(h_slots)),
                 "factual_h2_h4_recall_at_8": sum(h_hits[1:]) / max(1, sum(h_slots[1:])),
                 "factual_h4_recall_at_8": h_hits[3] / max(1, h_slots[3]),
                 "factual_h2_h4_c64_coverage": sum(c_hits[1:]) / max(1, sum(h_slots[1:])),
             })
         macro_keys = (
-            "branch_recall_at_8", "factual_h1_h4_recall_at_8",
+            "branch_recall_at_8", "branch_h4_recall_at_8",
+            "factual_h1_h4_recall_at_8",
             "factual_h2_h4_recall_at_8", "factual_h4_recall_at_8",
             "factual_h2_h4_c64_coverage",
         )
@@ -669,6 +712,10 @@ def evaluate(
         budgets[str(budget)] = {
             "loss": loss_total / max(1, rows),
             "branch_recall_at_8": branch_hits / max(1, branch_slots),
+            "per_horizon_branch_recall_at_8": [
+                branch_horizon_hits[h] / max(1, branch_horizon_slots[h])
+                for h in range(4)
+            ],
             "factual_h1_h4_recall_at_8": factual_hits / max(1, factual_slots),
             "factual_h2_h4_recall_at_8": sum(horizon_hits[1:]) / max(1, sum(horizon_slots[1:])),
             "per_horizon_recall_at_8": [horizon_hits[h] / max(1, horizon_slots[h]) for h in range(4)],
@@ -688,7 +735,12 @@ def evaluate(
             "executed_nodes_per_source_position": executed_nodes / max(1, len(dataset)),
         }
     selection_budget = "16" if "16" in budgets else str(max(budgets_to_evaluate))
-    return {"budgets": budgets, "selection_value": budgets[selection_budget]["branch_recall_at_8"]}
+    selection_metric = stage_selection_metric(stage)
+    return {
+        "budgets": budgets,
+        "selection_metric": selection_metric,
+        "selection_value": budgets[selection_budget][selection_metric],
+    }
 
 
 def main() -> None:
@@ -841,6 +893,7 @@ def main() -> None:
     write_json_exclusive(args.output / "INTERNAL_SPLIT.json", split)
     manifest = {
         "schema": SCHEMA, "stage": stage, "seed": args.seed,
+        "selection_metric": stage_selection_metric(stage),
         "source_commit": args.source_commit,
         "hydration_source_commit": hydration_source_commit,
         "config": config.__dict__, "trainable_names": trainable_names,
@@ -943,7 +996,9 @@ def main() -> None:
         "schema": SCHEMA, "stage": stage, "seed": args.seed,
         "source_commit": args.source_commit, "config": config.__dict__,
         "hydration_source_commit": hydration_source_commit,
-        "best_epoch": best_epoch, "best_internal_dev_value": best_value,
+        "best_epoch": best_epoch,
+        "best_internal_dev_metric": stage_selection_metric(stage),
+        "best_internal_dev_value": best_value,
         "state": best_state, "added_bf16_bytes": parameter_bytes,
         "hydration_manifest_sha256": hydration_manifest_sha256,
         "parity_hydration_manifest_sha256": parity_hydration_manifest_sha256,
@@ -956,7 +1011,8 @@ def main() -> None:
     torch.save(checkpoint, args.output / "best_checkpoint.pt")
     result = {
         "schema": RESULT_SCHEMA, "stage": stage, "best_epoch": best_epoch,
-        "best_internal_dev_branch_recall_at_8": best_value,
+        "selection_metric": stage_selection_metric(stage),
+        "best_internal_dev_selection_value": best_value,
         "checkpoint_sha256": sha256_file(args.output / "best_checkpoint.pt"),
         "parity_hydration_manifest_sha256": parity_hydration_manifest_sha256,
         "trainable_bf16_bytes": trainable_parameter_bytes,
