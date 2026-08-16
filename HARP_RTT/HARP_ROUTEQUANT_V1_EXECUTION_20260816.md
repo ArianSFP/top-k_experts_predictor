@@ -146,12 +146,30 @@ point is Pareto-dominated by train-utility complete-cell mixing. Asymmetric
 precision is retained as a reproducible negative/control path and excluded from
 the first exact-cache shortlist.
 
-## Current execution
+## All-layer component result
 
-A train-utility pass over all audited router transitions (layers 0--38) is in
-progress for the 3->4-bit family. It will produce globally allocated schedules,
-with layer 39 forced to 4-bit because it controls Shadow-LM likelihood and has
-no next-router transition for the same utility estimator.
+The optimizer-free train-utility pass completed over all 39 router transitions.
+Its request-macro tuning aggregates are:
+
+| Representation | Projected size | Mean next-router R@8 | Worst layer gap from exact | Residual NRMSE |
+| --- | ---: | ---: | ---: | ---: |
+| Uniform INT3 | 11.7189 GiB | 0.957056 | 0.036316 | 0.286870 |
+| Global 50% INT3/INT4 | 13.5939 GiB | 0.968933 | 0.020203 | 0.187171 |
+| Uniform INT4 | 15.4689 GiB | **0.973719** | **0.014221** | **0.139497** |
+
+The globally normalized allocator freezes 25%, 50%, and 75% INT4 schedules.
+Layer 39 is intentionally all INT4 because it controls Shadow-LM likelihood and
+has no next-router transition for the same utility estimator. Across layers
+0--38, the 50% schedule assigns 83--179 INT4 experts per layer; the most
+capacity goes to layers 0--2 and 32--38, while layers 20--26 receive the least.
+This confirms that global allocation preserves meaningful cross-layer
+sensitivity which a fixed per-layer quota would discard.
+
+The screen opened no development metrics, formal validation, calibration, or
+sealed-test labels, constructed no optimizer, and started no training. Its
+sealed checksums pass.
+
+## Frozen closed-loop shortlist
 
 The first exact-cache shortlist will be chosen from:
 
@@ -167,10 +185,34 @@ is mean H1--H4 >= 0.911573 with paired 95% lower delta >= -0.005 versus the
 representations, serialized bytes decide; measured kernel latency is reported
 separately.
 
-## Hardware boundary
+## Sealed artifacts
 
-The remaining 3090 work is layer-local utility extraction and bundle export.
-Exact-cache closed-loop comparison requires one RTX PRO 6000 96GB (or H100 NVL
-94GB / H200 141GB), at least 192GB host RAM, and at least 1TB local NVMe. No new target or MTP capture is required. Per the user-requested pause, no
-RTX PRO 6000 work is started by this branch checkpoint; the 3090 is stopped
-after all local artifacts are sealed and mirrored.
+All five reference bundles were exported locally, each passed all 42 checksum
+entries, and the persistent copies passed a second complete checksum readback.
+They remain fail-closed with `closed_loop_authorized=false`:
+
+| Bundle | Serialized bytes | GiB |
+| --- | ---: | ---: |
+| Uniform INT3 | 12,583,775,440 | 11.7196 |
+| Global 25% INT4 | 13,590,423,504 | 12.6571 |
+| Global 50% INT4 | 14,597,056,464 | 13.5946 |
+| Global 75% INT4 | 15,603,689,552 | 14.5321 |
+| Uniform INT4 | 16,610,312,400 | 15.4696 |
+
+Persistent root:
+
+`/workspace/LLM_prefetch_study/artifacts/harp_rtt/routequant_v1_20260816_7eed340`
+
+The root is 69 GiB and contains the all-layer screen, three frozen schedules,
+five bundles, and `ARTIFACT_INVENTORY.json`. The inventory SHA-256 is
+`1271eb2de1efd986807bc4e28ad5a86a3811b41f97ca6ab5af7e5d91574b738f`.
+The inventory binds every schedule and bundle result/checksum manifest to
+implementation commit `7eed34031715a80041bcf95775de39941dca297f`.
+
+## Hardware boundary and pause
+
+The 3090 work is complete. Exact-cache closed-loop comparison requires one RTX
+PRO 6000 96GB (or H100 NVL 94GB / H200 141GB), at least 192GB host RAM, and at
+least 1TB local NVMe. No new target or MTP capture is required. Per the
+user-requested pause, no RTX PRO 6000 work was started. The 3090 pod is stopped
+after the GitHub and persistent-artifact handoff is verified.
