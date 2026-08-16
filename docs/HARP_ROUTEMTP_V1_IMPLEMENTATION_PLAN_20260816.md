@@ -146,6 +146,7 @@ harp_rtt/routemtp_cache.py
 harp_rtt/routemtp_loss.py
 harp_rtt/routemtp_replay.py
 runpod/transformers_mtp_bridge/hydrate_routemtp_prefix_cache.py
+runpod/prepare_routemtp_hydration_inputs.py
 runpod/audit_harp_routemtp_replay.py
 runpod/train_harp_routemtp_v1.py
 runpod/evaluate_harp_routemtp_v1.py
