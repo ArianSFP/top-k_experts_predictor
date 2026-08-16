@@ -93,22 +93,39 @@ class SwitchableLoRALinear(nn.Module):
         self.down.to(device=base.weight.device, dtype=base.weight.dtype)
         self.up.to(device=base.weight.device, dtype=base.weight.dtype)
         self.enabled = False
+        self.active_tail_rows: int | None = None
         self.base.requires_grad_(False)
 
     def forward(self, values: Tensor) -> Tensor:
         result = self.base(values)
         if self.enabled:
-            result = result + self.up(self.down(values)) * self.scale
+            correction = self.up(self.down(values)) * self.scale
+            if self.active_tail_rows is not None:
+                if values.ndim < 3 or not 0 < self.active_tail_rows <= values.shape[-2]:
+                    raise ValueError("LoRA speculative-tail rows are invalid")
+                mask = torch.zeros(
+                    values.shape[-2], device=values.device, dtype=correction.dtype
+                )
+                mask[-self.active_tail_rows :] = 1
+                correction = correction * mask.view(
+                    *((1,) * (correction.ndim - 2)), -1, 1
+                )
+            result = result + correction
         return result
 
     @contextmanager
-    def active(self, enabled: bool = True) -> Iterator[None]:
+    def active(
+        self, enabled: bool = True, *, tail_rows: int | None = None
+    ) -> Iterator[None]:
         previous = self.enabled
+        previous_tail = self.active_tail_rows
         self.enabled = bool(enabled)
+        self.active_tail_rows = int(tail_rows) if tail_rows is not None else None
         try:
             yield
         finally:
             self.enabled = previous
+            self.active_tail_rows = previous_tail
 
 
 @dataclass(frozen=True)
@@ -118,8 +135,14 @@ class InstalledRouteMTPAdapters:
     output: SwitchableLoRALinear
 
     @contextmanager
-    def active(self, enabled: bool = True) -> Iterator[None]:
-        with self.fusion.active(enabled), self.query.active(enabled), self.output.active(enabled):
+    def active(
+        self, enabled: bool = True, *, tail_rows: int | None = None
+    ) -> Iterator[None]:
+        with (
+            self.fusion.active(enabled, tail_rows=tail_rows),
+            self.query.active(enabled, tail_rows=tail_rows),
+            self.output.active(enabled, tail_rows=tail_rows),
+        ):
             yield
 
     def parameters(self) -> Iterator[nn.Parameter]:

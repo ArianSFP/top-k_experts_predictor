@@ -150,6 +150,8 @@ def main() -> None:
             current_target_hidden=tensors["target_final_hidden"][-1:, :].to(args.device),
             base_cache_factory=cache_factory,
             base_cache_lengths=torch.tensor([offset.prefix_length], device=args.device),
+            base_prefix_token_ids=[tensors["shifted_token_ids"]],
+            base_target_hidden_history=[tensors["target_final_hidden"]],
         )
         active = node_mask[0]
         captured = tree["states"].to(args.device)

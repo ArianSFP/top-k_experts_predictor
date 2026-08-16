@@ -56,6 +56,7 @@ class RouteMTPTreeRunner(nn.Module):
         recurrent_residual: RecurrentRouteResidual | None = None,
         expert_adapter: nn.Module | None = None,
         router_adapter: nn.Module | None = None,
+        replay_mode: str = "isolated_full_prefix",
     ) -> None:
         super().__init__()
         if not hasattr(mtp, "forward_with_grad"):
@@ -65,6 +66,9 @@ class RouteMTPTreeRunner(nn.Module):
         self.recurrent_residual = recurrent_residual
         self.expert_adapter = expert_adapter
         self.router_adapter = router_adapter
+        if replay_mode not in {"isolated_full_prefix", "cached_append"}:
+            raise ValueError("unsupported RouteMTP replay mode")
+        self.replay_mode = replay_mode
 
     @staticmethod
     def _path(parent_ids: Tensor, node: int) -> list[int]:
@@ -92,6 +96,8 @@ class RouteMTPTreeRunner(nn.Module):
         current_target_hidden: Tensor,
         base_cache_factory: Callable[[int], Any],
         base_cache_lengths: Tensor,
+        base_prefix_token_ids: list[Tensor] | None = None,
+        base_target_hidden_history: list[Tensor] | None = None,
     ) -> RouteMTPReplayOutput:
         batch, nodes = node_token_ids.shape
         if parent_ids.shape != (batch, nodes) or node_mask.shape != (batch, nodes):
@@ -100,6 +106,11 @@ class RouteMTPTreeRunner(nn.Module):
             raise ValueError("current target hidden must be [B,D]")
         if base_cache_lengths.shape != (batch,):
             raise ValueError("base cache lengths must be [B]")
+        if self.replay_mode == "isolated_full_prefix":
+            if base_prefix_token_ids is None or base_target_hidden_history is None:
+                raise ValueError("full-prefix replay requires hydrated prefix tensors")
+            if len(base_prefix_token_ids) != batch or len(base_target_hidden_history) != batch:
+                raise ValueError("hydrated full-prefix batch geometry differs")
         if not bool(node_mask[:, 0].all()) or not bool((parent_ids[:, 0] == -1).all()):
             raise ValueError("RouteMTP replay requires the exact H1 root")
 
@@ -107,16 +118,59 @@ class RouteMTPTreeRunner(nn.Module):
             [None for _ in range(nodes)] for _ in range(batch)
         ]
         calls = 0
-        with ExitStack() as stack:
-            stack.enter_context(self.adapters.active(True))
-            if self.expert_adapter is not None:
-                stack.enter_context(self.expert_adapter.active(True))
-            if self.router_adapter is not None:
-                stack.enter_context(self.router_adapter.active(True))
-            for batch_index in range(batch):
+        for batch_index in range(batch):
                 topology = parent_ids[batch_index]
                 for node in range(nodes):
                     if not bool(node_mask[batch_index, node]):
+                        continue
+                    path = self._path(topology, node)
+                    if self.replay_mode == "isolated_full_prefix":
+                        prefix_ids = base_prefix_token_ids[batch_index].to(
+                            device=node_token_ids.device, dtype=torch.long
+                        )
+                        history = base_target_hidden_history[batch_index].to(
+                            device=current_target_hidden.device,
+                            dtype=current_target_hidden.dtype,
+                        )
+                        path_ids = node_token_ids[batch_index, path].long()
+                        ancestors = [
+                            records[batch_index][path_node]["head_input"][0]
+                            for path_node in path[:-1]
+                        ]
+                        previous_rows = [history]
+                        if ancestors:
+                            previous_rows.append(torch.stack(ancestors))
+                        previous = torch.cat(previous_rows, dim=0)[None]
+                        full_ids = torch.cat((prefix_ids, path_ids))[None]
+                        if full_ids.shape[1] != previous.shape[1]:
+                            raise RuntimeError("full-prefix IDs/hidden rows do not align")
+                        with ExitStack() as stack:
+                            stack.enter_context(
+                                self.adapters.active(True, tail_rows=len(path))
+                            )
+                            if self.expert_adapter is not None:
+                                stack.enter_context(self.expert_adapter.active(True))
+                            if self.router_adapter is not None:
+                                stack.enter_context(self.router_adapter.active(True))
+                            output = self.mtp.forward_with_grad(
+                                full_ids,
+                                previous,
+                                position_ids=torch.arange(
+                                    full_ids.shape[1],
+                                    device=node_token_ids.device,
+                                    dtype=torch.long,
+                                )[None],
+                                past_key_values=None,
+                                use_cache=False,
+                                compute_vocabulary_logits=False,
+                            )
+                        calls += 1
+                        recurrent = output["head_input"][:, -1]
+                        if self.recurrent_residual is not None:
+                            recurrent = self.recurrent_residual(recurrent)
+                        final = {key: output[key][:, -1] for key in self.OUTPUT_KEYS}
+                        final["head_input"] = recurrent
+                        records[batch_index][node] = final
                         continue
                     cache = base_cache_factory(batch_index)
                     # Hydration supplies the exact final-normalized target
@@ -127,8 +181,9 @@ class RouteMTPTreeRunner(nn.Module):
                         batch_index : batch_index + 1, None
                     ]
                     final: dict[str, Tensor] | None = None
-                    for step, path_node in enumerate(self._path(topology, node)):
-                        output = self.mtp.forward_with_grad(
+                    for step, path_node in enumerate(path):
+                        with self.adapters.active(True, tail_rows=1):
+                            output = self.mtp.forward_with_grad(
                             node_token_ids[batch_index : batch_index + 1, path_node : path_node + 1],
                             previous,
                             position_ids=torch.tensor(
@@ -139,7 +194,7 @@ class RouteMTPTreeRunner(nn.Module):
                             past_key_values=cache,
                             use_cache=True,
                             compute_vocabulary_logits=False,
-                        )
+                            )
                         calls += 1
                         cache = output["past_key_values"]
                         recurrent = output["head_input"][:, -1]

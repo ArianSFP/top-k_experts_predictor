@@ -187,6 +187,20 @@ def test_switchable_lora_inherits_bfloat16_base_dtype() -> None:
         assert torch.equal(adapter(values), base(values))
 
 
+def test_switchable_lora_only_changes_speculative_tail_rows() -> None:
+    torch.manual_seed(10)
+    base = nn.Linear(5, 4, bias=False)
+    adapter = SwitchableLoRALinear(base, 2)
+    with torch.no_grad():
+        adapter.up.weight.fill_(0.25)
+    values = torch.randn(1, 4, 5)
+    expected = base(values)
+    with adapter.active(tail_rows=2):
+        actual = adapter(values)
+    assert torch.equal(actual[:, :2], expected[:, :2])
+    assert not torch.equal(actual[:, 2:], expected[:, 2:])
+
+
 def test_installation_leaves_kv_unadapted() -> None:
     attention = SimpleNamespace(
         q_proj=nn.Linear(8, 8, bias=False),

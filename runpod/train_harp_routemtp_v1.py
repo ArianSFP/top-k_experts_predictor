@@ -189,7 +189,7 @@ class HydrationStore:
         *,
         mtp: nn.Module,
         device: torch.device,
-    ) -> tuple[list[Any], Tensor, Tensor]:
+    ) -> tuple[list[Any], Tensor, Tensor, list[Tensor], list[Tensor]]:
         request_ids = [str(value) for value in metadata["request_id"]]
         positions_value = metadata["position"]
         positions = positions_value.tolist() if isinstance(positions_value, Tensor) else list(positions_value)
@@ -212,7 +212,9 @@ class HydrationStore:
         seeds = torch.stack([
             tensors["target_final_hidden"][-1] for tensors in slices
         ]).to(device=device)
-        return factories, lengths, seeds
+        prefix_ids = [tensors["shifted_token_ids"] for tensors in slices]
+        hidden_histories = [tensors["target_final_hidden"] for tensors in slices]
+        return factories, lengths, seeds, prefix_ids, hidden_histories
 
 
 def collated_loader(dataset: Dataset[Any], *, batch: int, shuffle: bool, seed: int, workers: int) -> DataLoader[Any]:
@@ -418,7 +420,7 @@ def forward_one(
     )
     inputs = prepared.model_inputs
     if stage_uses_replay(stage):
-        factories, lengths, target_seeds = hydration.batch_factories(
+        factories, lengths, target_seeds, prefix_ids, hidden_histories = hydration.batch_factories(
             host["metadata"], mtp=runner.mtp, device=device
         )
         replay = runner(
@@ -428,6 +430,8 @@ def forward_one(
             current_target_hidden=target_seeds,
             base_cache_factory=lambda index: factories[index](),
             base_cache_lengths=lengths,
+            base_prefix_token_ids=prefix_ids,
+            base_target_hidden_history=hidden_histories,
         )
         channels = dict(
             fused_state=replay.fused_state,
