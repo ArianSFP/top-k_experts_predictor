@@ -46,6 +46,7 @@ from runpod.train_harp_delta_v3 import (  # noqa: E402
     loader,
 )
 from runpod.train_shadow_experts_local import (  # noqa: E402
+    ShadowFactualStateDataset,
     batch_tensors,
     load_split,
     next_router_agreement_loss,
@@ -232,6 +233,8 @@ def main() -> None:
     ):
         raise ValueError("source commit must be a full lowercase Git SHA")
     args.data_profile = "b2_reuse_4096"
+    args.layer = layers[0]
+    args.next_router_agreement = True
     partition = validate_partition(args.partition_manifest, args.data_profile)
     reuse = validate_reuse_split(args.reuse_split_manifest)
     selected = {
@@ -284,6 +287,12 @@ def main() -> None:
     write_json_exclusive(args.output / "run_manifest.json", manifest)
     results: list[dict[str, Any]] = []
     for layer in layers:
+        layer_datasets = {
+            split: ShadowFactualStateDataset(
+                dataset, layer=layer, next_router_agreement=True
+            )
+            for split, dataset in datasets.items()
+        }
         gate_up, down = load_target_layer_experts(
             checkpoint, layer, device=device, dtype=torch.bfloat16
         )
@@ -299,7 +308,7 @@ def main() -> None:
         for name, exact, zero in (("exact", True, False), ("zero", False, True)):
             baselines[name] = evaluate_candidate(
                 None,
-                datasets["tune"],
+                layer_datasets["tune"],
                 layer=layer,
                 device=device,
                 microbatch=args.microbatch,
@@ -325,7 +334,7 @@ def main() -> None:
             model.enable_dequantized_cache(True, max_experts=256)
             metrics = evaluate_candidate(
                 model,
-                datasets["tune"],
+                layer_datasets["tune"],
                 layer=layer,
                 device=device,
                 microbatch=args.microbatch,

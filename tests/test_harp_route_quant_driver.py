@@ -1,6 +1,9 @@
 import pytest
 
+from harp_rtt.dataset import HarpRTTDataset
+
 from runpod.screen_route_quant import parse_candidates, parse_layers
+from runpod.train_shadow_experts_local import ShadowFactualStateDataset
 
 
 def test_routequant_driver_parses_frozen_ladder():
@@ -23,3 +26,17 @@ def test_routequant_driver_rejects_invalid_candidate_ladder(value: str):
     with pytest.raises(ValueError):
         parse_candidates(value)
 
+
+
+def test_shadow_factual_wrapper_can_retarget_layer_without_losing_subset():
+    source = object.__new__(ShadowFactualStateDataset)
+    source.layer = 0
+    source.next_router_agreement = True
+    source.source = object.__new__(HarpRTTDataset)
+    source.indices = (3, 7, 11)
+    retargeted = ShadowFactualStateDataset(
+        source, layer=6, next_router_agreement=True
+    )
+    assert retargeted.source is source.source
+    assert retargeted.indices == source.indices
+    assert retargeted.layer == 6

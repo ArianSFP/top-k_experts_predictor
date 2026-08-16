@@ -162,7 +162,10 @@ class ShadowFactualStateDataset(Dataset[dict[str, Any]]):
         self.next_router_agreement = bool(next_router_agreement)
         if self.next_router_agreement and self.layer == 39:
             raise ValueError("layer 39 has no within-token next-router target")
-        if isinstance(base, RequestSubset):
+        if isinstance(base, ShadowFactualStateDataset):
+            self.source = base.source
+            self.indices = base.indices
+        elif isinstance(base, RequestSubset):
             self.source = base.base
             self.indices = tuple(int(index) for index in base.indices)
         elif isinstance(base, HarpRTTDataset):
