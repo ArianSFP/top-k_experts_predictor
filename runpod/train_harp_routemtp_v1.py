@@ -106,6 +106,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-preprocessing", type=Path, required=True)
     parser.add_argument("--mtp-preprocessing", type=Path, required=True)
     parser.add_argument("--parity-report", type=Path, required=True)
+    parser.add_argument("--parity-hydration", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument(
         "--hydration-source-commit",
@@ -715,10 +716,25 @@ def main() -> None:
         joined, base, args.internal_dev_requests
     )
     hydration = HydrationStore(args.hydration)
+    parity_hydration = HydrationStore(args.parity_hydration)
     hydration_manifest_sha256 = sha256_file(args.hydration / "HYDRATION_MANIFEST.json")
+    parity_hydration_manifest_sha256 = sha256_file(
+        args.parity_hydration / "HYDRATION_MANIFEST.json"
+    )
     companion_manifest_sha256 = sha256_file(args.train_companion / "manifest.json")
-    if parity.get("hydration_manifest_sha256") != hydration_manifest_sha256:
-        raise ValueError("RouteMTP parity report was produced from a different hydration")
+    if parity.get("hydration_manifest_sha256") != parity_hydration_manifest_sha256:
+        raise ValueError("RouteMTP parity report and Stage-A hydration differ")
+    if parity_hydration.geometry != hydration.geometry:
+        raise ValueError("RouteMTP Stage-A/full hydration geometry differs")
+    if parity_hydration.value.get("bindings") != hydration.value.get("bindings"):
+        raise ValueError("RouteMTP Stage-A/full hydration bindings differ")
+    for key, offset in parity_hydration.offsets.items():
+        if hydration.offsets.get(key) != offset:
+            raise ValueError("RouteMTP Stage-A source offset is absent from full hydration")
+    for request_id, record in parity_hydration.records.items():
+        full_record = hydration.records.get(request_id)
+        if full_record is None or full_record.get("sha256") != record.get("sha256"):
+            raise ValueError("RouteMTP Stage-A request record differs in full hydration")
     if parity.get("counterfactual_companion_manifest_sha256") != companion_manifest_sha256:
         raise ValueError("RouteMTP parity report was produced from a different companion")
     bindings = hydration.value.get("bindings", {})
@@ -813,6 +829,7 @@ def main() -> None:
         "official_tune_opened": False, "diagnostic_development_opened": False,
         "formal_validation_opened": False, "calibration_opened": False, "sealed_test_opened": False,
         "hydration_manifest_sha256": hydration_manifest_sha256,
+        "parity_hydration_manifest_sha256": parity_hydration_manifest_sha256,
         "counterfactual_companion_manifest_sha256": companion_manifest_sha256,
         "parity_report_sha256": sha256_file(args.parity_report),
         "companion_sealed_test_opened": companion_manifest.get("sealed_test_opened"),
@@ -904,6 +921,7 @@ def main() -> None:
         "best_epoch": best_epoch, "best_internal_dev_value": best_value,
         "state": best_state, "added_bf16_bytes": parameter_bytes,
         "hydration_manifest_sha256": hydration_manifest_sha256,
+        "parity_hydration_manifest_sha256": parity_hydration_manifest_sha256,
         "training_companion_manifest_sha256": companion_manifest_sha256,
         "internal_split_sha256": sha256_file(args.output / "INTERNAL_SPLIT.json"),
         "run_manifest_sha256": sha256_file(args.output / "RUN_MANIFEST.json"),
@@ -915,6 +933,7 @@ def main() -> None:
         "schema": RESULT_SCHEMA, "stage": stage, "best_epoch": best_epoch,
         "best_internal_dev_branch_recall_at_8": best_value,
         "checkpoint_sha256": sha256_file(args.output / "best_checkpoint.pt"),
+        "parity_hydration_manifest_sha256": parity_hydration_manifest_sha256,
         "trainable_bf16_bytes": trainable_parameter_bytes,
         "added_deployed_bf16_bytes": parameter_bytes,
         "size_limit_passed": parameter_bytes <= 1 << 30,
