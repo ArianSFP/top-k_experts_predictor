@@ -14,7 +14,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 from typing import Any, Iterable, Mapping
 
@@ -46,21 +45,13 @@ def prefix_hash(tokens: Iterable[int]) -> str:
     return digest.hexdigest()
 
 
-def git_commit() -> str:
-    value = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True
-    ).strip()
-    if len(value) != 40:
-        raise RuntimeError("RouteMTP hydration requires a full source commit")
-    return value
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--requests-jsonl", type=Path, required=True)
     parser.add_argument("--source-offsets-jsonl", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--source-commit", required=True)
     parser.add_argument("--target-checkpoint-sha256", required=True)
     parser.add_argument("--mtp-checkpoint-sha256", required=True)
     parser.add_argument("--split-manifest-sha256", required=True)
@@ -193,7 +184,7 @@ def _geometry(
         rope_implementation="checkpoint_qwen3_5_mrope",
         transformers_version=str(transformers.__version__),
         checkpoint_sha256=args.mtp_checkpoint_sha256,
-        engine_commit=git_commit(),
+        engine_commit=args.source_commit,
     )
 
 
@@ -205,6 +196,12 @@ def main() -> None:
         raise FileExistsError(f"refusing to overwrite RouteMTP hydration {args.output}")
     if args.maximum_source_positions < 0:
         raise ValueError("maximum source positions must be non-negative")
+    if len(args.source_commit) != 40:
+        raise ValueError("RouteMTP hydration requires a full source commit")
+    try:
+        int(args.source_commit, 16)
+    except ValueError as error:
+        raise ValueError("RouteMTP source commit must be hexadecimal") from error
     if torch.device(args.device).type != "cuda" or not torch.cuda.is_available():
         raise RuntimeError("RouteMTP hydration requires CUDA")
     total_gib = torch.cuda.get_device_properties(torch.device(args.device)).total_memory / 2**30
@@ -224,7 +221,7 @@ def main() -> None:
     initial = {
         "schema": SCHEMA,
         "started_at": datetime.now(timezone.utc).isoformat(),
-        "source_commit": git_commit(),
+        "source_commit": args.source_commit,
         "requests": len(requests),
         "source_positions": len(offsets),
         "device": torch.cuda.get_device_name(torch.device(args.device)),
@@ -299,7 +296,7 @@ def main() -> None:
         records=records,
         offsets=offsets,
         bindings={
-            "source_commit": git_commit(),
+            "source_commit": args.source_commit,
             "target_checkpoint_sha256": args.target_checkpoint_sha256,
             "mtp_checkpoint_sha256": args.mtp_checkpoint_sha256,
             "split_manifest_sha256": args.split_manifest_sha256,
