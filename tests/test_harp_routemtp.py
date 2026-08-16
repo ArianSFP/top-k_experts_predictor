@@ -24,7 +24,9 @@ from harp_rtt.routemtp_batch import (
     build_anytime_node_masks,
 )
 from runpod.train_harp_routemtp_v1 import (
+    parse_anytime_budgets,
     protected_training_split,
+    stage_stop_reason,
     stage_selection_metric,
 )
 
@@ -276,6 +278,25 @@ def test_stage_selection_follows_the_deployed_objective() -> None:
     assert stage_selection_metric("r2_joint") == "factual_h2_h4_recall_at_8"
     assert stage_selection_metric("r3_expert") == "factual_h2_h4_recall_at_8"
 
+
+
+def test_screening_budget_parser_is_fail_closed() -> None:
+    assert parse_anytime_budgets("16") == (16,)
+    assert parse_anytime_budgets("1,4,8,16") == (1, 4, 8, 16)
+    with pytest.raises(Exception, match="unique"):
+        parse_anytime_budgets("16,16")
+    with pytest.raises(Exception, match="undeclared"):
+        parse_anytime_budgets("2,16")
+
+
+def test_graceful_stage_stop_is_checked_at_epoch_boundary(tmp_path) -> None:
+    assert stage_stop_reason(tmp_path, stale=0, patience=3) is None
+    assert stage_stop_reason(tmp_path, stale=3, patience=3) == "patience"
+    (tmp_path / "STOP_AFTER_EPOCH").write_text("screening complete\n")
+    assert (
+        stage_stop_reason(tmp_path, stale=0, patience=3)
+        == "operator_stop_after_epoch"
+    )
 
 class _PackedExperts(nn.Module):
     def __init__(self) -> None:

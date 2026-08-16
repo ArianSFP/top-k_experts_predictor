@@ -117,6 +117,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--patience", type=int, default=3)
+    parser.add_argument(
+        "--epoch-zero-budgets",
+        type=parse_anytime_budgets,
+        default=ANYTIME_BUDGETS,
+        help=(
+            "comma-separated anytime budgets for the immutable epoch-zero audit; "
+            "use 16 for architecture screening and 1,4,8,16 for final acceptance"
+        ),
+    )
     parser.add_argument("--microbatch-size", type=int, choices=(1, 2, 4, 8), default=1)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--lora-learning-rate", type=float, default=5e-5)
@@ -128,6 +137,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--preflight-only", action="store_true")
     return parser.parse_args()
+
+
+def parse_anytime_budgets(value: str) -> tuple[int, ...]:
+    try:
+        budgets = tuple(int(item.strip()) for item in value.split(",") if item.strip())
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("anytime budgets must be integers") from error
+    if not budgets or len(set(budgets)) != len(budgets):
+        raise argparse.ArgumentTypeError("anytime budgets must be non-empty and unique")
+    undeclared = tuple(budget for budget in budgets if budget not in ANYTIME_BUDGETS)
+    if undeclared:
+        raise argparse.ArgumentTypeError(f"undeclared anytime budgets: {undeclared}")
+    return budgets
+
+
+def stage_stop_reason(output: Path, *, stale: int, patience: int) -> str | None:
+    """Return a graceful epoch-boundary stop reason, if one is requested."""
+    if (output / "STOP_AFTER_EPOCH").is_file():
+        return "operator_stop_after_epoch"
+    if stale >= patience:
+        return "patience"
+    return None
 
 
 def write_json_exclusive(path: Path, value: Mapping[str, Any]) -> None:
@@ -902,6 +933,8 @@ def main() -> None:
         "hard_size_limit_bytes": 1 << 30,
         "effective_batch": EFFECTIVE_BATCH, "microbatch": args.microbatch_size,
         "optimizer_constructed": False, "training_started": False,
+        "epoch_zero_budgets": list(args.epoch_zero_budgets),
+        "graceful_stop_file": "STOP_AFTER_EPOCH",
         "adapter_contract": "fusion_fc_plus_qo_kv_frozen",
         "native_mtp_generates_tokens": True, "route_mtp_generates_tokens": False,
         "official_tune_opened": False, "diagnostic_development_opened": False,
@@ -928,12 +961,14 @@ def main() -> None:
         token_embedding=token_embedding, hydration=hydration,
         dataset=internal_dev, device=device, microbatch=args.microbatch_size,
         workers=args.num_workers,
+        budgets_to_evaluate=args.epoch_zero_budgets,
     )
     write_json_exclusive(args.output / "EPOCH_ZERO_AUDIT.json", {
         "schema": "harp_routemtp_epoch_zero_audit_v1",
         "stage": stage,
         "metrics": epoch_zero,
         "optimizer_constructed": False,
+        "budgets_evaluated": list(args.epoch_zero_budgets),
         "training_started": False,
         "official_tune_opened": False,
         "diagnostic_development_opened": False,
@@ -950,6 +985,8 @@ def main() -> None:
     })
     accumulation = EFFECTIVE_BATCH // args.microbatch_size
     best_value = -math.inf; best_epoch = 0; best_state = None; stale = 0
+    stop_reason = "maximum_epochs"
+    completed_epochs = 0
     for epoch in range(1, args.epochs + 1):
         predictor.train(); runner.eval(); anchor.eval(); optimizer.zero_grad(set_to_none=True)
         if router is not None:
@@ -985,12 +1022,18 @@ def main() -> None:
             "epoch": epoch, "train_loss": total / max(1, batches), "internal_dev": metrics
         })
         value = float(metrics["selection_value"])
+        completed_epochs = epoch
         if value > best_value:
             best_value = value; best_epoch = epoch; stale = 0
             best_state = compact_state(predictor, adapters, residual, expert, router)
         else:
             stale += 1
-        if stale >= args.patience: break
+        requested_stop = stage_stop_reason(
+            args.output, stale=stale, patience=args.patience
+        )
+        if requested_stop is not None:
+            stop_reason = requested_stop
+            break
     if best_state is None: raise RuntimeError("RouteMTP produced no checkpoint")
     checkpoint = {
         "schema": SCHEMA, "stage": stage, "seed": args.seed,
@@ -1014,6 +1057,8 @@ def main() -> None:
         "selection_metric": stage_selection_metric(stage),
         "best_internal_dev_selection_value": best_value,
         "checkpoint_sha256": sha256_file(args.output / "best_checkpoint.pt"),
+        "completed_epochs": completed_epochs,
+        "stop_reason": stop_reason,
         "parity_hydration_manifest_sha256": parity_hydration_manifest_sha256,
         "trainable_bf16_bytes": trainable_parameter_bytes,
         "added_deployed_bf16_bytes": parameter_bytes,
