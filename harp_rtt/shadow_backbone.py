@@ -40,6 +40,7 @@ SHADOW_MODES = (
     "resident_int4_only",
     "resident_int4_shared",
     "resident_int4_tail_control",
+    "resident_int4_codebook",
 )
 
 
@@ -92,20 +93,30 @@ def install_shadow_experts(
     basis_expert_residual_width: int = 2,
     resident_ids_by_layer: Sequence[torch.Tensor] | None = None,
     resident_control_rank: int = 128,
+    resident_codebooks_by_layer: Sequence[
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    ] | None = None,
 ) -> InstalledShadowBackbone:
     """Replace only routed experts in an already-materialized official model."""
 
     if mode not in SHADOW_MODES:
         raise ValueError(f"unknown ShadowRoute mode {mode!r}")
     validate_shadow_target_config(resolve_text_model(model).config)
-    if mode in {
+    resident_modes = {
         "resident_int4_only",
         "resident_int4_shared",
         "resident_int4_tail_control",
-    } and (
+        "resident_int4_codebook",
+    }
+    if mode in resident_modes and (
         resident_ids_by_layer is None or len(resident_ids_by_layer) != 40
     ):
         raise ValueError("resident hybrid requires exactly 40 expert-ID vectors")
+    if mode == "resident_int4_codebook" and (
+        resident_codebooks_by_layer is None
+        or len(resident_codebooks_by_layer) != 40
+    ):
+        raise ValueError("resident codebook requires exactly forty mapping tables")
     native: list[nn.Module | None] = []
     installed: list[nn.Module] = []
     for layer_id, layer in enumerate(resolve_text_layers(model)):
@@ -133,11 +144,7 @@ def install_shadow_experts(
             draft = SwiGLUDraftExpert(2048, width).to(device=device, dtype=dtype)
             replacement = SharedResidualExperts(draft, experts=256)
             native.append(original if retain_native else None)
-        elif mode in {
-            "resident_int4_only",
-            "resident_int4_shared",
-            "resident_int4_tail_control",
-        }:
+        elif mode in resident_modes:
             assert resident_ids_by_layer is not None
             control = (
                 RouterVisibleTailControl(
@@ -146,15 +153,25 @@ def install_shadow_experts(
                 if mode == "resident_int4_tail_control" and layer_id < 39
                 else None
             )
+            codebook = (
+                None
+                if resident_codebooks_by_layer is None
+                else resident_codebooks_by_layer[layer_id]
+            )
             replacement = PackedInt4ResidentExperts(
                 resident_ids_by_layer[layer_id],
                 (
                     None
-                    if mode == "resident_int4_only"
+                    if mode in {"resident_int4_only", "resident_int4_codebook"}
                     else SharedResidualExperts(SwiGLUDraftExpert(2048, 512), experts=256)
                 ),
                 device=device,
                 router_control=control,
+                codebook_proxy_ids=(None if codebook is None else codebook[0]),
+                codebook_proxy_coefficients=(
+                    None if codebook is None else codebook[1]
+                ),
+                codebook_proxy_count=(None if codebook is None else codebook[2]),
             ).to(device=device, dtype=dtype)
             native.append(original if retain_native else None)
         elif mode == "indexed_width16":
@@ -216,13 +233,16 @@ def build_selective_shadow_text_model(
     basis_expert_residual_width: int = 2,
     resident_ids_by_layer: Sequence[torch.Tensor] | None = None,
     resident_control_rank: int = 128,
+    resident_codebooks_by_layer: Sequence[
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    ] | None = None,
 ) -> tuple[nn.Module, SelectiveLoadReport]:
     """Build the exact non-expert text stack without native expert allocation."""
 
     if mode not in {
         "basisdraft_all8", "shared_width128", "shared_width512",
         "indexed_width16", "resident_int4_only", "resident_int4_shared",
-        "resident_int4_tail_control",
+        "resident_int4_tail_control", "resident_int4_codebook",
     }:
         raise ValueError("selective deployment supports only resident shadow modes")
     try:
@@ -237,14 +257,21 @@ def build_selective_shadow_text_model(
     validate_shadow_target_config(config)
     with torch.device("meta"):
         text_model = Qwen3_5MoeTextModel(config)
-    if mode in {
+    resident_modes = {
         "resident_int4_only",
         "resident_int4_shared",
         "resident_int4_tail_control",
-    } and (
+        "resident_int4_codebook",
+    }
+    if mode in resident_modes and (
         resident_ids_by_layer is None or len(resident_ids_by_layer) != 40
     ):
         raise ValueError("resident hybrid requires exactly 40 expert-ID vectors")
+    if mode == "resident_int4_codebook" and (
+        resident_codebooks_by_layer is None
+        or len(resident_codebooks_by_layer) != 40
+    ):
+        raise ValueError("resident codebook requires exactly forty mapping tables")
     for layer_id, layer in enumerate(text_model.layers):
         if mode == "basisdraft_all8":
             replacement = RouteConditionedBasisExperts(BasisDraftConfig(
@@ -257,25 +284,31 @@ def build_selective_shadow_text_model(
             replacement: nn.Module = SharedResidualExperts(
                 SwiGLUDraftExpert(2048, width), experts=256
             )
-        elif mode in {
-            "resident_int4_only",
-            "resident_int4_shared",
-            "resident_int4_tail_control",
-        }:
+        elif mode in resident_modes:
             assert resident_ids_by_layer is not None
             control = (
                 RouterVisibleTailControl(rank=resident_control_rank)
                 if mode == "resident_int4_tail_control" and layer_id < 39
                 else None
             )
+            codebook = (
+                None
+                if resident_codebooks_by_layer is None
+                else resident_codebooks_by_layer[layer_id]
+            )
             replacement = PackedInt4ResidentExperts(
                 resident_ids_by_layer[layer_id],
                 (
                     None
-                    if mode == "resident_int4_only"
+                    if mode in {"resident_int4_only", "resident_int4_codebook"}
                     else SharedResidualExperts(SwiGLUDraftExpert(2048, 512), experts=256)
                 ),
                 router_control=control,
+                codebook_proxy_ids=(None if codebook is None else codebook[0]),
+                codebook_proxy_coefficients=(
+                    None if codebook is None else codebook[1]
+                ),
+                codebook_proxy_count=(None if codebook is None else codebook[2]),
             )
         else:
             replacement = IndexedShadowExperts(

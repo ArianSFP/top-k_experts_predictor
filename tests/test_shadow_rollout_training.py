@@ -7,6 +7,7 @@ from harp_rtt.shadow_backbone import InstalledShadowBackbone
 from harp_rtt.shadow_bundle import (
     LOCAL_SCHEMA,
     load_shadow_bundle,
+    resident_codebooks_from_bundle,
     resident_ids_from_bundle,
 )
 from harp_rtt.shadow_expert import (
@@ -422,3 +423,81 @@ def test_resident_bundle_binds_namespace_and_loads_without_native_experts(tmp_pa
     assert len(paths) == 40
     assert torch.equal(modules[13].gate_up_packed, references[13]["gate_up_packed"])
     assert all(not hasattr(module, "native_experts") for module in modules)
+
+
+def test_resident_codebook_bundle_round_trip(tmp_path) -> None:
+    source = "1" * 40
+    target = "2" * 64
+    resident_ids = torch.tensor([0, 2])
+    gate_up = torch.randn(256, 4, 4)
+    down = torch.randn(256, 4, 2)
+    proxy_ids = torch.zeros(256, 2, dtype=torch.int16)
+    proxy_ids[:, 1] = -1
+    proxy_ids[2, 0] = 2
+    proxy_coefficients = torch.zeros(256, 2)
+    proxy_coefficients[:, 0] = 1
+    proxy_count = torch.ones(256, dtype=torch.uint8)
+    modules = []
+    for layer in range(40):
+        module = PackedInt4ResidentExperts.from_target(
+            resident_ids,
+            None,
+            gate_up,
+            down,
+            exact_k=2,
+            group_size=2,
+            codebook_proxy_ids=proxy_ids,
+            codebook_proxy_coefficients=proxy_coefficients,
+            codebook_proxy_count=proxy_count,
+        )
+        state = {
+            name: value.detach().clone()
+            for name, value in module.state_dict().items()
+        }
+        directory = tmp_path / f"codebook_{layer:02d}"
+        directory.mkdir()
+        torch.save(
+            {
+                "schema": LOCAL_SCHEMA,
+                "mode": "resident_int4_codebook",
+                "layer": layer,
+                "source_commit": source,
+                "target_checkpoint_index_sha256": target,
+                "model_state_dict": state,
+                "resident_expert_ids": resident_ids,
+                "resident_count": 2,
+                "closed_loop_authorized": True,
+                "formal_validation_opened": False,
+                "calibration_opened": False,
+                "sealed_test_opened": False,
+            },
+            directory / f"shadow_resident_int4_codebook_layer_{layer:02d}.pt",
+        )
+        module.codebook_proxy_ids.zero_()
+        modules.append(module)
+    ids = resident_ids_from_bundle(
+        tmp_path,
+        source_commit=source,
+        target_checkpoint_index_sha256=target,
+        mode="resident_int4_codebook",
+    )
+    tables = resident_codebooks_from_bundle(
+        tmp_path,
+        source_commit=source,
+        target_checkpoint_index_sha256=target,
+    )
+    assert len(ids) == len(tables) == 40
+    assert torch.equal(tables[7][0], proxy_ids)
+    installed = InstalledShadowBackbone(
+        model=nn.Identity(),
+        mode="resident_int4_codebook",
+        native_experts=tuple([None] * 40),
+        shadow_experts=tuple(modules),
+    )
+    load_shadow_bundle(
+        installed,
+        tmp_path,
+        source_commit=source,
+        target_checkpoint_index_sha256=target,
+    )
+    assert torch.equal(modules[7].codebook_proxy_ids, proxy_ids)

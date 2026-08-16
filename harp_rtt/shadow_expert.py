@@ -863,6 +863,9 @@ class PackedInt4ResidentExperts(nn.Module):
         group_size: int = 64,
         device: torch.device | str | None = None,
         router_control: RouterVisibleTailControl | None = None,
+        codebook_proxy_ids: Tensor | None = None,
+        codebook_proxy_coefficients: Tensor | None = None,
+        codebook_proxy_count: Tensor | None = None,
     ) -> None:
         super().__init__()
         ids = torch.as_tensor(resident_ids, dtype=torch.long)
@@ -887,6 +890,63 @@ class PackedInt4ResidentExperts(nn.Module):
             ids.numel(), dtype=torch.long, device=device
         )
         self.register_buffer("expert_to_resident", expert_to_resident)
+        codebook_values = (
+            codebook_proxy_ids,
+            codebook_proxy_coefficients,
+            codebook_proxy_count,
+        )
+        if any(value is not None for value in codebook_values):
+            if not all(value is not None for value in codebook_values):
+                raise ValueError("resident codebook tensors must be supplied together")
+            assert codebook_proxy_ids is not None
+            assert codebook_proxy_coefficients is not None
+            assert codebook_proxy_count is not None
+            proxy_ids = torch.as_tensor(
+                codebook_proxy_ids, dtype=torch.int16, device=device
+            )
+            proxy_coefficients = torch.as_tensor(
+                codebook_proxy_coefficients, dtype=torch.bfloat16, device=device
+            )
+            proxy_count = torch.as_tensor(
+                codebook_proxy_count, dtype=torch.uint8, device=device
+            )
+            if (
+                proxy_ids.shape != (experts, 2)
+                or proxy_coefficients.shape != (experts, 2)
+                or proxy_count.shape != (experts,)
+            ):
+                raise ValueError("resident codebook tensor geometry changed")
+            if bool(((proxy_count < 1) | (proxy_count > 2)).any()):
+                raise ValueError("resident codebook proxy counts must be one or two")
+            active = (
+                torch.arange(2, device=proxy_count.device)[None]
+                < proxy_count[:, None]
+            )
+            active_ids = proxy_ids[active].long()
+            if (
+                bool(((active_ids < 0) | (active_ids >= experts)).any())
+                or bool((expert_to_resident[active_ids] < 0).any())
+            ):
+                raise ValueError("resident codebook references a nonresident expert")
+            active_coefficients = proxy_coefficients.float() * active
+            if (
+                not torch.isfinite(active_coefficients).all()
+                or bool((active_coefficients < 0).any())
+                or not torch.allclose(
+                    active_coefficients.sum(-1),
+                    torch.ones(experts, device=active_coefficients.device),
+                    atol=2e-3,
+                    rtol=0.0,
+                )
+            ):
+                raise ValueError(
+                    "resident codebook coefficients must form a simplex"
+                )
+            self.register_buffer("codebook_proxy_ids", proxy_ids)
+            self.register_buffer(
+                "codebook_proxy_coefficients", proxy_coefficients
+            )
+            self.register_buffer("codebook_proxy_count", proxy_count)
         count = int(ids.numel())
         self.register_buffer(
             "gate_up_packed",
@@ -921,6 +981,10 @@ class PackedInt4ResidentExperts(nn.Module):
     def resident_count(self) -> int:
         return int(self.resident_ids.numel())
 
+    @property
+    def codebook_enabled(self) -> bool:
+        return hasattr(self, "codebook_proxy_ids")
+
     @classmethod
     @torch.no_grad()
     def from_target(
@@ -933,6 +997,9 @@ class PackedInt4ResidentExperts(nn.Module):
         exact_k: int = 8,
         group_size: int = 64,
         router_control: RouterVisibleTailControl | None = None,
+        codebook_proxy_ids: Tensor | None = None,
+        codebook_proxy_coefficients: Tensor | None = None,
+        codebook_proxy_count: Tensor | None = None,
     ) -> "PackedInt4ResidentExperts":
         experts, twice_intermediate, hidden_width = target_gate_up.shape
         if twice_intermediate % 2:
@@ -951,6 +1018,9 @@ class PackedInt4ResidentExperts(nn.Module):
             group_size=group_size,
             device=target_gate_up.device,
             router_control=router_control,
+            codebook_proxy_ids=codebook_proxy_ids,
+            codebook_proxy_coefficients=codebook_proxy_coefficients,
+            codebook_proxy_count=codebook_proxy_count,
         )
         gate_packed, gate_scales = quantize_groupwise_int4(
             target_gate_up.index_select(0, ids), group_size=group_size
@@ -1000,30 +1070,96 @@ class PackedInt4ResidentExperts(nn.Module):
         resident = local_ids >= 0
         missing = ~resident
         missing_mass = (weights * missing.to(weights)).sum(dim=1, keepdim=True)
-        if isinstance(self.fallback, RouteConditionedBasisExperts):
-            fallback_values = self.fallback.selected_unweighted(hidden, ids).reshape(
-                hidden.shape[0], ids.shape[1], self.hidden_width
+        if self.codebook_enabled:
+            if self.fallback is not None or self.router_control is not None:
+                raise RuntimeError(
+                    "resident codebook cannot be combined with a fallback/control"
+                )
+            native_coefficients = hidden.new_zeros(
+                hidden.shape[0], self.resident_count
             )
-            tail_output = (
-                fallback_values * weights[..., None] * missing[..., None]
-            ).sum(dim=1)
-        elif self.fallback is None:
+            native_coefficients.scatter_add_(
+                1,
+                local_ids.clamp_min(0),
+                weights * resident.to(weights),
+            )
+            selected_proxy_ids = self.codebook_proxy_ids.long()[ids]
+            selected_proxy_coefficients = self.codebook_proxy_coefficients.to(
+                weights.dtype
+            )[ids]
+            selected_proxy_count = self.codebook_proxy_count.long()[ids]
+            proxy_active = (
+                torch.arange(2, device=ids.device)[None, None]
+                < selected_proxy_count[..., None]
+            ) & missing[..., None]
+            proxy_local_ids = self.expert_to_resident[
+                selected_proxy_ids.clamp_min(0)
+            ]
+            if bool((proxy_local_ids[proxy_active] < 0).any()):
+                raise RuntimeError(
+                    "resident codebook escaped its resident namespace"
+                )
+            proxy_weights = (
+                weights[..., None]
+                * selected_proxy_coefficients
+                * proxy_active.to(weights)
+            )
+            proxy_coefficients = hidden.new_zeros(
+                hidden.shape[0], self.resident_count
+            )
+            proxy_coefficients.scatter_add_(
+                1,
+                proxy_local_ids.reshape(hidden.shape[0], -1).clamp_min(0),
+                proxy_weights.reshape(hidden.shape[0], -1),
+            )
+            resident_output = torch.zeros_like(hidden)
             tail_output = torch.zeros_like(hidden)
+            active_coefficients = native_coefficients + proxy_coefficients
+            active_pairs = active_coefficients.nonzero(as_tuple=False)
+            for local_id in torch.unique(active_pairs[:, 1]).tolist():
+                token_index = (
+                    active_coefficients[:, int(local_id)] != 0
+                ).nonzero(as_tuple=False)[:, 0]
+                gate_up, down = self._resident_weights(
+                    int(local_id), dtype=hidden.dtype
+                )
+                gate, up = F.linear(
+                    hidden[token_index], gate_up
+                ).chunk(2, dim=-1)
+                exact = F.linear(F.silu(gate) * up, down)
+                resident_output[token_index] += exact * native_coefficients[
+                    token_index, int(local_id), None
+                ]
+                tail_output[token_index] += exact * proxy_coefficients[
+                    token_index, int(local_id), None
+                ]
         else:
-            tail_output = (
-                self.fallback(hidden, ids, weights).reshape_as(hidden)
-                * missing_mass
-            )
-        resident_output = torch.zeros_like(hidden)
-        for local_id in torch.unique(local_ids[resident]).tolist():
-            positions = (local_ids == int(local_id)).nonzero(as_tuple=False)
-            token_index, slot_index = positions[:, 0], positions[:, 1]
-            gate_up, down = self._resident_weights(int(local_id), dtype=hidden.dtype)
-            gate, up = F.linear(hidden[token_index], gate_up).chunk(2, dim=-1)
-            exact = F.linear(F.silu(gate) * up, down)
-            resident_output[token_index] += (
-                exact * weights[token_index, slot_index, None]
-            )
+            if isinstance(self.fallback, RouteConditionedBasisExperts):
+                fallback_values = self.fallback.selected_unweighted(
+                    hidden, ids
+                ).reshape(hidden.shape[0], ids.shape[1], self.hidden_width)
+                tail_output = (
+                    fallback_values * weights[..., None] * missing[..., None]
+                ).sum(dim=1)
+            elif self.fallback is None:
+                tail_output = torch.zeros_like(hidden)
+            else:
+                tail_output = (
+                    self.fallback(hidden, ids, weights).reshape_as(hidden)
+                    * missing_mass
+                )
+            resident_output = torch.zeros_like(hidden)
+            for local_id in torch.unique(local_ids[resident]).tolist():
+                positions = (local_ids == int(local_id)).nonzero(as_tuple=False)
+                token_index, slot_index = positions[:, 0], positions[:, 1]
+                gate_up, down = self._resident_weights(
+                    int(local_id), dtype=hidden.dtype
+                )
+                gate, up = F.linear(hidden[token_index], gate_up).chunk(2, dim=-1)
+                exact = F.linear(F.silu(gate) * up, down)
+                resident_output[token_index] += (
+                    exact * weights[token_index, slot_index, None]
+                )
         control_output = torch.zeros_like(hidden)
         if self.router_control is not None:
             control_output = self.router_control(hidden, ids, weights, missing)
@@ -1069,6 +1205,16 @@ def resident_tail_control_storage_bytes(
         raise ValueError("tail-control storage dimensions must be positive")
     per_transition = experts * rank + hidden_width * rank + experts * rank
     return transitions * per_transition * bytes_per_parameter
+
+
+def resident_codebook_storage_bytes(
+    *, layers: int = 40, experts: int = 256, proxies: int = 2,
+) -> int:
+    """Exact int16-ID, BF16-coefficient, and uint8-count table bytes."""
+
+    if min(layers, experts, proxies) < 1:
+        raise ValueError("resident codebook dimensions must be positive")
+    return layers * experts * (proxies * 2 + proxies * 2 + 1)
 
 
 def shadow_pool_parameter_count(
@@ -1117,6 +1263,7 @@ __all__ = [
     "shadow_pool_parameter_count",
     "dequantize_groupwise_int4",
     "quantize_groupwise_int4",
+    "resident_codebook_storage_bytes",
     "resident_int4_storage_bytes",
     "resident_tail_control_storage_bytes",
     "target_neuron_importance",

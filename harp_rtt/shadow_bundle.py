@@ -29,6 +29,7 @@ CHECKPOINT_MODE = {
     "resident_int4_only": "resident_int4_only",
     "resident_int4_shared": "resident_int4_shared",
     "resident_int4_tail_control": "resident_tail_control_v2",
+    "resident_int4_codebook": "resident_int4_codebook",
 }
 
 
@@ -92,7 +93,9 @@ def resident_ids_from_bundle(
 ) -> tuple[torch.Tensor, ...]:
     """Read the frozen per-layer resident namespace before model construction."""
 
-    if mode not in {"resident_int4_only", "resident_int4_shared"}:
+    if mode not in {
+        "resident_int4_only", "resident_int4_shared", "resident_int4_codebook"
+    }:
         raise ValueError("resident namespace mode is not deployable")
     paths = discover_layer_checkpoints(root, mode)
     result = []
@@ -111,6 +114,47 @@ def resident_ids_from_bundle(
         if int(value.get("resident_count", -1)) != ids.numel():
             raise ValueError("resident hybrid count differs from its expert namespace")
         result.append(ids.long())
+    return tuple(result)
+
+
+def resident_codebooks_from_bundle(
+    root: str | Path,
+    *,
+    source_commit: str,
+    target_checkpoint_index_sha256: str,
+    allow_unpromoted_diagnostic: bool = False,
+) -> tuple[tuple[torch.Tensor, torch.Tensor, torch.Tensor], ...]:
+    """Read and validate the forty immutable functional-codebook tables."""
+
+    paths = discover_layer_checkpoints(root, "resident_int4_codebook")
+    result = []
+    for layer, path in enumerate(paths):
+        value = _load_value(
+            path,
+            expected_mode=CHECKPOINT_MODE["resident_int4_codebook"],
+            expected_layer=layer,
+            source_commit=source_commit,
+            target_checkpoint_index_sha256=target_checkpoint_index_sha256,
+            allow_unpromoted_diagnostic=allow_unpromoted_diagnostic,
+        )
+        state = value["model_state_dict"]
+        proxy_ids = state.get("codebook_proxy_ids")
+        proxy_coefficients = state.get("codebook_proxy_coefficients")
+        proxy_count = state.get("codebook_proxy_count")
+        if (
+            not isinstance(proxy_ids, torch.Tensor)
+            or proxy_ids.shape != (256, 2)
+            or not isinstance(proxy_coefficients, torch.Tensor)
+            or proxy_coefficients.shape != (256, 2)
+            or not isinstance(proxy_count, torch.Tensor)
+            or proxy_count.shape != (256,)
+        ):
+            raise ValueError("resident codebook shard lacks valid mapping tensors")
+        result.append((
+            proxy_ids.to(torch.int16),
+            proxy_coefficients.to(torch.bfloat16),
+            proxy_count.to(torch.uint8),
+        ))
     return tuple(result)
 
 
@@ -167,10 +211,18 @@ def load_shadow_bundle(
                 "resident_ids", "expert_to_resident",
                 "gate_up_packed", "gate_up_scales", "down_packed", "down_scales",
             }
-            if installed.mode != "resident_int4_only":
+            if installed.mode not in {
+                "resident_int4_only", "resident_int4_codebook"
+            }:
                 expected |= {
                     "fallback.draft_expert.gate_up_proj.weight",
                     "fallback.draft_expert.down_proj.weight",
+                }
+            if installed.mode == "resident_int4_codebook":
+                expected |= {
+                    "codebook_proxy_ids",
+                    "codebook_proxy_coefficients",
+                    "codebook_proxy_count",
                 }
             if installed.mode == "resident_int4_tail_control" and layer < 39:
                 expected |= {
@@ -252,5 +304,6 @@ __all__ = [
     "LOCAL_SCHEMA",
     "discover_layer_checkpoints",
     "load_shadow_bundle",
+    "resident_codebooks_from_bundle",
     "resident_ids_from_bundle",
 ]

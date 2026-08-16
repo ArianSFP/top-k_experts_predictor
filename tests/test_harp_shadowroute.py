@@ -38,6 +38,7 @@ from harp_rtt.shadow_expert import (
     SharedResidualExperts,
     SwiGLUDraftExpert,
     basisdraft_parameter_count,
+    resident_codebook_storage_bytes,
     resident_int4_storage_bytes,
     resident_tail_control_storage_bytes,
     shadow_pool_parameter_count,
@@ -537,6 +538,96 @@ def test_resident_int4_without_fallback_executes_only_resident_mass():
     assert all(not key.startswith("fallback.") for key in module.state_dict())
     assert components.missing_mass.flatten().tolist() == pytest.approx([0.3, 1.0])
 
+
+def test_resident_functional_codebook_reuses_complete_resident_functions():
+    torch.manual_seed(31)
+    gate_up = torch.randn(4, 4, 4)
+    down = torch.randn(4, 4, 2)
+    proxy_ids = torch.tensor([
+        [0, -1],
+        [0, -1],
+        [2, -1],
+        [0, 2],
+    ])
+    proxy_coefficients = torch.tensor([
+        [1.0, 0.0],
+        [1.0, 0.0],
+        [1.0, 0.0],
+        [0.25, 0.75],
+    ])
+    proxy_count = torch.tensor([1, 1, 1, 2])
+    module = PackedInt4ResidentExperts.from_target(
+        torch.tensor([0, 2]),
+        None,
+        gate_up,
+        down,
+        exact_k=2,
+        group_size=2,
+        codebook_proxy_ids=proxy_ids,
+        codebook_proxy_coefficients=proxy_coefficients,
+        codebook_proxy_count=proxy_count,
+    )
+    hidden = torch.randn(2, 4)
+    ids = torch.tensor([[0, 1], [3, 1]])
+    weights = torch.tensor([[0.7, 0.3], [0.4, 0.6]])
+    calls: list[int] = []
+    original = module._resident_weights
+
+    def counted(local_id: int, *, dtype: torch.dtype):
+        calls.append(local_id)
+        return original(local_id, dtype=dtype)
+
+    module._resident_weights = counted  # type: ignore[method-assign]
+    components = module.forward_components(hidden, ids, weights)
+    expected = torch.zeros_like(hidden)
+    local_weights = torch.tensor([[1.0, 0.0], [0.7, 0.3]])
+    for local_id in range(2):
+        selected_gate, selected_down = original(local_id, dtype=hidden.dtype)
+        gate, up = torch.nn.functional.linear(
+            hidden, selected_gate
+        ).chunk(2, dim=-1)
+        value = torch.nn.functional.linear(
+            torch.nn.functional.silu(gate) * up, selected_down
+        )
+        expected += value * local_weights[:, local_id, None]
+    assert torch.allclose(components.output, expected, atol=1e-6, rtol=1e-6)
+    assert sorted(calls) == [0, 1]
+    assert torch.allclose(
+        components.resident_output + components.tail_output,
+        components.output,
+    )
+    assert set(module.state_dict()) >= {
+        "codebook_proxy_ids",
+        "codebook_proxy_coefficients",
+        "codebook_proxy_count",
+    }
+
+
+def test_resident_functional_codebook_rejects_nonresident_proxy():
+    with pytest.raises(ValueError, match="nonresident"):
+        PackedInt4ResidentExperts(
+            torch.tensor([0, 2]),
+            None,
+            hidden_width=4,
+            intermediate_width=2,
+            experts=4,
+            exact_k=2,
+            group_size=2,
+            codebook_proxy_ids=torch.tensor([
+                [0, -1], [1, -1], [2, -1], [0, -1],
+            ]),
+            codebook_proxy_coefficients=torch.tensor([
+                [1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0],
+            ]),
+            codebook_proxy_count=torch.ones(4, dtype=torch.uint8),
+        )
+
+
+def test_resident_codebook_storage_is_negligible_and_under_six_gib():
+    codebook_bytes = resident_codebook_storage_bytes()
+    resident_bytes = resident_int4_storage_bytes(layers=1, residents=3_850)
+    assert codebook_bytes == 92_160
+    assert resident_bytes + codebook_bytes < 6 * 2**30
 
 
 def test_resident_tail_control_is_zero_compatible_identity_sensitive_and_nonowning():

@@ -27,6 +27,7 @@ from harp_rtt.shadow_route import shadow_lm_path_posterior  # noqa: E402
 from harp_rtt.shadow_backbone import exact_prefix_experts, install_shadow_experts  # noqa: E402
 from harp_rtt.shadow_bundle import (  # noqa: E402
     load_shadow_bundle,
+    resident_codebooks_from_bundle,
     resident_ids_from_bundle,
 )
 from harp_rtt.shadow_checkpoint import IndexedCheckpoint, sha256_file  # noqa: E402
@@ -73,6 +74,7 @@ def parse_args() -> argparse.Namespace:
             "basisdraft_all8", "exact_top1_plus_draft", "shared_width128",
             "shared_width512", "indexed_width16", "int4_top4",
             "resident_int4_only", "resident_int4_shared",
+            "resident_int4_codebook",
         ),
         required=True,
     )
@@ -456,7 +458,10 @@ def main() -> None:
 
     checkpoint = IndexedCheckpoint(args.model)
     resident_ids_by_layer = None
-    if args.mode in {"resident_int4_only", "resident_int4_shared"}:
+    resident_codebooks_by_layer = None
+    if args.mode in {
+        "resident_int4_only", "resident_int4_shared", "resident_int4_codebook"
+    }:
         assert args.layer_checkpoint_root is not None
         resident_ids_by_layer = resident_ids_from_bundle(
             args.layer_checkpoint_root,
@@ -465,6 +470,13 @@ def main() -> None:
             allow_unpromoted_diagnostic=args.diagnostic_unpromoted_bundle,
             mode=args.mode,
         )
+        if args.mode == "resident_int4_codebook":
+            resident_codebooks_by_layer = resident_codebooks_from_bundle(
+                args.layer_checkpoint_root,
+                source_commit=args.source_commit,
+                target_checkpoint_index_sha256=checkpoint.index_sha256,
+                allow_unpromoted_diagnostic=args.diagnostic_unpromoted_bundle,
+            )
     args.output.mkdir(parents=True)
     manifest = {
         "schema": SCHEMA,
@@ -528,6 +540,7 @@ def main() -> None:
         basis_width=args.basis_width,
         basis_expert_residual_width=args.basis_expert_residual_width,
         resident_ids_by_layer=resident_ids_by_layer,
+        resident_codebooks_by_layer=resident_codebooks_by_layer,
     )
     if not args.native_parity_only and args.native_exact_slots is None:
         assert args.layer_checkpoint_root is not None
