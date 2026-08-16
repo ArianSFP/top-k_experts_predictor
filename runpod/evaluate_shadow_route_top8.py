@@ -472,6 +472,7 @@ def main() -> None:
     resident_ids_by_layer = None
     resident_codebooks_by_layer = None
     routequant_bits_by_layer = None
+    routequant_down_bits_by_layer = None
     routequant_scale_storage = None
     if args.mode in {
         "resident_int4_only", "resident_int4_shared", "resident_int4_codebook"
@@ -493,14 +494,16 @@ def main() -> None:
             )
     if args.mode == "routequant_all8":
         assert args.layer_checkpoint_root is not None
-        routequant_bits_by_layer, routequant_scale_storage = (
-            routequant_schedules_from_bundle(
+        (
+            routequant_bits_by_layer,
+            routequant_down_bits_by_layer,
+            routequant_scale_storage,
+        ) = routequant_schedules_from_bundle(
                 args.layer_checkpoint_root,
                 source_commit=args.source_commit,
                 target_checkpoint_index_sha256=checkpoint.index_sha256,
                 allow_unpromoted_diagnostic=args.diagnostic_unpromoted_bundle,
             )
-        )
     args.output.mkdir(parents=True)
     manifest = {
         "schema": SCHEMA,
@@ -519,7 +522,7 @@ def main() -> None:
             if resident_ids_by_layer is not None else None
         ),
         "routequant_scale_storage": routequant_scale_storage,
-        "routequant_bit_histogram": (
+        "routequant_gate_up_bit_histogram": (
             {
                 str(bits): sum(
                     int((layer == bits).sum())
@@ -528,6 +531,16 @@ def main() -> None:
                 for bits in range(1, 5)
             }
             if routequant_bits_by_layer is not None else None
+        ),
+        "routequant_down_bit_histogram": (
+            {
+                str(bits): sum(
+                    int((layer == bits).sum())
+                    for layer in routequant_down_bits_by_layer
+                )
+                for bits in range(1, 5)
+            }
+            if routequant_down_bits_by_layer is not None else None
         ),
         "draft_scale": 0.0 if args.native_exact_slots is not None else 1.0,
         "trees": len(trees),
@@ -581,6 +594,7 @@ def main() -> None:
         resident_ids_by_layer=resident_ids_by_layer,
         resident_codebooks_by_layer=resident_codebooks_by_layer,
         routequant_bits_by_layer=routequant_bits_by_layer,
+        routequant_down_bits_by_layer=routequant_down_bits_by_layer,
         routequant_scale_storage=(
             "log8" if routequant_scale_storage is None
             else routequant_scale_storage

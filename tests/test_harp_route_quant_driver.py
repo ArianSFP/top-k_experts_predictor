@@ -84,7 +84,15 @@ def test_routequant_scale_storage_contract():
 
 
 def test_routequant_export_schedule_is_hash_bound(tmp_path):
-    from runpod.export_route_quant import SCHEDULE_SCHEMA, load_schedule
+    from runpod.export_route_quant import (
+        SCHEDULE_SCHEMA,
+        load_schedule,
+        parse_asymmetric_bits,
+    )
+
+    assert parse_asymmetric_bits("3/4") == (3, 4)
+    with pytest.raises(ValueError):
+        parse_asymmetric_bits("3")
 
     source = "a" * 40
     target = "b" * 64

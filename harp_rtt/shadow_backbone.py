@@ -99,6 +99,7 @@ def install_shadow_experts(
         tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     ] | None = None,
     routequant_bits_by_layer: Sequence[torch.Tensor] | None = None,
+    routequant_down_bits_by_layer: Sequence[torch.Tensor] | None = None,
     routequant_scale_storage: str = "log8",
 ) -> InstalledShadowBackbone:
     """Replace only routed experts in an already-materialized official model."""
@@ -124,8 +125,12 @@ def install_shadow_experts(
     if mode == "routequant_all8" and (
         routequant_bits_by_layer is None
         or len(routequant_bits_by_layer) != 40
+        or (
+            routequant_down_bits_by_layer is not None
+            and len(routequant_down_bits_by_layer) != 40
+        )
     ):
-        raise ValueError("RouteQuant requires exactly forty bit schedules")
+        raise ValueError("RouteQuant requires exactly forty projection schedules")
     if routequant_scale_storage not in {"bf16", "log8"}:
         raise ValueError("RouteQuant runtime scale storage is unsupported")
     native: list[nn.Module | None] = []
@@ -137,6 +142,10 @@ def install_shadow_experts(
             assert routequant_bits_by_layer is not None
             replacement = PackedRouteQuantExperts.empty_for_schedule(
                 routequant_bits_by_layer[layer_id],
+                down_bit_widths=(
+                    None if routequant_down_bits_by_layer is None
+                    else routequant_down_bits_by_layer[layer_id]
+                ),
                 scale_dtype=(
                     torch.bfloat16
                     if routequant_scale_storage == "bf16" else torch.uint8
@@ -259,6 +268,7 @@ def build_selective_shadow_text_model(
         tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     ] | None = None,
     routequant_bits_by_layer: Sequence[torch.Tensor] | None = None,
+    routequant_down_bits_by_layer: Sequence[torch.Tensor] | None = None,
     routequant_scale_storage: str = "log8",
 ) -> tuple[nn.Module, SelectiveLoadReport]:
     """Build the exact non-expert text stack without native expert allocation."""
@@ -300,8 +310,12 @@ def build_selective_shadow_text_model(
     if mode == "routequant_all8" and (
         routequant_bits_by_layer is None
         or len(routequant_bits_by_layer) != 40
+        or (
+            routequant_down_bits_by_layer is not None
+            and len(routequant_down_bits_by_layer) != 40
+        )
     ):
-        raise ValueError("RouteQuant requires exactly forty bit schedules")
+        raise ValueError("RouteQuant requires exactly forty projection schedules")
     if routequant_scale_storage not in {"bf16", "log8"}:
         raise ValueError("RouteQuant runtime scale storage is unsupported")
     for layer_id, layer in enumerate(text_model.layers):
@@ -309,6 +323,10 @@ def build_selective_shadow_text_model(
             assert routequant_bits_by_layer is not None
             replacement = PackedRouteQuantExperts.empty_for_schedule(
                 routequant_bits_by_layer[layer_id],
+                down_bit_widths=(
+                    None if routequant_down_bits_by_layer is None
+                    else routequant_down_bits_by_layer[layer_id]
+                ),
                 scale_dtype=(
                     torch.bfloat16
                     if routequant_scale_storage == "bf16" else torch.uint8

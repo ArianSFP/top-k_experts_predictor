@@ -458,31 +458,39 @@ class PackedRouteQuantExperts(nn.Module):
         cls,
         bit_widths: Tensor,
         *,
+        down_bit_widths: Tensor | None = None,
         hidden_width: int = 2048,
         intermediate_width: int = 512,
         exact_k: int = 8,
         group_size: int = 64,
         scale_dtype: torch.dtype = torch.bfloat16,
     ) -> "PackedRouteQuantExperts":
-        """Allocate a full-width mixed-bit expert pool for strict loading."""
+        """Allocate a full-width mixed/asymmetric pool for strict loading."""
 
-        widths = torch.as_tensor(bit_widths, dtype=torch.int8).cpu()
+        gate_widths = torch.as_tensor(bit_widths, dtype=torch.int8).cpu()
+        down_widths = (
+            gate_widths
+            if down_bit_widths is None
+            else torch.as_tensor(down_bit_widths, dtype=torch.int8).cpu()
+        )
+        if gate_widths.shape != down_widths.shape:
+            raise ValueError("RouteQuant gate/up and down schedules differ in shape")
         config = RouteQuantConfig(
             hidden_width=hidden_width,
             intermediate_width=intermediate_width,
-            experts=int(widths.numel()),
+            experts=int(gate_widths.numel()),
             exact_k=exact_k,
             group_size=group_size,
         )
         return cls(
             config,
             PackedNBitMatrixBank.empty(
-                bit_widths=widths, input_width=hidden_width,
+                bit_widths=gate_widths, input_width=hidden_width,
                 output_width=2 * intermediate_width, group_size=group_size,
                 scale_dtype=scale_dtype,
             ),
             PackedNBitMatrixBank.empty(
-                bit_widths=widths, input_width=intermediate_width,
+                bit_widths=down_widths, input_width=intermediate_width,
                 output_width=hidden_width, group_size=group_size,
                 scale_dtype=scale_dtype,
             ),

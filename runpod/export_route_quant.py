@@ -19,6 +19,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from harp_rtt.route_quant import (
     PackedRouteQuantExperts,
+    asymmetric_routequant_projected_bytes,
     mixed_routequant_projected_bytes,
 )
 from harp_rtt.shadow_bundle import LOCAL_SCHEMA
@@ -42,6 +43,10 @@ def parse_args() -> argparse.Namespace:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--bits", type=int, choices=(1, 2, 3, 4))
     group.add_argument("--schedule", type=Path)
+    group.add_argument(
+        "--asymmetric-bits",
+        help="uniform gate/up and down widths formatted as GATE_BITS/DOWN_BITS",
+    )
     parser.add_argument("--group-size", type=int, choices=(32, 64), default=64)
     parser.add_argument(
         "--scale-storage", choices=("bf16", "log8"), default="log8"
@@ -98,6 +103,18 @@ def load_schedule(
     return widths, sha256_file(path)
 
 
+def parse_asymmetric_bits(value: str | None) -> tuple[int, int] | None:
+    if value is None:
+        return None
+    gate_text, slash, down_text = value.partition("/")
+    if not slash:
+        raise ValueError("asymmetric bits must be GATE_BITS/DOWN_BITS")
+    gate_bits, down_bits = int(gate_text), int(down_text)
+    if gate_bits not in (1, 2, 3, 4) or down_bits not in (1, 2, 3, 4):
+        raise ValueError("asymmetric RouteQuant bits must lie in 1..4")
+    return gate_bits, down_bits
+
+
 def main() -> None:
     args = parse_args()
     if args.output.exists():
@@ -109,16 +126,27 @@ def main() -> None:
     if args.expert_chunk < 1:
         raise ValueError("expert chunk must be positive")
     checkpoint = IndexedCheckpoint(args.model)
-    schedule, schedule_sha = load_schedule(
-        args.schedule,
-        uniform_bits=args.bits,
-        source_commit=args.source_commit,
-        target_checkpoint_index_sha256=checkpoint.index_sha256,
-    )
+    asymmetric = parse_asymmetric_bits(args.asymmetric_bits)
+    if asymmetric is None:
+        gate_schedule, schedule_sha = load_schedule(
+            args.schedule,
+            uniform_bits=args.bits,
+            source_commit=args.source_commit,
+            target_checkpoint_index_sha256=checkpoint.index_sha256,
+        )
+        down_schedule = gate_schedule
+    else:
+        gate_bits, down_bits = asymmetric
+        gate_schedule = torch.full((40, 256), gate_bits, dtype=torch.int8)
+        down_schedule = torch.full((40, 256), down_bits, dtype=torch.int8)
+        schedule_sha = None
     scale_dtype, scale_bytes = resolve_scale_storage(args.scale_storage)
     args.output.mkdir(parents=True)
-    projected_bytes = mixed_routequant_projected_bytes(
-        schedule, group_size=args.group_size, scale_bytes=scale_bytes
+    projected_bytes = asymmetric_routequant_projected_bytes(
+        gate_schedule,
+        down_schedule,
+        group_size=args.group_size,
+        scale_bytes=scale_bytes,
     )
     manifest = {
         "schema": SCHEMA,
@@ -127,8 +155,12 @@ def main() -> None:
         "target_checkpoint_index_sha256": checkpoint.index_sha256,
         "schedule_sha256": schedule_sha,
         "uniform_bits": args.bits,
-        "bit_histogram": {
-            str(bits): int((schedule == bits).sum()) for bits in range(1, 5)
+        "asymmetric_bits": args.asymmetric_bits,
+        "gate_up_bit_histogram": {
+            str(bits): int((gate_schedule == bits).sum()) for bits in range(1, 5)
+        },
+        "down_bit_histogram": {
+            str(bits): int((down_schedule == bits).sum()) for bits in range(1, 5)
         },
         "group_size": args.group_size,
         "scale_storage": args.scale_storage,
@@ -155,7 +187,8 @@ def main() -> None:
         module = PackedRouteQuantExperts.from_target(
             gate_up,
             down,
-            gate_up_bits=schedule[layer],
+            gate_up_bits=gate_schedule[layer],
+            down_bits=down_schedule[layer],
             exact_k=8,
             group_size=args.group_size,
             scale_method=args.scale_method,
@@ -172,7 +205,8 @@ def main() -> None:
             "source_commit": args.source_commit,
             "target_checkpoint_index_sha256": checkpoint.index_sha256,
             "model_state_dict": module.state_dict(),
-            "bit_widths": schedule[layer],
+            "gate_up_bit_widths": gate_schedule[layer],
+            "down_bit_widths": down_schedule[layer],
             "group_size": args.group_size,
             "scale_storage": args.scale_storage,
             "scale_method": args.scale_method,
@@ -194,8 +228,12 @@ def main() -> None:
         serialized_bytes += size
         row = {
             "layer": layer,
-            "bit_histogram": {
-                str(bits): int((schedule[layer] == bits).sum())
+            "gate_up_bit_histogram": {
+                str(bits): int((gate_schedule[layer] == bits).sum())
+                for bits in range(1, 5)
+            },
+            "down_bit_histogram": {
+                str(bits): int((down_schedule[layer] == bits).sum())
                 for bits in range(1, 5)
             },
             "persistent_bytes": module.persistent_nbytes(),

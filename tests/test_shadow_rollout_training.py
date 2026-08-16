@@ -545,14 +545,15 @@ def test_routequant_bundle_schedule_and_strict_load(tmp_path) -> None:
             },
             directory / f"shadow_routequant_all8_layer_{layer:02d}.pt",
         )
-    schedules, storage = routequant_schedules_from_bundle(
+    gate_schedules, down_schedules, storage = routequant_schedules_from_bundle(
         tmp_path, source_commit=source,
         target_checkpoint_index_sha256=target,
         allow_unpromoted_diagnostic=True,
     )
     assert storage == "log8"
-    assert len(schedules) == 40
-    assert torch.equal(schedules[0], schedule)
+    assert len(gate_schedules) == len(down_schedules) == 40
+    assert torch.equal(gate_schedules[0], schedule)
+    assert torch.equal(down_schedules[0], schedule)
     installed = InstalledShadowBackbone(
         model=nn.Identity(), mode="routequant_all8",
         native_experts=tuple([None] * 40), shadow_experts=modules,

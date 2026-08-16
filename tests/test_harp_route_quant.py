@@ -227,3 +227,25 @@ def test_routequant_asymmetric_bytes_match_uniform_and_order_sensitivity():
             torch.zeros((1, 2), dtype=torch.int8),
             torch.ones((1, 2), dtype=torch.int8),
         )
+
+
+def test_routequant_empty_asymmetric_schedule_strict_load_round_trip():
+    torch.manual_seed(59)
+    gate_up = torch.randn(4, 4, 4)
+    down = torch.randn(4, 4, 2)
+    gate_schedule = torch.tensor([2, 3, 4, 3], dtype=torch.int8)
+    down_schedule = torch.tensor([4, 3, 2, 3], dtype=torch.int8)
+    source = PackedRouteQuantExperts.from_target(
+        gate_up, down, gate_up_bits=gate_schedule, down_bits=down_schedule,
+        exact_k=2, group_size=2, scale_dtype=torch.uint8,
+    )
+    target = PackedRouteQuantExperts.empty_for_schedule(
+        gate_schedule, down_bit_widths=down_schedule,
+        hidden_width=4, intermediate_width=2, exact_k=2,
+        group_size=2, scale_dtype=torch.uint8,
+    )
+    target.load_state_dict(source.state_dict(), strict=True)
+    hidden = torch.randn(2, 4)
+    ids = torch.tensor([[0, 1], [2, 3]])
+    weights = torch.tensor([[0.7, 0.2], [0.6, 0.3]])
+    assert torch.equal(source(hidden, ids, weights), target(hidden, ids, weights))

@@ -166,11 +166,12 @@ def routequant_schedules_from_bundle(
     source_commit: str,
     target_checkpoint_index_sha256: str,
     allow_unpromoted_diagnostic: bool = False,
-) -> tuple[tuple[torch.Tensor, ...], str]:
-    """Read strict per-layer bit schedules before RouteQuant construction."""
+) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...], str]:
+    """Read strict per-layer gate/up and down schedules before construction."""
 
     paths = discover_layer_checkpoints(root, "routequant_all8")
-    schedules = []
+    gate_schedules = []
+    down_schedules = []
     storage: str | None = None
     for layer, path in enumerate(paths):
         value = _load_value(
@@ -181,33 +182,37 @@ def routequant_schedules_from_bundle(
             target_checkpoint_index_sha256=target_checkpoint_index_sha256,
             allow_unpromoted_diagnostic=allow_unpromoted_diagnostic,
         )
-        widths = value.get("bit_widths")
+        legacy_widths = value.get("bit_widths")
+        gate_widths = value.get("gate_up_bit_widths", legacy_widths)
+        down_widths = value.get("down_bit_widths", legacy_widths)
         current_storage = value.get("scale_storage")
         state = value["model_state_dict"]
-        if (
-            not isinstance(widths, torch.Tensor)
-            or widths.shape != (256,)
-            or any(int(item) not in (1, 2, 3, 4) for item in widths.tolist())
-        ):
-            raise ValueError("RouteQuant shard has an invalid bit schedule")
+        for name, widths in (("gate/up", gate_widths), ("down", down_widths)):
+            if (
+                not isinstance(widths, torch.Tensor)
+                or widths.shape != (256,)
+                or any(int(item) not in (1, 2, 3, 4) for item in widths.tolist())
+            ):
+                raise ValueError(f"RouteQuant shard has an invalid {name} schedule")
         if current_storage not in {"bf16", "log8"}:
             raise ValueError("RouteQuant shard has invalid scale storage")
         if storage is None:
             storage = str(current_storage)
         elif storage != current_storage:
             raise ValueError("RouteQuant scale storage differs across layers")
-        gate_widths = state.get("gate_up.bit_widths")
-        down_widths = state.get("down.bit_widths")
+        state_gate = state.get("gate_up.bit_widths")
+        state_down = state.get("down.bit_widths")
         if (
-            not isinstance(gate_widths, torch.Tensor)
-            or not isinstance(down_widths, torch.Tensor)
-            or not torch.equal(gate_widths, widths)
-            or not torch.equal(down_widths, widths)
+            not isinstance(state_gate, torch.Tensor)
+            or not isinstance(state_down, torch.Tensor)
+            or not torch.equal(state_gate, gate_widths)
+            or not torch.equal(state_down, down_widths)
         ):
-            raise ValueError("RouteQuant shard state disagrees with its schedule")
-        schedules.append(widths.to(torch.int8))
+            raise ValueError("RouteQuant shard state disagrees with its schedules")
+        gate_schedules.append(gate_widths.to(torch.int8))
+        down_schedules.append(down_widths.to(torch.int8))
     assert storage is not None
-    return tuple(schedules), storage
+    return tuple(gate_schedules), tuple(down_schedules), storage
 
 
 def load_shadow_bundle(
@@ -262,13 +267,20 @@ def load_shadow_bundle(
             expected = set(module.state_dict())
             if set(state) != expected:
                 raise ValueError("RouteQuant layer shard state is incomplete")
-            widths = value.get("bit_widths")
+            legacy_widths = value.get("bit_widths")
+            gate_widths = value.get("gate_up_bit_widths", legacy_widths)
+            down_widths = value.get("down_bit_widths", legacy_widths)
             if (
-                not isinstance(widths, torch.Tensor)
-                or not torch.equal(widths.to(torch.int8), module.gate_up.bit_widths.cpu())
-                or not torch.equal(widths.to(torch.int8), module.down.bit_widths.cpu())
+                not isinstance(gate_widths, torch.Tensor)
+                or not isinstance(down_widths, torch.Tensor)
+                or not torch.equal(
+                    gate_widths.to(torch.int8), module.gate_up.bit_widths.cpu()
+                )
+                or not torch.equal(
+                    down_widths.to(torch.int8), module.down.bit_widths.cpu()
+                )
             ):
-                raise ValueError("RouteQuant runtime schedule differs from shard")
+                raise ValueError("RouteQuant runtime projection schedules differ from shard")
             module.load_state_dict(state, strict=True)
         elif isinstance(module, PackedInt4ResidentExperts):
             expected = {
