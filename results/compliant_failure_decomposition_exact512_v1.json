@@ -1,0 +1,2181 @@
+{
+  "allocation_contract": {
+    "frequency_core_inclusion_verified": true,
+    "frequency_core_sha256": "c090aef6da46f85e9004f8fee53d7df26fb4e9d408ce2ae042243a546daba1d8",
+    "mandatory_frequency_core_cells": 2560,
+    "optional_cells": 1290,
+    "packed_int4_bytes": 6433996800,
+    "resident_cells": 3850,
+    "resident_hit_count": 3245310,
+    "resident_hit_count_cap": 3245387,
+    "resident_ids_sha256": "89d6b5f49f00f4e329d049434acedf183d8516572312bdfdcd794ea29692392a"
+  },
+  "candidate_oracles": {
+    "c32": {
+      "dense_baseline": {
+        "cache_set_h": [
+          0.9292913675308228,
+          0.9018393158912659,
+          0.885789155960083,
+          0.8681211471557617
+        ],
+        "cache_set_mean": 0.8962602466344833,
+        "factual_h": [
+          0.8729308843612671,
+          0.8429504632949829,
+          0.8142638802528381,
+          0.784228503704071
+        ],
+        "factual_mean": 0.8285934329032898
+      },
+      "full_c32": {
+        "cache_set_h": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "cache_set_mean": 1.0,
+        "factual_h": [
+          0.9834961295127869,
+          0.9274475574493408,
+          0.9238037467002869,
+          0.9061279296875
+        ],
+        "factual_mean": 0.9352188408374786
+      },
+      "novel_only": {
+        "cache_set_h": [
+          0.9022769331932068,
+          0.8663467168807983,
+          0.8477379083633423,
+          0.8277554512023926
+        ],
+        "cache_set_mean": 0.861029252409935,
+        "factual_h": [
+          0.9513671398162842,
+          0.8959594964981079,
+          0.8878234624862671,
+          0.8692200183868408
+        ],
+        "factual_mean": 0.901092529296875
+      },
+      "survivor_only": {
+        "cache_set_h": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "cache_set_mean": 1.0,
+        "factual_h": [
+          0.8907531499862671,
+          0.8574706315994263,
+          0.8325989246368408,
+          0.8049865961074829
+        ],
+        "factual_mean": 0.8464523255825043
+      }
+    },
+    "first_width_reaching_target": 19,
+    "full_oracle_width_frontier": [
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.25032805651426315,
+        "width": 8
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.36140746623277664,
+        "width": 9
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.4674743711948395,
+        "width": 10
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.5669769495725632,
+        "width": 11
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.6575103849172592,
+        "width": 12
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.7363159358501434,
+        "width": 13
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.8003906160593033,
+        "width": 14
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.8484130799770355,
+        "width": 15
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.8789489567279816,
+        "width": 16
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.8885986059904099,
+        "width": 17
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.8958114832639694,
+        "width": 18
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.901661679148674,
+        "width": 19
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.9064315557479858,
+        "width": 20
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.9105636775493622,
+        "width": 21
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.9142013490200043,
+        "width": 22
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.9173660129308701,
+        "width": 23
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.9202011376619339,
+        "width": 24
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.9225937277078629,
+        "width": 25
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.9248779118061066,
+        "width": 26
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.9268249571323395,
+        "width": 27
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.9287917912006378,
+        "width": 28
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.9305420070886612,
+        "width": 29
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.932260125875473,
+        "width": 30
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.9338455200195312,
+        "width": 31
+      },
+      {
+        "cache_set_mean": 1.0,
+        "factual_mean": 0.9352188408374786,
+        "width": 32
+      }
+    ],
+    "tie_break": "authoritative full-256 dense rank"
+  },
+  "conclusion": {
+    "best_bounded_next_screen": "Freeze survivor repair and train/cal-only a zero-start novel hard-negative pairwise residual over C24; retain authoritative dense-rank tie-breaking and final top8.",
+    "dominant_error_class": "novel_future_expert_routing",
+    "next_screen_gate": "CacheSet>=0.95 and >=1.5 percentage-point factual lift on request-held-out calibration; no blind reopen.",
+    "resident_optional_reallocation_reaches_target": false
+  },
+  "contracts": {
+    "formal_validation_opened": false,
+    "gpu_used": false,
+    "model_run": false,
+    "new_capture": false,
+    "optimizer_constructed": false,
+    "resident_plan_modified": false,
+    "sealed_test_opened": false,
+    "training_started": false
+  },
+  "current_execution": {
+    "layer_cells_with_any_omission": 0.863525390625,
+    "mean_omitted_selected_experts_per_layer_cell": 2.5255370140075684,
+    "miss_contribution_on_cells_with_any_local_omission": 0.15385894775390624,
+    "miss_contribution_on_locally_complete_cells": 0.017547607421875,
+    "per_layer_selected_slot_coverage": [
+      0.64794921875,
+      0.592041015625,
+      0.625732421875,
+      0.621826171875,
+      0.663818359375,
+      0.6650390625,
+      0.66552734375,
+      0.674560546875,
+      0.65869140625,
+      0.684326171875,
+      0.642333984375,
+      0.67041015625,
+      0.60302734375,
+      0.690673828125,
+      0.679931640625,
+      0.67138671875,
+      0.674072265625,
+      0.691162109375,
+      0.677490234375,
+      0.653076171875,
+      0.719482421875,
+      0.673095703125,
+      0.6875,
+      0.689453125,
+      0.63671875,
+      0.67626953125,
+      0.66943359375,
+      0.6767578125,
+      0.70703125,
+      0.711669921875,
+      0.724609375,
+      0.698486328125,
+      0.7216796875,
+      0.76953125,
+      0.752197265625,
+      0.72802734375,
+      0.73974609375,
+      0.767822265625,
+      0.758056640625,
+      0.711669921875
+    ],
+    "recall_by_omitted_selected_expert_count": [
+      {
+        "factual_recall": 0.8714221715927124,
+        "layer_cells": 2795,
+        "omitted_experts": 0
+      },
+      {
+        "factual_recall": 0.8577783107757568,
+        "layer_cells": 4208,
+        "omitted_experts": 1
+      },
+      {
+        "factual_recall": 0.8394761681556702,
+        "layer_cells": 4336,
+        "omitted_experts": 2
+      },
+      {
+        "factual_recall": 0.8234342932701111,
+        "layer_cells": 3421,
+        "omitted_experts": 3
+      },
+      {
+        "factual_recall": 0.8056684732437134,
+        "layer_cells": 2429,
+        "omitted_experts": 4
+      },
+      {
+        "factual_recall": 0.7754983305931091,
+        "layer_cells": 1668,
+        "omitted_experts": 5
+      },
+      {
+        "factual_recall": 0.7641414403915405,
+        "layer_cells": 990,
+        "omitted_experts": 6
+      },
+      {
+        "factual_recall": 0.7298828363418579,
+        "layer_cells": 480,
+        "omitted_experts": 7
+      },
+      {
+        "factual_recall": 0.719975471496582,
+        "layer_cells": 153,
+        "omitted_experts": 8
+      }
+    ],
+    "resident_selected_slot_coverage": 0.684307873249054
+  },
+  "future_target_namespace_partition": {
+    "by_horizon": [
+      {
+        "active_slots": 163840,
+        "all_nonresident_misses_fixed_ceiling": 0.9353454351425171,
+        "error_rate": 0.1270691156387329,
+        "horizon": 1,
+        "miss_target_nonresident": 0.06241455078125,
+        "miss_target_resident": 0.064654541015625,
+        "nonresident_miss_fraction_of_errors": 0.49118593592391563,
+        "recall": 0.8729308843612671,
+        "resident_miss_fraction_of_errors": 0.5088140640760843,
+        "target_resident_coverage": 0.691815197467804
+      },
+      {
+        "active_slots": 163840,
+        "all_nonresident_misses_fixed_ceiling": 0.9155761957168579,
+        "error_rate": 0.1570495367050171,
+        "horizon": 2,
+        "miss_target_nonresident": 0.072625732421875,
+        "miss_target_resident": 0.084423828125,
+        "nonresident_miss_fraction_of_errors": 0.46243830399129454,
+        "recall": 0.8429504632949829,
+        "resident_miss_fraction_of_errors": 0.5375616960087054,
+        "target_resident_coverage": 0.6891845464706421
+      },
+      {
+        "active_slots": 163840,
+        "all_nonresident_misses_fixed_ceiling": 0.8963928461074829,
+        "error_rate": 0.1857360601425171,
+        "horizon": 3,
+        "miss_target_nonresident": 0.08212890625,
+        "miss_target_resident": 0.103607177734375,
+        "nonresident_miss_fraction_of_errors": 0.4421806710262561,
+        "recall": 0.8142639398574829,
+        "resident_miss_fraction_of_errors": 0.5578193289737439,
+        "target_resident_coverage": 0.688977062702179
+      },
+      {
+        "active_slots": 163840,
+        "all_nonresident_misses_fixed_ceiling": 0.8771362185478211,
+        "error_rate": 0.21577149629592896,
+        "horizon": 4,
+        "miss_target_nonresident": 0.09290771484375,
+        "miss_target_resident": 0.12286376953125,
+        "nonresident_miss_fraction_of_errors": 0.43058384249830284,
+        "recall": 0.784228503704071,
+        "resident_miss_fraction_of_errors": 0.5694161575016973,
+        "target_resident_coverage": 0.6877197027206421
+      }
+    ],
+    "by_layer": [
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.9619140625,
+        "error_rate": 0.0682373046875,
+        "layer": 0,
+        "miss_target_nonresident": 0.0301513671875,
+        "miss_target_resident": 0.0380859375,
+        "nonresident_miss_fraction_of_errors": 0.4418604651162791,
+        "recall": 0.9317626953125,
+        "resident_miss_fraction_of_errors": 0.5581395348837209,
+        "target_resident_coverage": 0.6522216796875
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.943115234375,
+        "error_rate": 0.1090087890625,
+        "layer": 1,
+        "miss_target_nonresident": 0.0521240234375,
+        "miss_target_resident": 0.056884765625,
+        "nonresident_miss_fraction_of_errors": 0.47816349384098544,
+        "recall": 0.8909912109375,
+        "resident_miss_fraction_of_errors": 0.5218365061590146,
+        "target_resident_coverage": 0.61932373046875
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.9290771484375,
+        "error_rate": 0.13604736328125,
+        "layer": 2,
+        "miss_target_nonresident": 0.06512451171875,
+        "miss_target_resident": 0.0709228515625,
+        "nonresident_miss_fraction_of_errors": 0.47868999551368324,
+        "recall": 0.86395263671875,
+        "resident_miss_fraction_of_errors": 0.5213100044863167,
+        "target_resident_coverage": 0.609375
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.91064453125,
+        "error_rate": 0.16546630859375,
+        "layer": 3,
+        "miss_target_nonresident": 0.07611083984375,
+        "miss_target_resident": 0.08935546875,
+        "nonresident_miss_fraction_of_errors": 0.4599778679454076,
+        "recall": 0.83453369140625,
+        "resident_miss_fraction_of_errors": 0.5400221320545924,
+        "target_resident_coverage": 0.64874267578125
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.92254638671875,
+        "error_rate": 0.14044189453125,
+        "layer": 4,
+        "miss_target_nonresident": 0.06298828125,
+        "miss_target_resident": 0.07745361328125,
+        "nonresident_miss_fraction_of_errors": 0.4485006518904824,
+        "recall": 0.85955810546875,
+        "resident_miss_fraction_of_errors": 0.5514993481095176,
+        "target_resident_coverage": 0.67095947265625
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.92535400390625,
+        "error_rate": 0.13763427734375,
+        "layer": 5,
+        "miss_target_nonresident": 0.06298828125,
+        "miss_target_resident": 0.07464599609375,
+        "nonresident_miss_fraction_of_errors": 0.45764966740576496,
+        "recall": 0.86236572265625,
+        "resident_miss_fraction_of_errors": 0.542350332594235,
+        "target_resident_coverage": 0.67529296875
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.92620849609375,
+        "error_rate": 0.13739013671875,
+        "layer": 6,
+        "miss_target_nonresident": 0.0635986328125,
+        "miss_target_resident": 0.07379150390625,
+        "nonresident_miss_fraction_of_errors": 0.4629053753887161,
+        "recall": 0.86260986328125,
+        "resident_miss_fraction_of_errors": 0.5370946246112839,
+        "target_resident_coverage": 0.67413330078125
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.9197998046875,
+        "error_rate": 0.15191650390625,
+        "layer": 7,
+        "miss_target_nonresident": 0.07171630859375,
+        "miss_target_resident": 0.0802001953125,
+        "nonresident_miss_fraction_of_errors": 0.47207713941341906,
+        "recall": 0.84808349609375,
+        "resident_miss_fraction_of_errors": 0.527922860586581,
+        "target_resident_coverage": 0.670654296875
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.9234619140625,
+        "error_rate": 0.14508056640625,
+        "layer": 8,
+        "miss_target_nonresident": 0.06854248046875,
+        "miss_target_resident": 0.0765380859375,
+        "nonresident_miss_fraction_of_errors": 0.4724442574673959,
+        "recall": 0.85491943359375,
+        "resident_miss_fraction_of_errors": 0.5275557425326042,
+        "target_resident_coverage": 0.65771484375
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.9246826171875,
+        "error_rate": 0.14300537109375,
+        "layer": 9,
+        "miss_target_nonresident": 0.06768798828125,
+        "miss_target_resident": 0.0753173828125,
+        "nonresident_miss_fraction_of_errors": 0.4733247972684592,
+        "recall": 0.85699462890625,
+        "resident_miss_fraction_of_errors": 0.5266752027315408,
+        "target_resident_coverage": 0.6810302734375
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.926513671875,
+        "error_rate": 0.1446533203125,
+        "layer": 10,
+        "miss_target_nonresident": 0.0711669921875,
+        "miss_target_resident": 0.073486328125,
+        "nonresident_miss_fraction_of_errors": 0.4919831223628692,
+        "recall": 0.8553466796875,
+        "resident_miss_fraction_of_errors": 0.5080168776371308,
+        "target_resident_coverage": 0.6558837890625
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.920166015625,
+        "error_rate": 0.15625,
+        "layer": 11,
+        "miss_target_nonresident": 0.076416015625,
+        "miss_target_resident": 0.079833984375,
+        "nonresident_miss_fraction_of_errors": 0.4890625,
+        "recall": 0.84375,
+        "resident_miss_fraction_of_errors": 0.5109375,
+        "target_resident_coverage": 0.6727294921875
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.9239501953125,
+        "error_rate": 0.1669921875,
+        "layer": 12,
+        "miss_target_nonresident": 0.0909423828125,
+        "miss_target_resident": 0.0760498046875,
+        "nonresident_miss_fraction_of_errors": 0.5445906432748538,
+        "recall": 0.8330078125,
+        "resident_miss_fraction_of_errors": 0.4554093567251462,
+        "target_resident_coverage": 0.6180419921875
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.9163818359375,
+        "error_rate": 0.16412353515625,
+        "layer": 13,
+        "miss_target_nonresident": 0.08050537109375,
+        "miss_target_resident": 0.0836181640625,
+        "nonresident_miss_fraction_of_errors": 0.49051692078839715,
+        "recall": 0.83587646484375,
+        "resident_miss_fraction_of_errors": 0.5094830792116029,
+        "target_resident_coverage": 0.6907958984375
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.91973876953125,
+        "error_rate": 0.1591796875,
+        "layer": 14,
+        "miss_target_nonresident": 0.07891845703125,
+        "miss_target_resident": 0.08026123046875,
+        "nonresident_miss_fraction_of_errors": 0.49578220858895705,
+        "recall": 0.8408203125,
+        "resident_miss_fraction_of_errors": 0.504217791411043,
+        "target_resident_coverage": 0.675537109375
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.9124755859375,
+        "error_rate": 0.17315673828125,
+        "layer": 15,
+        "miss_target_nonresident": 0.08563232421875,
+        "miss_target_resident": 0.0875244140625,
+        "nonresident_miss_fraction_of_errors": 0.4945364821995065,
+        "recall": 0.82684326171875,
+        "resident_miss_fraction_of_errors": 0.5054635178004935,
+        "target_resident_coverage": 0.665771484375
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.89910888671875,
+        "error_rate": 0.17913818359375,
+        "layer": 16,
+        "miss_target_nonresident": 0.0782470703125,
+        "miss_target_resident": 0.10089111328125,
+        "nonresident_miss_fraction_of_errors": 0.43679727427597953,
+        "recall": 0.82086181640625,
+        "resident_miss_fraction_of_errors": 0.5632027257240204,
+        "target_resident_coverage": 0.68670654296875
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.898193359375,
+        "error_rate": 0.17926025390625,
+        "layer": 17,
+        "miss_target_nonresident": 0.07745361328125,
+        "miss_target_resident": 0.101806640625,
+        "nonresident_miss_fraction_of_errors": 0.432073544433095,
+        "recall": 0.82073974609375,
+        "resident_miss_fraction_of_errors": 0.567926455566905,
+        "target_resident_coverage": 0.71484375
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.9136962890625,
+        "error_rate": 0.1739501953125,
+        "layer": 18,
+        "miss_target_nonresident": 0.087646484375,
+        "miss_target_resident": 0.0863037109375,
+        "nonresident_miss_fraction_of_errors": 0.503859649122807,
+        "recall": 0.8260498046875,
+        "resident_miss_fraction_of_errors": 0.496140350877193,
+        "target_resident_coverage": 0.67779541015625
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.90972900390625,
+        "error_rate": 0.1812744140625,
+        "layer": 19,
+        "miss_target_nonresident": 0.09100341796875,
+        "miss_target_resident": 0.09027099609375,
+        "nonresident_miss_fraction_of_errors": 0.502020202020202,
+        "recall": 0.8187255859375,
+        "resident_miss_fraction_of_errors": 0.49797979797979797,
+        "target_resident_coverage": 0.66058349609375
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.89288330078125,
+        "error_rate": 0.1832275390625,
+        "layer": 20,
+        "miss_target_nonresident": 0.07611083984375,
+        "miss_target_resident": 0.10711669921875,
+        "nonresident_miss_fraction_of_errors": 0.41538974017321784,
+        "recall": 0.8167724609375,
+        "resident_miss_fraction_of_errors": 0.5846102598267822,
+        "target_resident_coverage": 0.7301025390625
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.909423828125,
+        "error_rate": 0.18035888671875,
+        "layer": 21,
+        "miss_target_nonresident": 0.08978271484375,
+        "miss_target_resident": 0.090576171875,
+        "nonresident_miss_fraction_of_errors": 0.49780033840947546,
+        "recall": 0.81964111328125,
+        "resident_miss_fraction_of_errors": 0.5021996615905245,
+        "target_resident_coverage": 0.675537109375
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.90087890625,
+        "error_rate": 0.18927001953125,
+        "layer": 22,
+        "miss_target_nonresident": 0.09014892578125,
+        "miss_target_resident": 0.09912109375,
+        "nonresident_miss_fraction_of_errors": 0.4762979683972912,
+        "recall": 0.81072998046875,
+        "resident_miss_fraction_of_errors": 0.5237020316027088,
+        "target_resident_coverage": 0.68011474609375
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.89508056640625,
+        "error_rate": 0.2008056640625,
+        "layer": 23,
+        "miss_target_nonresident": 0.09588623046875,
+        "miss_target_resident": 0.10491943359375,
+        "nonresident_miss_fraction_of_errors": 0.4775075987841945,
+        "recall": 0.7991943359375,
+        "resident_miss_fraction_of_errors": 0.5224924012158054,
+        "target_resident_coverage": 0.67974853515625
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.90093994140625,
+        "error_rate": 0.2061767578125,
+        "layer": 24,
+        "miss_target_nonresident": 0.10711669921875,
+        "miss_target_resident": 0.09906005859375,
+        "nonresident_miss_fraction_of_errors": 0.5195381882770871,
+        "recall": 0.7938232421875,
+        "resident_miss_fraction_of_errors": 0.48046181172291297,
+        "target_resident_coverage": 0.64697265625
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.89495849609375,
+        "error_rate": 0.20208740234375,
+        "layer": 25,
+        "miss_target_nonresident": 0.0970458984375,
+        "miss_target_resident": 0.10504150390625,
+        "nonresident_miss_fraction_of_errors": 0.48021745696164303,
+        "recall": 0.79791259765625,
+        "resident_miss_fraction_of_errors": 0.519782543038357,
+        "target_resident_coverage": 0.68768310546875
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.8997802734375,
+        "error_rate": 0.1973876953125,
+        "layer": 26,
+        "miss_target_nonresident": 0.09716796875,
+        "miss_target_resident": 0.1002197265625,
+        "nonresident_miss_fraction_of_errors": 0.49226963512677796,
+        "recall": 0.8026123046875,
+        "resident_miss_fraction_of_errors": 0.507730364873222,
+        "target_resident_coverage": 0.68707275390625
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.89251708984375,
+        "error_rate": 0.204833984375,
+        "layer": 27,
+        "miss_target_nonresident": 0.09735107421875,
+        "miss_target_resident": 0.10748291015625,
+        "nonresident_miss_fraction_of_errors": 0.47526817640047675,
+        "recall": 0.795166015625,
+        "resident_miss_fraction_of_errors": 0.5247318235995232,
+        "target_resident_coverage": 0.676513671875
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.88873291015625,
+        "error_rate": 0.1949462890625,
+        "layer": 28,
+        "miss_target_nonresident": 0.08367919921875,
+        "miss_target_resident": 0.11126708984375,
+        "nonresident_miss_fraction_of_errors": 0.4292423293675642,
+        "recall": 0.8050537109375,
+        "resident_miss_fraction_of_errors": 0.5707576706324358,
+        "target_resident_coverage": 0.712646484375
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.89862060546875,
+        "error_rate": 0.18389892578125,
+        "layer": 29,
+        "miss_target_nonresident": 0.08251953125,
+        "miss_target_resident": 0.10137939453125,
+        "nonresident_miss_fraction_of_errors": 0.4487222037836044,
+        "recall": 0.81610107421875,
+        "resident_miss_fraction_of_errors": 0.5512777962163956,
+        "target_resident_coverage": 0.71490478515625
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.8897705078125,
+        "error_rate": 0.1898193359375,
+        "layer": 30,
+        "miss_target_nonresident": 0.07958984375,
+        "miss_target_resident": 0.1102294921875,
+        "nonresident_miss_fraction_of_errors": 0.4192926045016077,
+        "recall": 0.8101806640625,
+        "resident_miss_fraction_of_errors": 0.5807073954983922,
+        "target_resident_coverage": 0.7232666015625
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.898193359375,
+        "error_rate": 0.18499755859375,
+        "layer": 31,
+        "miss_target_nonresident": 0.08319091796875,
+        "miss_target_resident": 0.101806640625,
+        "nonresident_miss_fraction_of_errors": 0.44968657208841967,
+        "recall": 0.81500244140625,
+        "resident_miss_fraction_of_errors": 0.5503134279115803,
+        "target_resident_coverage": 0.6983642578125
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.8970947265625,
+        "error_rate": 0.18328857421875,
+        "layer": 32,
+        "miss_target_nonresident": 0.08038330078125,
+        "miss_target_resident": 0.1029052734375,
+        "nonresident_miss_fraction_of_errors": 0.4385614385614386,
+        "recall": 0.81671142578125,
+        "resident_miss_fraction_of_errors": 0.5614385614385614,
+        "target_resident_coverage": 0.723388671875
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.8843994140625,
+        "error_rate": 0.18243408203125,
+        "layer": 33,
+        "miss_target_nonresident": 0.06683349609375,
+        "miss_target_resident": 0.1156005859375,
+        "nonresident_miss_fraction_of_errors": 0.3663432586149214,
+        "recall": 0.81756591796875,
+        "resident_miss_fraction_of_errors": 0.6336567413850787,
+        "target_resident_coverage": 0.76165771484375
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.89013671875,
+        "error_rate": 0.17620849609375,
+        "layer": 34,
+        "miss_target_nonresident": 0.06634521484375,
+        "miss_target_resident": 0.10986328125,
+        "nonresident_miss_fraction_of_errors": 0.37651541392448906,
+        "recall": 0.82379150390625,
+        "resident_miss_fraction_of_errors": 0.6234845860755109,
+        "target_resident_coverage": 0.75689697265625
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.87982177734375,
+        "error_rate": 0.1920166015625,
+        "layer": 35,
+        "miss_target_nonresident": 0.07183837890625,
+        "miss_target_resident": 0.12017822265625,
+        "nonresident_miss_fraction_of_errors": 0.3741258741258741,
+        "recall": 0.8079833984375,
+        "resident_miss_fraction_of_errors": 0.6258741258741258,
+        "target_resident_coverage": 0.73004150390625
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.8746337890625,
+        "error_rate": 0.2032470703125,
+        "layer": 36,
+        "miss_target_nonresident": 0.077880859375,
+        "miss_target_resident": 0.1253662109375,
+        "nonresident_miss_fraction_of_errors": 0.3831831831831832,
+        "recall": 0.7967529296875,
+        "resident_miss_fraction_of_errors": 0.6168168168168168,
+        "target_resident_coverage": 0.7537841796875
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.87005615234375,
+        "error_rate": 0.20196533203125,
+        "layer": 37,
+        "miss_target_nonresident": 0.072021484375,
+        "miss_target_resident": 0.12994384765625,
+        "nonresident_miss_fraction_of_errors": 0.35660320338470836,
+        "recall": 0.79803466796875,
+        "resident_miss_fraction_of_errors": 0.6433967966152916,
+        "target_resident_coverage": 0.7720947265625
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.87078857421875,
+        "error_rate": 0.1925048828125,
+        "layer": 38,
+        "miss_target_nonresident": 0.06329345703125,
+        "miss_target_resident": 0.12921142578125,
+        "nonresident_miss_fraction_of_errors": 0.3287888395688015,
+        "recall": 0.8074951171875,
+        "resident_miss_fraction_of_errors": 0.6712111604311984,
+        "target_resident_coverage": 0.77191162109375
+      },
+      {
+        "active_slots": 16384,
+        "all_nonresident_misses_fixed_ceiling": 0.8890380859375,
+        "error_rate": 0.194580078125,
+        "layer": 39,
+        "miss_target_nonresident": 0.0836181640625,
+        "miss_target_resident": 0.1109619140625,
+        "nonresident_miss_fraction_of_errors": 0.42973651191969886,
+        "recall": 0.805419921875,
+        "resident_miss_fraction_of_errors": 0.5702634880803011,
+        "target_resident_coverage": 0.71612548828125
+      }
+    ],
+    "global": {
+      "active_slots": 655360,
+      "all_nonresident_misses_fixed_ceiling": 0.9061126589775086,
+      "error_rate": 0.1714065670967102,
+      "miss_target_nonresident": 0.07751922607421875,
+      "miss_target_resident": 0.0938873291015625,
+      "nonresident_miss_fraction_of_errors": 0.45225356751800455,
+      "recall": 0.8285934329032898,
+      "resident_miss_fraction_of_errors": 0.5477464324819955,
+      "target_resident_coverage": 0.6894241571426392
+    },
+    "interpretation": "Associative error partition by whether the future factual target ID is in the resident set. The 256-way router output is not namespace-restricted, so this is not causal credit."
+  },
+  "inputs": {
+    "allocation": "/workspace/LLM_prefetch_study/artifacts/harp_rtt/resident_damage_no_capture_20260825/core_mass_hitcap_3850_89d6b5f/resident_allocation.json",
+    "allocation_sha256": "8b25bdb5a39f08089f8b175ae5f8befa0fe2c3995d5d16bffcc28d2d8cd96536",
+    "audit": "/workspace/LLM_prefetch_study/artifacts/harp_rtt/resident_shadow_v2_cacheset_dev_20260825/evaluations/v2_screen_512_score_audit_v2/cache_set_audit.pt",
+    "audit_sha256": "587ed9df000fc57117a1f393311b6001988c758f11ae5f1413e0be776e6bc3de",
+    "q4_ledger": "/workspace/LLM_prefetch_study/artifacts/harp_rtt/routequant_v1_20260816_7eed340/screens/routequant_log8_mixed34_all39_46c57f6/candidate_metrics.jsonl",
+    "q4_ledger_sha256": "144dc52fa0d65292a178d7c29bc6cd73f3d7545aa103210899c2d588d3b1e019",
+    "source": "/workspace/routemtp_cacheset_eval_20260825/runpod/audit_compliant_failure_decomposition.py",
+    "source_sha256": "84f13532bb5854e659f336d730d09a8f1227bf92e3c164280be797a03b43aff0"
+  },
+  "optional_reallocation_surrogate": {
+    "frequency_core_sha256": "c090aef6da46f85e9004f8fee53d7df26fb4e9d408ce2ae042243a546daba1d8",
+    "frequency_core_size_per_layer": 64,
+    "interpretation": "Leaked-label direct namespace-recovery surrogate. It awards a correct prediction for every currently missed, nonresident future target ID admitted by the candidate plan, ignores all damage from evicted cells, and does not rerun hidden states.",
+    "lagrange_lambda": 0.0,
+    "mandatory_cells": 2560,
+    "maximum_per_layer": 128,
+    "membership_sha256": "6ea1417c6b7291bda7a5bfaf4f0f70e50df3d2c52a0d2ccb2487f9d9dded255d",
+    "optimistic_recall": 0.8628066897392273,
+    "optimistic_recall_h": [
+      0.9013122320175171,
+      0.8748291254043579,
+      0.850561547279358,
+      0.8245239138603211
+    ],
+    "optimistic_recall_lift": 0.0342132568359375,
+    "optimistic_recall_lift_h": [
+      0.02838134765625,
+      0.031878662109375,
+      0.036297607421875,
+      0.04029541015625
+    ],
+    "optional_cells": 1290,
+    "recovered_slots": 22422,
+    "required_recall_lift": 0.07140656709671023,
+    "resident_hit_count": 3023016,
+    "resident_hit_count_cap": 3245387,
+    "total_cells": 3850
+  },
+  "q4_quantization_proxy": {
+    "exact_h": [
+      0.9827536558493589,
+      0.9819523737980769,
+      0.9827286157852564,
+      0.9827223557692307
+    ],
+    "exact_mean": 0.9825392503004807,
+    "interpretation": "Retained full-expert group64 INT4-MSE/log8 local next-router proxy; it is not the exact compliant closed-loop condition.",
+    "layers": 39,
+    "per_layer": [
+      {
+        "exact": 0.987060546875,
+        "layer": 0,
+        "q4": 0.982177734375,
+        "quantization_loss": 0.0048828125
+      },
+      {
+        "exact": 0.98681640625,
+        "layer": 1,
+        "q4": 0.9786376953125,
+        "quantization_loss": 0.0081787109375
+      },
+      {
+        "exact": 0.9835205078125,
+        "layer": 2,
+        "q4": 0.97564697265625,
+        "quantization_loss": 0.00787353515625
+      },
+      {
+        "exact": 0.98382568359375,
+        "layer": 3,
+        "q4": 0.97802734375,
+        "quantization_loss": 0.00579833984375
+      },
+      {
+        "exact": 0.9857177734375,
+        "layer": 4,
+        "q4": 0.97540283203125,
+        "quantization_loss": 0.01031494140625
+      },
+      {
+        "exact": 0.9852294921875,
+        "layer": 5,
+        "q4": 0.97552490234375,
+        "quantization_loss": 0.00970458984375
+      },
+      {
+        "exact": 0.98388671875,
+        "layer": 6,
+        "q4": 0.974365234375,
+        "quantization_loss": 0.009521484375
+      },
+      {
+        "exact": 0.97882080078125,
+        "layer": 7,
+        "q4": 0.96600341796875,
+        "quantization_loss": 0.0128173828125
+      },
+      {
+        "exact": 0.98419189453125,
+        "layer": 8,
+        "q4": 0.9722900390625,
+        "quantization_loss": 0.01190185546875
+      },
+      {
+        "exact": 0.9866943359375,
+        "layer": 9,
+        "q4": 0.9755859375,
+        "quantization_loss": 0.0111083984375
+      },
+      {
+        "exact": 0.98638916015625,
+        "layer": 10,
+        "q4": 0.97943115234375,
+        "quantization_loss": 0.0069580078125
+      },
+      {
+        "exact": 0.9827880859375,
+        "layer": 11,
+        "q4": 0.969482421875,
+        "quantization_loss": 0.0133056640625
+      },
+      {
+        "exact": 0.9862060546875,
+        "layer": 12,
+        "q4": 0.97747802734375,
+        "quantization_loss": 0.00872802734375
+      },
+      {
+        "exact": 0.98248291015625,
+        "layer": 13,
+        "q4": 0.970703125,
+        "quantization_loss": 0.01177978515625
+      },
+      {
+        "exact": 0.985107421875,
+        "layer": 14,
+        "q4": 0.973876953125,
+        "quantization_loss": 0.01123046875
+      },
+      {
+        "exact": 0.98370361328125,
+        "layer": 15,
+        "q4": 0.9710693359375,
+        "quantization_loss": 0.01263427734375
+      },
+      {
+        "exact": 0.98553466796875,
+        "layer": 16,
+        "q4": 0.97528076171875,
+        "quantization_loss": 0.01025390625
+      },
+      {
+        "exact": 0.98321533203125,
+        "layer": 17,
+        "q4": 0.97528076171875,
+        "quantization_loss": 0.0079345703125
+      },
+      {
+        "exact": 0.985107421875,
+        "layer": 18,
+        "q4": 0.979248046875,
+        "quantization_loss": 0.005859375
+      },
+      {
+        "exact": 0.98077392578125,
+        "layer": 19,
+        "q4": 0.966552734375,
+        "quantization_loss": 0.01422119140625
+      },
+      {
+        "exact": 0.9814453125,
+        "layer": 20,
+        "q4": 0.97406005859375,
+        "quantization_loss": 0.00738525390625
+      },
+      {
+        "exact": 0.98687744140625,
+        "layer": 21,
+        "q4": 0.9796142578125,
+        "quantization_loss": 0.00726318359375
+      },
+      {
+        "exact": 0.98602294921875,
+        "layer": 22,
+        "q4": 0.9769287109375,
+        "quantization_loss": 0.00909423828125
+      },
+      {
+        "exact": 0.98187255859375,
+        "layer": 23,
+        "q4": 0.97265625,
+        "quantization_loss": 0.00921630859375
+      },
+      {
+        "exact": 0.9835205078125,
+        "layer": 24,
+        "q4": 0.97613525390625,
+        "quantization_loss": 0.00738525390625
+      },
+      {
+        "exact": 0.9818115234375,
+        "layer": 25,
+        "q4": 0.973876953125,
+        "quantization_loss": 0.0079345703125
+      },
+      {
+        "exact": 0.982421875,
+        "layer": 26,
+        "q4": 0.97454833984375,
+        "quantization_loss": 0.00787353515625
+      },
+      {
+        "exact": 0.9822998046875,
+        "layer": 27,
+        "q4": 0.9754638671875,
+        "quantization_loss": 0.0068359375
+      },
+      {
+        "exact": 0.983154296875,
+        "layer": 28,
+        "q4": 0.97576904296875,
+        "quantization_loss": 0.00738525390625
+      },
+      {
+        "exact": 0.98382568359375,
+        "layer": 29,
+        "q4": 0.9757080078125,
+        "quantization_loss": 0.00811767578125
+      },
+      {
+        "exact": 0.9825439453125,
+        "layer": 30,
+        "q4": 0.97479248046875,
+        "quantization_loss": 0.00775146484375
+      },
+      {
+        "exact": 0.982666015625,
+        "layer": 31,
+        "q4": 0.9752197265625,
+        "quantization_loss": 0.0074462890625
+      },
+      {
+        "exact": 0.9835205078125,
+        "layer": 32,
+        "q4": 0.9744873046875,
+        "quantization_loss": 0.009033203125
+      },
+      {
+        "exact": 0.983154296875,
+        "layer": 33,
+        "q4": 0.97479248046875,
+        "quantization_loss": 0.00836181640625
+      },
+      {
+        "exact": 0.97821044921875,
+        "layer": 34,
+        "q4": 0.9677734375,
+        "quantization_loss": 0.01043701171875
+      },
+      {
+        "exact": 0.9754638671875,
+        "layer": 35,
+        "q4": 0.96795654296875,
+        "quantization_loss": 0.00750732421875
+      },
+      {
+        "exact": 0.9730224609375,
+        "layer": 36,
+        "q4": 0.96588134765625,
+        "quantization_loss": 0.00714111328125
+      },
+      {
+        "exact": 0.96923828125,
+        "layer": 37,
+        "q4": 0.963623046875,
+        "quantization_loss": 0.005615234375
+      },
+      {
+        "exact": 0.97088623046875,
+        "layer": 38,
+        "q4": 0.96368408203125,
+        "quantization_loss": 0.0072021484375
+      }
+    ],
+    "q4_h": [
+      0.9739583333333334,
+      0.9731633112980769,
+      0.973945813301282,
+      0.973808092948718
+    ],
+    "q4_mean": 0.9737188877203525,
+    "quantization_loss": 0.008820362580128194,
+    "quantization_loss_h": [
+      0.00879532251602555,
+      0.0087890625,
+      0.008782802483974339,
+      0.008914262820512775
+    ]
+  },
+  "schema": "harp_compliant_failure_decomposition_v1",
+  "survivor_novel": {
+    "by_horizon": [
+      {
+        "horizon": 1,
+        "novel": {
+          "miss_contribution": 0.1038818359375,
+          "misses": 17020,
+          "recall": 0.8452544391609917,
+          "slot_fraction": 0.671307373046875,
+          "slots": 109987
+        },
+        "survivor": {
+          "miss_contribution": 0.023187255859375,
+          "misses": 3799,
+          "recall": 0.929456112008616,
+          "slot_fraction": 0.328692626953125,
+          "slots": 53853
+        }
+      },
+      {
+        "horizon": 2,
+        "novel": {
+          "miss_contribution": 0.133740234375,
+          "misses": 21912,
+          "recall": 0.825958491195463,
+          "slot_fraction": 0.768438720703125,
+          "slots": 125901
+        },
+        "survivor": {
+          "miss_contribution": 0.023309326171875,
+          "misses": 3819,
+          "recall": 0.899338411660824,
+          "slot_fraction": 0.231561279296875,
+          "slots": 37939
+        }
+      },
+      {
+        "horizon": 3,
+        "novel": {
+          "miss_contribution": 0.1585205078125,
+          "misses": 25972,
+          "recall": 0.793974393552379,
+          "slot_fraction": 0.76942138671875,
+          "slots": 126062
+        },
+        "survivor": {
+          "miss_contribution": 0.027215576171875,
+          "misses": 4459,
+          "recall": 0.8819683413626979,
+          "slot_fraction": 0.23057861328125,
+          "slots": 37778
+        }
+      },
+      {
+        "horizon": 4,
+        "novel": {
+          "miss_contribution": 0.18740234375,
+          "misses": 30704,
+          "recall": 0.7626377024467551,
+          "slot_fraction": 0.789520263671875,
+          "slots": 129355
+        },
+        "survivor": {
+          "miss_contribution": 0.028369140625,
+          "misses": 4648,
+          "recall": 0.8652167609105408,
+          "slot_fraction": 0.210479736328125,
+          "slots": 34485
+        }
+      }
+    ],
+    "by_layer": [
+      {
+        "layer": 0,
+        "novel": {
+          "miss_contribution": 0.0628662109375,
+          "misses": 1030,
+          "recall": 0.9331646226721173,
+          "slot_fraction": 0.94061279296875,
+          "slots": 15411
+        },
+        "survivor": {
+          "miss_contribution": 0.00537109375,
+          "misses": 88,
+          "recall": 0.9095580678314491,
+          "slot_fraction": 0.05938720703125,
+          "slots": 973
+        }
+      },
+      {
+        "layer": 1,
+        "novel": {
+          "miss_contribution": 0.1004638671875,
+          "misses": 1646,
+          "recall": 0.8884521550555706,
+          "slot_fraction": 0.900634765625,
+          "slots": 14756
+        },
+        "survivor": {
+          "miss_contribution": 0.008544921875,
+          "misses": 140,
+          "recall": 0.914004914004914,
+          "slot_fraction": 0.099365234375,
+          "slots": 1628
+        }
+      },
+      {
+        "layer": 2,
+        "novel": {
+          "miss_contribution": 0.1229248046875,
+          "misses": 2014,
+          "recall": 0.8591509895796909,
+          "slot_fraction": 0.87274169921875,
+          "slots": 14299
+        },
+        "survivor": {
+          "miss_contribution": 0.01312255859375,
+          "misses": 215,
+          "recall": 0.8968824940047961,
+          "slot_fraction": 0.12725830078125,
+          "slots": 2085
+        }
+      },
+      {
+        "layer": 3,
+        "novel": {
+          "miss_contribution": 0.14947509765625,
+          "misses": 2449,
+          "recall": 0.8275352112676057,
+          "slot_fraction": 0.86669921875,
+          "slots": 14200
+        },
+        "survivor": {
+          "miss_contribution": 0.0159912109375,
+          "misses": 262,
+          "recall": 0.88003663003663,
+          "slot_fraction": 0.13330078125,
+          "slots": 2184
+        }
+      },
+      {
+        "layer": 4,
+        "novel": {
+          "miss_contribution": 0.125,
+          "misses": 2048,
+          "recall": 0.8519589417377476,
+          "slot_fraction": 0.8443603515625,
+          "slots": 13834
+        },
+        "survivor": {
+          "miss_contribution": 0.01544189453125,
+          "misses": 253,
+          "recall": 0.9007843137254902,
+          "slot_fraction": 0.1556396484375,
+          "slots": 2550
+        }
+      },
+      {
+        "layer": 5,
+        "novel": {
+          "miss_contribution": 0.12078857421875,
+          "misses": 1979,
+          "recall": 0.8462554381603481,
+          "slot_fraction": 0.78564453125,
+          "slots": 12872
+        },
+        "survivor": {
+          "miss_contribution": 0.016845703125,
+          "misses": 276,
+          "recall": 0.9214123006833713,
+          "slot_fraction": 0.21435546875,
+          "slots": 3512
+        }
+      },
+      {
+        "layer": 6,
+        "novel": {
+          "miss_contribution": 0.1170654296875,
+          "misses": 1918,
+          "recall": 0.8458075407990996,
+          "slot_fraction": 0.75921630859375,
+          "slots": 12439
+        },
+        "survivor": {
+          "miss_contribution": 0.02032470703125,
+          "misses": 333,
+          "recall": 0.9155893536121673,
+          "slot_fraction": 0.24078369140625,
+          "slots": 3945
+        }
+      },
+      {
+        "layer": 7,
+        "novel": {
+          "miss_contribution": 0.1279296875,
+          "misses": 2096,
+          "recall": 0.8223879332259978,
+          "slot_fraction": 0.72027587890625,
+          "slots": 11801
+        },
+        "survivor": {
+          "miss_contribution": 0.02398681640625,
+          "misses": 393,
+          "recall": 0.914248308967925,
+          "slot_fraction": 0.27972412109375,
+          "slots": 4583
+        }
+      },
+      {
+        "layer": 8,
+        "novel": {
+          "miss_contribution": 0.1201171875,
+          "misses": 1968,
+          "recall": 0.8283920474363446,
+          "slot_fraction": 0.699951171875,
+          "slots": 11468
+        },
+        "survivor": {
+          "miss_contribution": 0.02496337890625,
+          "misses": 409,
+          "recall": 0.9168022782750204,
+          "slot_fraction": 0.300048828125,
+          "slots": 4916
+        }
+      },
+      {
+        "layer": 9,
+        "novel": {
+          "miss_contribution": 0.120361328125,
+          "misses": 1972,
+          "recall": 0.8348270374403216,
+          "slot_fraction": 0.72869873046875,
+          "slots": 11939
+        },
+        "survivor": {
+          "miss_contribution": 0.02264404296875,
+          "misses": 371,
+          "recall": 0.9165354330708662,
+          "slot_fraction": 0.27130126953125,
+          "slots": 4445
+        }
+      },
+      {
+        "layer": 10,
+        "novel": {
+          "miss_contribution": 0.125244140625,
+          "misses": 2052,
+          "recall": 0.8365721567378146,
+          "slot_fraction": 0.766357421875,
+          "slots": 12556
+        },
+        "survivor": {
+          "miss_contribution": 0.0194091796875,
+          "misses": 318,
+          "recall": 0.9169278996865203,
+          "slot_fraction": 0.233642578125,
+          "slots": 3828
+        }
+      },
+      {
+        "layer": 11,
+        "novel": {
+          "miss_contribution": 0.13677978515625,
+          "misses": 2241,
+          "recall": 0.8298017771701982,
+          "slot_fraction": 0.80364990234375,
+          "slots": 13167
+        },
+        "survivor": {
+          "miss_contribution": 0.01947021484375,
+          "misses": 319,
+          "recall": 0.9008392912651538,
+          "slot_fraction": 0.19635009765625,
+          "slots": 3217
+        }
+      },
+      {
+        "layer": 12,
+        "novel": {
+          "miss_contribution": 0.14398193359375,
+          "misses": 2359,
+          "recall": 0.8090033195692656,
+          "slot_fraction": 0.75384521484375,
+          "slots": 12351
+        },
+        "survivor": {
+          "miss_contribution": 0.02301025390625,
+          "misses": 377,
+          "recall": 0.9065212000991818,
+          "slot_fraction": 0.24615478515625,
+          "slots": 4033
+        }
+      },
+      {
+        "layer": 13,
+        "novel": {
+          "miss_contribution": 0.14044189453125,
+          "misses": 2301,
+          "recall": 0.8093936381709742,
+          "slot_fraction": 0.73681640625,
+          "slots": 12072
+        },
+        "survivor": {
+          "miss_contribution": 0.023681640625,
+          "misses": 388,
+          "recall": 0.9100185528756958,
+          "slot_fraction": 0.26318359375,
+          "slots": 4312
+        }
+      },
+      {
+        "layer": 14,
+        "novel": {
+          "miss_contribution": 0.1295166015625,
+          "misses": 2122,
+          "recall": 0.8115118138212827,
+          "slot_fraction": 0.6871337890625,
+          "slots": 11258
+        },
+        "survivor": {
+          "miss_contribution": 0.0296630859375,
+          "misses": 486,
+          "recall": 0.9051892313694889,
+          "slot_fraction": 0.3128662109375,
+          "slots": 5126
+        }
+      },
+      {
+        "layer": 15,
+        "novel": {
+          "miss_contribution": 0.14398193359375,
+          "misses": 2359,
+          "recall": 0.8004061257297572,
+          "slot_fraction": 0.72137451171875,
+          "slots": 11819
+        },
+        "survivor": {
+          "miss_contribution": 0.0291748046875,
+          "misses": 478,
+          "recall": 0.8952902519167579,
+          "slot_fraction": 0.27862548828125,
+          "slots": 4565
+        }
+      },
+      {
+        "layer": 16,
+        "novel": {
+          "miss_contribution": 0.152587890625,
+          "misses": 2500,
+          "recall": 0.7906197654941374,
+          "slot_fraction": 0.728759765625,
+          "slots": 11940
+        },
+        "survivor": {
+          "miss_contribution": 0.02655029296875,
+          "misses": 435,
+          "recall": 0.9021152115211521,
+          "slot_fraction": 0.271240234375,
+          "slots": 4444
+        }
+      },
+      {
+        "layer": 17,
+        "novel": {
+          "miss_contribution": 0.14788818359375,
+          "misses": 2423,
+          "recall": 0.786670188413453,
+          "slot_fraction": 0.6932373046875,
+          "slots": 11358
+        },
+        "survivor": {
+          "miss_contribution": 0.0313720703125,
+          "misses": 514,
+          "recall": 0.8977317946677278,
+          "slot_fraction": 0.3067626953125,
+          "slots": 5026
+        }
+      },
+      {
+        "layer": 18,
+        "novel": {
+          "miss_contribution": 0.14337158203125,
+          "misses": 2349,
+          "recall": 0.7904549509366637,
+          "slot_fraction": 0.6842041015625,
+          "slots": 11210
+        },
+        "survivor": {
+          "miss_contribution": 0.03057861328125,
+          "misses": 501,
+          "recall": 0.903169694626981,
+          "slot_fraction": 0.3157958984375,
+          "slots": 5174
+        }
+      },
+      {
+        "layer": 19,
+        "novel": {
+          "miss_contribution": 0.15057373046875,
+          "misses": 2467,
+          "recall": 0.7810419810064791,
+          "slot_fraction": 0.68768310546875,
+          "slots": 11267
+        },
+        "survivor": {
+          "miss_contribution": 0.03070068359375,
+          "misses": 503,
+          "recall": 0.9017002149697089,
+          "slot_fraction": 0.31231689453125,
+          "slots": 5117
+        }
+      },
+      {
+        "layer": 20,
+        "novel": {
+          "miss_contribution": 0.1510009765625,
+          "misses": 2474,
+          "recall": 0.7727982367526862,
+          "slot_fraction": 0.66461181640625,
+          "slots": 10889
+        },
+        "survivor": {
+          "miss_contribution": 0.0322265625,
+          "misses": 528,
+          "recall": 0.9039126478616925,
+          "slot_fraction": 0.33538818359375,
+          "slots": 5495
+        }
+      },
+      {
+        "layer": 21,
+        "novel": {
+          "miss_contribution": 0.14642333984375,
+          "misses": 2399,
+          "recall": 0.7889504706606845,
+          "slot_fraction": 0.69378662109375,
+          "slots": 11367
+        },
+        "survivor": {
+          "miss_contribution": 0.033935546875,
+          "misses": 556,
+          "recall": 0.8891767988837951,
+          "slot_fraction": 0.30621337890625,
+          "slots": 5017
+        }
+      },
+      {
+        "layer": 22,
+        "novel": {
+          "miss_contribution": 0.158935546875,
+          "misses": 2604,
+          "recall": 0.7884302892427689,
+          "slot_fraction": 0.751220703125,
+          "slots": 12308
+        },
+        "survivor": {
+          "miss_contribution": 0.03033447265625,
+          "misses": 497,
+          "recall": 0.8780667320902846,
+          "slot_fraction": 0.248779296875,
+          "slots": 4076
+        }
+      },
+      {
+        "layer": 23,
+        "novel": {
+          "miss_contribution": 0.1729736328125,
+          "misses": 2834,
+          "recall": 0.7827353572523765,
+          "slot_fraction": 0.796142578125,
+          "slots": 13044
+        },
+        "survivor": {
+          "miss_contribution": 0.02783203125,
+          "misses": 456,
+          "recall": 0.8634730538922155,
+          "slot_fraction": 0.203857421875,
+          "slots": 3340
+        }
+      },
+      {
+        "layer": 24,
+        "novel": {
+          "miss_contribution": 0.1739501953125,
+          "misses": 2850,
+          "recall": 0.7624406101525382,
+          "slot_fraction": 0.73223876953125,
+          "slots": 11997
+        },
+        "survivor": {
+          "miss_contribution": 0.0322265625,
+          "misses": 528,
+          "recall": 0.8796444039206747,
+          "slot_fraction": 0.26776123046875,
+          "slots": 4387
+        }
+      },
+      {
+        "layer": 25,
+        "novel": {
+          "miss_contribution": 0.168701171875,
+          "misses": 2764,
+          "recall": 0.7674966352624495,
+          "slot_fraction": 0.7255859375,
+          "slots": 11888
+        },
+        "survivor": {
+          "miss_contribution": 0.03338623046875,
+          "misses": 547,
+          "recall": 0.8783362989323843,
+          "slot_fraction": 0.2744140625,
+          "slots": 4496
+        }
+      },
+      {
+        "layer": 26,
+        "novel": {
+          "miss_contribution": 0.16497802734375,
+          "misses": 2703,
+          "recall": 0.7613666460669197,
+          "slot_fraction": 0.69134521484375,
+          "slots": 11327
+        },
+        "survivor": {
+          "miss_contribution": 0.03240966796875,
+          "misses": 531,
+          "recall": 0.8949970338145146,
+          "slot_fraction": 0.30865478515625,
+          "slots": 5057
+        }
+      },
+      {
+        "layer": 27,
+        "novel": {
+          "miss_contribution": 0.1728515625,
+          "misses": 2832,
+          "recall": 0.7571391818883457,
+          "slot_fraction": 0.71173095703125,
+          "slots": 11661
+        },
+        "survivor": {
+          "miss_contribution": 0.031982421875,
+          "misses": 524,
+          "recall": 0.8890535676476815,
+          "slot_fraction": 0.28826904296875,
+          "slots": 4723
+        }
+      },
+      {
+        "layer": 28,
+        "novel": {
+          "miss_contribution": 0.16302490234375,
+          "misses": 2671,
+          "recall": 0.7723320831912718,
+          "slot_fraction": 0.716064453125,
+          "slots": 11732
+        },
+        "survivor": {
+          "miss_contribution": 0.03192138671875,
+          "misses": 523,
+          "recall": 0.8875752364574376,
+          "slot_fraction": 0.283935546875,
+          "slots": 4652
+        }
+      },
+      {
+        "layer": 29,
+        "novel": {
+          "miss_contribution": 0.1533203125,
+          "misses": 2512,
+          "recall": 0.7735712998016946,
+          "slot_fraction": 0.6771240234375,
+          "slots": 11094
+        },
+        "survivor": {
+          "miss_contribution": 0.03057861328125,
+          "misses": 501,
+          "recall": 0.9052930056710775,
+          "slot_fraction": 0.3228759765625,
+          "slots": 5290
+        }
+      },
+      {
+        "layer": 30,
+        "novel": {
+          "miss_contribution": 0.15875244140625,
+          "misses": 2601,
+          "recall": 0.7693944498625764,
+          "slot_fraction": 0.68841552734375,
+          "slots": 11279
+        },
+        "survivor": {
+          "miss_contribution": 0.03106689453125,
+          "misses": 509,
+          "recall": 0.9002938295788443,
+          "slot_fraction": 0.31158447265625,
+          "slots": 5105
+        }
+      },
+      {
+        "layer": 31,
+        "novel": {
+          "miss_contribution": 0.15594482421875,
+          "misses": 2555,
+          "recall": 0.7705639367816092,
+          "slot_fraction": 0.6796875,
+          "slots": 11136
+        },
+        "survivor": {
+          "miss_contribution": 0.029052734375,
+          "misses": 476,
+          "recall": 0.9092987804878049,
+          "slot_fraction": 0.3203125,
+          "slots": 5248
+        }
+      },
+      {
+        "layer": 32,
+        "novel": {
+          "miss_contribution": 0.15576171875,
+          "misses": 2552,
+          "recall": 0.7937944408532643,
+          "slot_fraction": 0.75537109375,
+          "slots": 12376
+        },
+        "survivor": {
+          "miss_contribution": 0.02752685546875,
+          "misses": 451,
+          "recall": 0.8874750499001997,
+          "slot_fraction": 0.24462890625,
+          "slots": 4008
+        }
+      },
+      {
+        "layer": 33,
+        "novel": {
+          "miss_contribution": 0.15814208984375,
+          "misses": 2591,
+          "recall": 0.7956463443489235,
+          "slot_fraction": 0.77386474609375,
+          "slots": 12679
+        },
+        "survivor": {
+          "miss_contribution": 0.0242919921875,
+          "misses": 398,
+          "recall": 0.8925775978407557,
+          "slot_fraction": 0.22613525390625,
+          "slots": 3705
+        }
+      },
+      {
+        "layer": 34,
+        "novel": {
+          "miss_contribution": 0.15106201171875,
+          "misses": 2475,
+          "recall": 0.8021266389510713,
+          "slot_fraction": 0.763427734375,
+          "slots": 12508
+        },
+        "survivor": {
+          "miss_contribution": 0.025146484375,
+          "misses": 412,
+          "recall": 0.8937048503611971,
+          "slot_fraction": 0.236572265625,
+          "slots": 3876
+        }
+      },
+      {
+        "layer": 35,
+        "novel": {
+          "miss_contribution": 0.16259765625,
+          "misses": 2664,
+          "recall": 0.7655961284645842,
+          "slot_fraction": 0.69366455078125,
+          "slots": 11365
+        },
+        "survivor": {
+          "miss_contribution": 0.0294189453125,
+          "misses": 482,
+          "recall": 0.9039649332536361,
+          "slot_fraction": 0.30633544921875,
+          "slots": 5019
+        }
+      },
+      {
+        "layer": 36,
+        "novel": {
+          "miss_contribution": 0.17486572265625,
+          "misses": 2865,
+          "recall": 0.7673757713543359,
+          "slot_fraction": 0.751708984375,
+          "slots": 12316
+        },
+        "survivor": {
+          "miss_contribution": 0.02838134765625,
+          "misses": 465,
+          "recall": 0.8856932153392331,
+          "slot_fraction": 0.248291015625,
+          "slots": 4068
+        }
+      },
+      {
+        "layer": 37,
+        "novel": {
+          "miss_contribution": 0.1739501953125,
+          "misses": 2850,
+          "recall": 0.7700871248789932,
+          "slot_fraction": 0.756591796875,
+          "slots": 12396
+        },
+        "survivor": {
+          "miss_contribution": 0.02801513671875,
+          "misses": 459,
+          "recall": 0.8849047141424273,
+          "slot_fraction": 0.243408203125,
+          "slots": 3988
+        }
+      },
+      {
+        "layer": 38,
+        "novel": {
+          "miss_contribution": 0.1661376953125,
+          "misses": 2722,
+          "recall": 0.7814883198201814,
+          "slot_fraction": 0.76031494140625,
+          "slots": 12457
+        },
+        "survivor": {
+          "miss_contribution": 0.0263671875,
+          "misses": 432,
+          "recall": 0.8899923605805958,
+          "slot_fraction": 0.23968505859375,
+          "slots": 3927
+        }
+      },
+      {
+        "layer": 39,
+        "novel": {
+          "miss_contribution": 0.17071533203125,
+          "misses": 2797,
+          "recall": 0.7923379612443389,
+          "slot_fraction": 0.82208251953125,
+          "slots": 13469
+        },
+        "survivor": {
+          "miss_contribution": 0.02386474609375,
+          "misses": 391,
+          "recall": 0.8658662092624356,
+          "slot_fraction": 0.17791748046875,
+          "slots": 2915
+        }
+      }
+    ],
+    "global": {
+      "novel": {
+        "miss_contribution": 0.14588623046875,
+        "misses": 95608,
+        "recall": 0.8053999043364102,
+        "slot_fraction": 0.7496719360351562,
+        "slots": 491305
+      },
+      "survivor": {
+        "miss_contribution": 0.02552032470703125,
+        "misses": 16725,
+        "recall": 0.8980524823991954,
+        "slot_fraction": 0.25032806396484375,
+        "slots": 164055
+      }
+    }
+  },
+  "worst_layers": [
+    {
+      "active_slots": 16384,
+      "all_nonresident_misses_fixed_ceiling": 0.90093994140625,
+      "error_rate": 0.2061767578125,
+      "layer": 24,
+      "miss_target_nonresident": 0.10711669921875,
+      "miss_target_resident": 0.09906005859375,
+      "nonresident_miss_fraction_of_errors": 0.5195381882770871,
+      "novel_miss_contribution": 0.1739501953125,
+      "q4_proxy_quantization_loss": 0.00738525390625,
+      "recall": 0.7938232421875,
+      "resident_miss_fraction_of_errors": 0.48046181172291297,
+      "survivor_miss_contribution": 0.0322265625,
+      "target_resident_coverage": 0.64697265625
+    },
+    {
+      "active_slots": 16384,
+      "all_nonresident_misses_fixed_ceiling": 0.89251708984375,
+      "error_rate": 0.204833984375,
+      "layer": 27,
+      "miss_target_nonresident": 0.09735107421875,
+      "miss_target_resident": 0.10748291015625,
+      "nonresident_miss_fraction_of_errors": 0.47526817640047675,
+      "novel_miss_contribution": 0.1728515625,
+      "q4_proxy_quantization_loss": 0.0068359375,
+      "recall": 0.795166015625,
+      "resident_miss_fraction_of_errors": 0.5247318235995232,
+      "survivor_miss_contribution": 0.031982421875,
+      "target_resident_coverage": 0.676513671875
+    },
+    {
+      "active_slots": 16384,
+      "all_nonresident_misses_fixed_ceiling": 0.8746337890625,
+      "error_rate": 0.2032470703125,
+      "layer": 36,
+      "miss_target_nonresident": 0.077880859375,
+      "miss_target_resident": 0.1253662109375,
+      "nonresident_miss_fraction_of_errors": 0.3831831831831832,
+      "novel_miss_contribution": 0.17486572265625,
+      "q4_proxy_quantization_loss": 0.00714111328125,
+      "recall": 0.7967529296875,
+      "resident_miss_fraction_of_errors": 0.6168168168168168,
+      "survivor_miss_contribution": 0.02838134765625,
+      "target_resident_coverage": 0.7537841796875
+    },
+    {
+      "active_slots": 16384,
+      "all_nonresident_misses_fixed_ceiling": 0.89495849609375,
+      "error_rate": 0.20208740234375,
+      "layer": 25,
+      "miss_target_nonresident": 0.0970458984375,
+      "miss_target_resident": 0.10504150390625,
+      "nonresident_miss_fraction_of_errors": 0.48021745696164303,
+      "novel_miss_contribution": 0.168701171875,
+      "q4_proxy_quantization_loss": 0.0079345703125,
+      "recall": 0.79791259765625,
+      "resident_miss_fraction_of_errors": 0.519782543038357,
+      "survivor_miss_contribution": 0.03338623046875,
+      "target_resident_coverage": 0.68768310546875
+    },
+    {
+      "active_slots": 16384,
+      "all_nonresident_misses_fixed_ceiling": 0.87005615234375,
+      "error_rate": 0.20196533203125,
+      "layer": 37,
+      "miss_target_nonresident": 0.072021484375,
+      "miss_target_resident": 0.12994384765625,
+      "nonresident_miss_fraction_of_errors": 0.35660320338470836,
+      "novel_miss_contribution": 0.1739501953125,
+      "q4_proxy_quantization_loss": 0.005615234375,
+      "recall": 0.79803466796875,
+      "resident_miss_fraction_of_errors": 0.6433967966152916,
+      "survivor_miss_contribution": 0.02801513671875,
+      "target_resident_coverage": 0.7720947265625
+    },
+    {
+      "active_slots": 16384,
+      "all_nonresident_misses_fixed_ceiling": 0.89508056640625,
+      "error_rate": 0.2008056640625,
+      "layer": 23,
+      "miss_target_nonresident": 0.09588623046875,
+      "miss_target_resident": 0.10491943359375,
+      "nonresident_miss_fraction_of_errors": 0.4775075987841945,
+      "novel_miss_contribution": 0.1729736328125,
+      "q4_proxy_quantization_loss": 0.00921630859375,
+      "recall": 0.7991943359375,
+      "resident_miss_fraction_of_errors": 0.5224924012158054,
+      "survivor_miss_contribution": 0.02783203125,
+      "target_resident_coverage": 0.67974853515625
+    },
+    {
+      "active_slots": 16384,
+      "all_nonresident_misses_fixed_ceiling": 0.8997802734375,
+      "error_rate": 0.1973876953125,
+      "layer": 26,
+      "miss_target_nonresident": 0.09716796875,
+      "miss_target_resident": 0.1002197265625,
+      "nonresident_miss_fraction_of_errors": 0.49226963512677796,
+      "novel_miss_contribution": 0.16497802734375,
+      "q4_proxy_quantization_loss": 0.00787353515625,
+      "recall": 0.8026123046875,
+      "resident_miss_fraction_of_errors": 0.507730364873222,
+      "survivor_miss_contribution": 0.03240966796875,
+      "target_resident_coverage": 0.68707275390625
+    },
+    {
+      "active_slots": 16384,
+      "all_nonresident_misses_fixed_ceiling": 0.88873291015625,
+      "error_rate": 0.1949462890625,
+      "layer": 28,
+      "miss_target_nonresident": 0.08367919921875,
+      "miss_target_resident": 0.11126708984375,
+      "nonresident_miss_fraction_of_errors": 0.4292423293675642,
+      "novel_miss_contribution": 0.16302490234375,
+      "q4_proxy_quantization_loss": 0.00738525390625,
+      "recall": 0.8050537109375,
+      "resident_miss_fraction_of_errors": 0.5707576706324358,
+      "survivor_miss_contribution": 0.03192138671875,
+      "target_resident_coverage": 0.712646484375
+    },
+    {
+      "active_slots": 16384,
+      "all_nonresident_misses_fixed_ceiling": 0.8890380859375,
+      "error_rate": 0.194580078125,
+      "layer": 39,
+      "miss_target_nonresident": 0.0836181640625,
+      "miss_target_resident": 0.1109619140625,
+      "nonresident_miss_fraction_of_errors": 0.42973651191969886,
+      "novel_miss_contribution": 0.17071533203125,
+      "q4_proxy_quantization_loss": null,
+      "recall": 0.805419921875,
+      "resident_miss_fraction_of_errors": 0.5702634880803011,
+      "survivor_miss_contribution": 0.02386474609375,
+      "target_resident_coverage": 0.71612548828125
+    },
+    {
+      "active_slots": 16384,
+      "all_nonresident_misses_fixed_ceiling": 0.87078857421875,
+      "error_rate": 0.1925048828125,
+      "layer": 38,
+      "miss_target_nonresident": 0.06329345703125,
+      "miss_target_resident": 0.12921142578125,
+      "nonresident_miss_fraction_of_errors": 0.3287888395688015,
+      "novel_miss_contribution": 0.1661376953125,
+      "q4_proxy_quantization_loss": 0.0072021484375,
+      "recall": 0.8074951171875,
+      "resident_miss_fraction_of_errors": 0.6712111604311984,
+      "survivor_miss_contribution": 0.0263671875,
+      "target_resident_coverage": 0.77191162109375
+    },
+    {
+      "active_slots": 16384,
+      "all_nonresident_misses_fixed_ceiling": 0.87982177734375,
+      "error_rate": 0.1920166015625,
+      "layer": 35,
+      "miss_target_nonresident": 0.07183837890625,
+      "miss_target_resident": 0.12017822265625,
+      "nonresident_miss_fraction_of_errors": 0.3741258741258741,
+      "novel_miss_contribution": 0.16259765625,
+      "q4_proxy_quantization_loss": 0.00750732421875,
+      "recall": 0.8079833984375,
+      "resident_miss_fraction_of_errors": 0.6258741258741258,
+      "survivor_miss_contribution": 0.0294189453125,
+      "target_resident_coverage": 0.73004150390625
+    },
+    {
+      "active_slots": 16384,
+      "all_nonresident_misses_fixed_ceiling": 0.8897705078125,
+      "error_rate": 0.1898193359375,
+      "layer": 30,
+      "miss_target_nonresident": 0.07958984375,
+      "miss_target_resident": 0.1102294921875,
+      "nonresident_miss_fraction_of_errors": 0.4192926045016077,
+      "novel_miss_contribution": 0.15875244140625,
+      "q4_proxy_quantization_loss": 0.00775146484375,
+      "recall": 0.8101806640625,
+      "resident_miss_fraction_of_errors": 0.5807073954983922,
+      "survivor_miss_contribution": 0.03106689453125,
+      "target_resident_coverage": 0.7232666015625
+    },
+    {
+      "active_slots": 16384,
+      "all_nonresident_misses_fixed_ceiling": 0.90087890625,
+      "error_rate": 0.18927001953125,
+      "layer": 22,
+      "miss_target_nonresident": 0.09014892578125,
+      "miss_target_resident": 0.09912109375,
+      "nonresident_miss_fraction_of_errors": 0.4762979683972912,
+      "novel_miss_contribution": 0.158935546875,
+      "q4_proxy_quantization_loss": 0.00909423828125,
+      "recall": 0.81072998046875,
+      "resident_miss_fraction_of_errors": 0.5237020316027088,
+      "survivor_miss_contribution": 0.03033447265625,
+      "target_resident_coverage": 0.68011474609375
+    },
+    {
+      "active_slots": 16384,
+      "all_nonresident_misses_fixed_ceiling": 0.898193359375,
+      "error_rate": 0.18499755859375,
+      "layer": 31,
+      "miss_target_nonresident": 0.08319091796875,
+      "miss_target_resident": 0.101806640625,
+      "nonresident_miss_fraction_of_errors": 0.44968657208841967,
+      "novel_miss_contribution": 0.15594482421875,
+      "q4_proxy_quantization_loss": 0.0074462890625,
+      "recall": 0.81500244140625,
+      "resident_miss_fraction_of_errors": 0.5503134279115803,
+      "survivor_miss_contribution": 0.029052734375,
+      "target_resident_coverage": 0.6983642578125
+    },
+    {
+      "active_slots": 16384,
+      "all_nonresident_misses_fixed_ceiling": 0.89862060546875,
+      "error_rate": 0.18389892578125,
+      "layer": 29,
+      "miss_target_nonresident": 0.08251953125,
+      "miss_target_resident": 0.10137939453125,
+      "nonresident_miss_fraction_of_errors": 0.4487222037836044,
+      "novel_miss_contribution": 0.1533203125,
+      "q4_proxy_quantization_loss": 0.00811767578125,
+      "recall": 0.81610107421875,
+      "resident_miss_fraction_of_errors": 0.5512777962163956,
+      "survivor_miss_contribution": 0.03057861328125,
+      "target_resident_coverage": 0.71490478515625
+    },
+    {
+      "active_slots": 16384,
+      "all_nonresident_misses_fixed_ceiling": 0.8970947265625,
+      "error_rate": 0.18328857421875,
+      "layer": 32,
+      "miss_target_nonresident": 0.08038330078125,
+      "miss_target_resident": 0.1029052734375,
+      "nonresident_miss_fraction_of_errors": 0.4385614385614386,
+      "novel_miss_contribution": 0.15576171875,
+      "q4_proxy_quantization_loss": 0.009033203125,
+      "recall": 0.81671142578125,
+      "resident_miss_fraction_of_errors": 0.5614385614385614,
+      "survivor_miss_contribution": 0.02752685546875,
+      "target_resident_coverage": 0.723388671875
+    }
+  ]
+}

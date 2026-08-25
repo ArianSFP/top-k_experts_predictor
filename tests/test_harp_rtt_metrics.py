@@ -6,6 +6,7 @@ from torch import nn
 
 from harp_rtt.metrics import (
     RequestMetricAccumulator,
+    cache_set_counts,
     candidate_coverage_at_k,
     candidate_coverage_gate,
     evaluate_harp_rtt,
@@ -22,6 +23,42 @@ def test_slot_recall_uses_lower_expert_id_for_exact_ties() -> None:
     recall = slot_recall_at_k(scores, targets, k=2)
     # Stable top-2 is [0,1], so exactly one of the two target slots is found.
     assert torch.equal(recall, torch.full((1, 4, 1), 0.5))
+
+
+def test_cacheset_counts_true_current_future_intersection_and_prediction() -> None:
+    current = torch.tensor([[[1, 2], [3, 4]]])
+    target = torch.tensor([[
+        [[1, 5], [3, 4]],
+        [[6, 7], [3, 8]],
+        [[1, 2], [4, 9]],
+        [[2, 9], [3, 4]],
+    ]])
+    predicted = torch.tensor([[
+        [[1, 6], [3, 7]],
+        [[6, 7], [8, 9]],
+        [[1, 2], [4, 5]],
+        [[9, 8], [3, 4]],
+    ]])
+    valid = torch.tensor([[
+        [True, True],
+        [True, True],
+        [True, False],
+        [False, True],
+    ]])
+
+    correct, true, cells = cache_set_counts(predicted, current, target, valid)
+
+    assert correct.tolist() == [[2, 0, 2, 2]]
+    assert true.tolist() == [[3, 1, 2, 2]]
+    assert cells.tolist() == [[2, 2, 1, 1]]
+
+
+def test_cacheset_counts_rejects_misaligned_current_geometry() -> None:
+    predicted = torch.zeros(1, 4, 2, 2, dtype=torch.long)
+    target = torch.zeros_like(predicted)
+    valid = torch.ones(1, 4, 2, dtype=torch.bool)
+    with pytest.raises(ValueError, match="current IDs"):
+        cache_set_counts(predicted, torch.zeros(1, 3, 2), target, valid)
 
 
 def test_request_macro_summary_does_not_weight_long_requests_more() -> None:

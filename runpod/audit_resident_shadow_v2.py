@@ -50,6 +50,7 @@ from runpod.train_shadow_experts_local import (  # noqa: E402
 SCHEMA = "harp_resident_shadow_v2_headroom_audit_v1"
 REPRESENTATIVE_LAYERS = (0, 6, 20, 32)
 RANKS = (32, 64, 128)
+SURVIVOR_ALPHAS = (0.25, 0.5, 0.75, 1.0)
 
 
 def parse_args() -> argparse.Namespace:
@@ -174,7 +175,11 @@ def main() -> None:
 
     names_to_values: dict[str, dict[tuple[str, int], list[float]]] = {
         name: defaultdict(list)
-        for name in ("resident_only", "baseline", "exact_tail", *(f"rank_{r}" for r in RANKS))
+        for name in (
+            "resident_only", "baseline", "exact_tail",
+            *(f"rank_{r}" for r in RANKS),
+            *(f"survivor_alpha_{alpha:g}" for alpha in SURVIVOR_ALPHAS),
+        )
     }
     missing_mass: list[float] = []
     rows_out: list[dict[str, Any]] = []
@@ -192,6 +197,13 @@ def main() -> None:
             "baseline": components.output,
             "exact_tail": routed,
         }
+        survivor_mass = (1.0 - components.missing_mass.float()).clamp_min(0.125)
+        missing_ratio = components.missing_mass.float() / survivor_mass
+        for alpha in SURVIVOR_ALPHAS:
+            candidates[f"survivor_alpha_{alpha:g}"] = (
+                components.resident_output.float()
+                * (1.0 + alpha * missing_ratio)
+            ).to(components.resident_output.dtype)
         error = routed.float() - components.output.float()
         for rank, basis in bases.items():
             projected = (error @ basis.T) @ basis

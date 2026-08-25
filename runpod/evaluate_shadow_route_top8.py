@@ -22,6 +22,7 @@ for candidate in (str(REPO_ROOT), str(BRIDGE)):
 
 from harp_rtt.node_counterfactual import load_node_counterfactual_companion  # noqa: E402
 from harp_rtt.exact_k import stable_topk  # noqa: E402
+from harp_rtt.metrics import cache_set_counts  # noqa: E402
 from harp_rtt.route_ceiling import factual_branch_topk, posterior_native_topk  # noqa: E402
 from harp_rtt.shadow_route import shadow_lm_path_posterior  # noqa: E402
 from harp_rtt.shadow_backbone import exact_prefix_experts, install_shadow_experts  # noqa: E402
@@ -119,6 +120,13 @@ def parse_args() -> argparse.Namespace:
             "without loading a learned ShadowRoute bundle"
         ),
     )
+    parser.add_argument(
+        "--save-cache-set-audit",
+        action="store_true",
+        help=(
+            "retain exact dense reranking scores and labels for offline CacheSet policy selection"
+        ),
+    )
     parser.add_argument("--device", default="cuda")
     return parser.parse_args()
 
@@ -136,6 +144,13 @@ def write_rows(path: Path, rows: list[dict[str, Any]]) -> None:
     with path.open("x", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def write_torch_exclusive(path: Path, value: Any) -> None:
+    with path.open("xb") as handle:
+        torch.save(value, handle)
         handle.flush()
         os.fsync(handle.fileno())
 
@@ -172,6 +187,113 @@ def native_parity_mask(
     if valid.ndim != 2 or node_mask.ndim != 1:
         raise ValueError("native parity expects [N,L] validity and [N] node mask")
     return valid[:count].bool() & node_mask[:count, None].bool()
+
+
+def load_current_expert_sets(
+    base_capture: Path,
+    trees: list[Mapping[str, Any]],
+) -> dict[tuple[str, int], torch.Tensor]:
+    """Load authoritative native top-eight sets at each tree's source token."""
+
+    wanted = {
+        (str(tree["sequence_id"]), int(tree["source_position"]))
+        for tree in trees
+    }
+    if not wanted:
+        raise ValueError("current-route loading requires at least one tree")
+    by_key: dict[tuple[str, int], dict[int, torch.Tensor]] = {
+        key: {} for key in wanted
+    }
+    events_path = base_capture / "events.jsonl"
+    with events_path.open("r", encoding="utf-8") as source:
+        for line in source:
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            if event.get("event") != "target_layer" or event.get("record_valid") is not True:
+                continue
+            key = (
+                str(event["sequence_id"]),
+                int(event["committed_token_position"]),
+            )
+            if key not in wanted:
+                continue
+            layer = int(event["target_layer"])
+            values = event.get("candidate_expert_ids")
+            if (
+                not 0 <= layer < 40
+                or not isinstance(values, list)
+                or len(values) != 8
+            ):
+                raise ValueError(f"current native route has invalid geometry for {key}")
+            ids = torch.tensor([int(value) for value in values], dtype=torch.long)
+            if bool((ids < 0).any()) or bool((ids >= 256).any()) or ids.unique().numel() != 8:
+                raise ValueError(f"current native route is not an exact top-eight set for {key}")
+            previous = by_key[key].get(layer)
+            if previous is not None and not torch.equal(previous, ids):
+                raise ValueError(f"current native route changed for {key}, layer {layer}")
+            by_key[key][layer] = ids
+            if all(len(layers) == 40 for layers in by_key.values()):
+                break
+
+    result: dict[tuple[str, int], torch.Tensor] = {}
+    for key, layers in by_key.items():
+        if set(layers) != set(range(40)):
+            raise ValueError(f"base capture lacks a complete current native route for {key}")
+        result[key] = torch.stack([layers[layer] for layer in range(40)])
+    return result
+
+
+def summarize_cache_set(
+    cells: Mapping[tuple[str, int], list[tuple[int, int, int]]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Summarize CacheSet with request-macro scores and pooled audit counts."""
+
+    rows: list[dict[str, Any]] = []
+    for (request, horizon), values in sorted(cells.items()):
+        correct = sum(value[0] for value in values)
+        true = sum(value[1] for value in values)
+        valid_cells = sum(value[2] for value in values)
+        if true < 1 or valid_cells < 1:
+            raise ValueError(f"CacheSet H{horizon} has an empty denominator for {request}")
+        rows.append({
+            "request_id": request,
+            "horizon": horizon,
+            "correct_intersection_experts": correct,
+            "true_intersection_experts": true,
+            "valid_token_layer_cells": valid_cells,
+            "cache_set_recall": correct / true,
+            "mean_true_intersection_experts": true / valid_cells,
+        })
+
+    horizons: dict[str, dict[str, Any]] = {}
+    for horizon in (1, 2, 3, 4):
+        selected = [row for row in rows if row["horizon"] == horizon]
+        if not selected:
+            raise ValueError(f"CacheSet evaluation has no H{horizon} rows")
+        correct = sum(int(row["correct_intersection_experts"]) for row in selected)
+        true = sum(int(row["true_intersection_experts"]) for row in selected)
+        valid_cells = sum(int(row["valid_token_layer_cells"]) for row in selected)
+        horizons[str(horizon)] = {
+            "request_macro_recall": sum(
+                float(row["cache_set_recall"]) for row in selected
+            ) / len(selected),
+            "pooled_recall": correct / true,
+            "request_macro_mean_true_intersection_experts": sum(
+                float(row["mean_true_intersection_experts"]) for row in selected
+            ) / len(selected),
+            "pooled_mean_true_intersection_experts": true / valid_cells,
+            "correct_intersection_experts_total": correct,
+            "true_intersection_experts_total": true,
+            "valid_token_layer_cells": valid_cells,
+            "request_count": len(selected),
+        }
+    return {
+        "schema": "harp_shadowroute_cache_set_v1",
+        "condition": "exact_shadow_root_h1_and_shadow_lm_h2_h4",
+        "definition": "|S_t intersect S_(t+h) intersect P_(t+h)| / |S_t intersect S_(t+h)|",
+        "horizons": horizons,
+    }, rows
 
 
 def load_ceiling_bundle(path: Path, *, parent_sha256: str) -> dict[str, Any]:
@@ -438,6 +560,10 @@ def main() -> None:
         raise ValueError(
             "--ceiling-bundle and --ceiling-parent-sha256 must be provided together"
         )
+    if args.save_cache_set_audit and (
+        args.ceiling_bundle is None or args.native_parity_only
+    ):
+        raise ValueError("CacheSet audit saving requires factual mixture evaluation")
     if args.ceiling_parent_sha256 is not None and (
         len(args.ceiling_parent_sha256) != 64
         or any(character not in "0123456789abcdef" for character in args.ceiling_parent_sha256)
@@ -467,6 +593,11 @@ def main() -> None:
             raise ValueError(f"native companion lacks tree join {key}")
         if tree.get("assigned_split") != "train" or tree.get("external_evaluation") is not False:
             raise PermissionError("closed-loop evaluation is restricted to outer-train")
+    current_expert_sets = (
+        {}
+        if ceiling is None or args.native_parity_only
+        else load_current_expert_sets(args.base_capture, trees)
+    )
 
     checkpoint = IndexedCheckpoint(args.model)
     resident_ids_by_layer = None
@@ -556,6 +687,7 @@ def main() -> None:
         ),
         "ceiling_parent_sha256": args.ceiling_parent_sha256,
         "factual_mixture_evaluation": ceiling is not None,
+        "cache_set_audit_saved": args.save_cache_set_audit,
         "execution_backend": (
             "packed_routequant_reference_with_exact_dequantization_cache"
             if args.cache_routequant_experts
@@ -634,6 +766,15 @@ def main() -> None:
         tuple[str, str, str, int], list[torch.Tensor]
     ] = defaultdict(list)
     root_cells: dict[str, list[torch.Tensor]] = defaultdict(list)
+    cache_set_cells: dict[
+        tuple[str, int], list[tuple[int, int, int]]
+    ] = defaultdict(list)
+    cache_audit_scores: list[torch.Tensor] = []
+    cache_audit_current_ids: list[torch.Tensor] = []
+    cache_audit_target_ids: list[torch.Tensor] = []
+    cache_audit_valid: list[torch.Tensor] = []
+    cache_audit_request_ids: list[str] = []
+    cache_audit_tree_keys: list[tuple[str, int]] = []
     native_mismatches = 0
     executed_nodes = 0
     peak_gib = 0.0
@@ -790,6 +931,40 @@ def main() -> None:
                     conditions["shadow_lm"] = (
                         shadow_prediction, shadow_inclusion
                     )
+                    cache_predictions = shadow_prediction.clone()
+                    cache_predictions[:, 0] = node_ids[:, 0]
+                    current_ids = current_expert_sets[(
+                        str(tree["sequence_id"]), position
+                    )][None]
+                    cache_correct, cache_true, cache_valid = cache_set_counts(
+                        cache_predictions, current_ids, target_ids, future_valid
+                    )
+                    for horizon in (1, 2, 3, 4):
+                        index = horizon - 1
+                        cache_set_cells[(request, horizon)].append((
+                            int(cache_correct[0, index]),
+                            int(cache_true[0, index]),
+                            int(cache_valid[0, index]),
+                        ))
+                    if args.save_cache_set_audit:
+                        cache_scores = shadow_inclusion.clone()
+                        cache_scores[:, 0] = result.router_logits[0].float().cpu()
+                        reproduced = stable_topk(cache_scores, 8)
+                        exact_sets = route_overlap(
+                            reproduced, cache_predictions
+                        ).eq(1.0)
+                        if not bool(exact_sets.all()):
+                            raise RuntimeError(
+                                "CacheSet audit scores do not reproduce deployed top-eight sets"
+                            )
+                        cache_audit_scores.append(cache_scores[0])
+                        cache_audit_current_ids.append(current_ids[0])
+                        cache_audit_target_ids.append(target_ids[0])
+                        cache_audit_valid.append(future_valid[0])
+                        cache_audit_request_ids.append(request)
+                        cache_audit_tree_keys.append((
+                            str(tree["sequence_id"]), position
+                        ))
                     factual_indices = ceiling["factual_branch_indices"][
                         ceiling_row : ceiling_row + 1
                     ].long().clone()
@@ -875,8 +1050,32 @@ def main() -> None:
         if ceiling is None
         else bootstrap_factual_recall(factual_rows, replicates=1_000, seed=42)
     )
+    if ceiling is None or args.native_parity_only:
+        cache_set_metrics: dict[str, Any] = {}
+        cache_set_rows: list[dict[str, Any]] = []
+    else:
+        cache_set_metrics, cache_set_rows = summarize_cache_set(cache_set_cells)
     write_rows(args.output / "request_route_predictions.jsonl", rows)
     write_rows(args.output / "request_factual_predictions.jsonl", factual_rows)
+    write_rows(args.output / "request_cache_set_predictions.jsonl", cache_set_rows)
+    if args.save_cache_set_audit:
+        if len(cache_audit_scores) != len(trees):
+            raise RuntimeError("CacheSet audit did not retain every evaluated tree")
+        write_torch_exclusive(
+            args.output / "cache_set_audit.pt",
+            {
+                "schema": "harp_shadowroute_cache_set_audit_v1",
+                "condition": "exact_shadow_root_h1_and_shadow_lm_h2_h4",
+                "request_ids": cache_audit_request_ids,
+                "tree_keys": cache_audit_tree_keys,
+                "scores": torch.stack(cache_audit_scores),
+                "current_ids": torch.stack(cache_audit_current_ids),
+                "target_ids": torch.stack(cache_audit_target_ids),
+                "valid": torch.stack(cache_audit_valid),
+                "experts": 256,
+                "top_k": 8,
+            },
+        )
     accuracy_gate_met = bool(
         args.native_parity_only
         or (
@@ -895,6 +1094,7 @@ def main() -> None:
         "metrics": metrics,
         "factual_metrics": factual_metrics,
         "factual_bootstrap": factual_bootstrap,
+        "cache_set": cache_set_metrics,
         "native_parity_mismatches": native_mismatches,
         "peak_reserved_gib": peak_gib,
         "executed_nodes": executed_nodes,

@@ -89,6 +89,56 @@ def slot_recall_at_k(
     return recall * (weights > 0).to(recall.dtype)
 
 
+def cache_set_counts(
+    predicted_ids: Tensor,
+    current_ids: Tensor,
+    target_ids: Tensor,
+    valid: Tensor,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Return per-request/horizon correct, true, and valid-cell CacheSet counts.
+
+    For current expert set S_t, future truth S_(t+h), and future prediction
+    P_(t+h), CacheSet recall is:
+
+        |S_t intersect S_(t+h) intersect P_(t+h)|
+        ------------------------------------------------
+                 |S_t intersect S_(t+h)|
+
+    The first two returned tensors contain the numerator and denominator. The
+    third counts valid token-layer cells, allowing the true intersection size
+    to be reported independently as a mean cardinality per cell.
+    """
+
+    if predicted_ids.shape != target_ids.shape or predicted_ids.ndim != 4:
+        raise ValueError(
+            "CacheSet predictions and targets must share [B,H,L,K] geometry"
+        )
+    if current_ids.shape != (
+        predicted_ids.shape[0],
+        predicted_ids.shape[2],
+        predicted_ids.shape[3],
+    ):
+        raise ValueError("CacheSet current IDs must have [B,L,K] geometry")
+    if valid.shape != predicted_ids.shape[:-1]:
+        raise ValueError("CacheSet validity must have [B,H,L] geometry")
+
+    target_in_current = (
+        target_ids.long().unsqueeze(-1)
+        == current_ids.long()[:, None, :, None, :]
+    ).any(-1)
+    target_in_prediction = (
+        target_ids.long().unsqueeze(-1)
+        == predicted_ids.long().unsqueeze(-2)
+    ).any(-1)
+    active = valid.bool().unsqueeze(-1)
+    true_counts = (target_in_current & active).sum(dim=(2, 3))
+    correct_counts = (
+        target_in_current & target_in_prediction & active
+    ).sum(dim=(2, 3))
+    valid_cells = valid.bool().sum(dim=2)
+    return correct_counts, true_counts, valid_cells
+
+
 def exact_set_nll_per_endpoint(
     scores: Tensor,
     target_ids: Tensor,
@@ -729,6 +779,7 @@ __all__ = [
     "PRIMARY_HORIZONS",
     "RequestMetricAccumulator",
     "assert_split_allowed",
+    "cache_set_counts",
     "candidate_coverage_at_k",
     "candidate_coverage_gate",
     "evaluate_harp_rtt",
